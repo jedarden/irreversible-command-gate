@@ -7,13 +7,25 @@ execute and blocks irreversible or destructive operations, while letting
 normal read/write operations through unimpeded — extending the coverage of
 the existing `org-rule-guard.py` PreToolUse hook rather than replacing it.
 
+**The objective is not simply to block.** Every rule must leave the agent
+knowing the sanctioned alternative, actionable in its very next step — not
+just that its attempt failed. See `docs/notes/redirect-not-just-block.md`
+for the three-channel mechanism (`permissionDecisionReason`, `updatedInput`,
+`additionalContext`) and the hard boundary on when auto-correcting a
+command (`updatedInput`) is safe versus when it silently misrepresents what
+happened and a `deny` is required instead.
+
 ## Architecture
 
-_TBD — see `docs/notes/runtime-config-vs-hardcoded.md` for the one
-architectural question already explored: whether rule definitions should be
-hardcoded (matching `org-rule-guard.py`'s current design) or data-driven,
-and why "who can write to the rule source" matters more than the
-hardcoded-vs-configurable framing suggests._
+_TBD — two architectural questions already explored in `docs/notes/`:_
+
+- _Hardcoded vs. data-driven rule storage — `runtime-config-vs-hardcoded.md`.
+  Resolution so far: the meaningful axis is where the rule source lives
+  relative to what the guarded agent can write to, not code-vs-config._
+- _Redirect mechanism per rule — `redirect-not-just-block.md`. Resolution
+  so far: `deny` + specific reason by default, `updatedInput` only for
+  intent-preserving substitutions, `additionalContext` for non-blocking
+  warnings._
 
 ## Components
 
