@@ -37,14 +37,33 @@ are covered. See `docs/notes/multi-harness-integration.md`.
 `org-rule-guard.py`'s proven design — zero I/O beyond stdin, fails open on
 any parse failure or exception ("a missed violation is recoverable, a stuck
 fleet is not"). No reason to depart from this for the dispatch/parsing
-logic itself.
+logic itself. **One deliberate, scoped exception**: `icg-2m8`'s
+stale-HEAD-before-push check needs a live remote lookup, justified only
+because `git push` is already a network operation — not a precedent for
+adding I/O to any other guarded command.
+
+**This fail-open guarantee is scoped to in-process errors** — a single
+check throwing or failing to parse always fails open, unconditionally,
+matching `org-rule-guard.py`'s exact behavior. **The guard process itself
+disappearing (OOM-killed, crashed) is a separate failure class**, governed
+by `icg-4bu`'s graduated fail-open→fail-closed policy (Phase 5): fails
+open while the guard's reliability is unproven, shifts to fail-closed once
+it's validated. These are two different questions — "did this one check
+error out" vs. "is the guard even still running" — and only the second one
+is allowed to graduate away from fail-open over time.
 
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `vault`, `storage-class`, `image-tag` (extends
 `org-rule-guard.py`'s existing `:latest` check with the bare-SHA half),
 `git` (force-push, stale-HEAD-before-push), `beads` (`.beads/` protection
-— see the refined check below), `tmux` (bare NATO session names), and
-`misc` (`needle cleanup`, deprecated-bead-CLI usage). Modeled on
+— see the refined check below), `tmux` (bare NATO session names), `secrets`
+(Bash-channel credential-value scanning, extending `org-rule-guard.py`'s
+existing regex machinery to a path it doesn't currently cover — see Phase
+1), and `misc` (`needle cleanup`, deprecated-bead-CLI usage). `kubectl` is
+deliberately **not** a pack here — its mutating-verb coverage stays
+`org-rule-guard.py`'s job (see "Explicitly not attempted" below), so it's
+not one of the binaries the PATH-wrapper needs its own rules for. Modeled
+on
 `destructive_command_guard`'s per-vendor pack structure — see
 `docs/research/prior-art.md`. Modularity here means "one file per tool
 domain," not "runtime-editable by anyone."
@@ -73,8 +92,9 @@ somewhere the guarded agent can cause to become trusted).
 **Integration point: resolved — both layers, both harnesses**, not a
 choice between them. Two independent, complementary front-ends sharing one
 engine:
-- A **PATH-wrapper binary** shadowing `vault`/`bao`/`git`/`kubectl`/etc. —
-  harness-agnostic by construction, proven pattern already running in this
+- A **PATH-wrapper binary** shadowing `vault`/`bao`/`git`/`docker`/etc. (not
+  `kubectl` — see Architecture's pack list) — harness-agnostic by
+  construction, proven pattern already running in this
   environment (`~/.local/bin/cargo` transparently intercepts `cargo test`;
   see `CLAUDE.md`'s "Rust Build/Test Offloading"). Confirmed to work for
   Codex CLI too: its command execution is `$PATH`-resolved (`execvp`-style),
@@ -129,8 +149,30 @@ for Codex is still maturing). Full reasoning in
 - **State store** (later phase, not Phase 1) — minimal persistent marker
   needed only for Tier 2 ordering rules. `org-rule-guard.py` has no
   equivalent today; this is new surface.
+- **Per-repo override (`icg-2i8`), "signed" clarified**: not a bespoke
+  cryptographic signing scheme with its own key to manage — an override
+  file is "signed" in the sense that it only takes effect after going
+  through the exact same Layer 1/2 release-integrity pipeline as any other
+  rule-pack change (commit, `icg-ci` gates, human review), and is only
+  trusted by a host once it's part of a release the trust pointer (Layer
+  4) already vouches for. There is no override-specific private key that
+  could itself become a new agent-writable hole — the existing pipeline
+  *is* the signature.
 
 ## Data Models
+
+**Tier definitions**, for classifying a new `GuardedPattern` (referenced
+throughout Implementation Phases but not previously defined in one place):
+- **Tier 1** — stateless, decidable from a single invocation's command
+  text or a filesystem predicate alone. What Phase 1 ships.
+- **Tier 2** — deterministic, but needs state that persists *across*
+  invocations (e.g. "did a `git pull` happen earlier in this session").
+  What Phase 2's state store exists for.
+- **Tier 3** — not reliably decidable from command syntax at all; the
+  same command is legitimate in some contexts and dangerous in others
+  (the canonical example: `git worktree add`). Never a `deny` — at most a
+  non-blocking, heuristic `additionalContext` warning, and only if ever
+  pursued at all (see "Out of scope for now").
 
 Sketch of a rule pack entry — format (YAML/TOML/Rust struct/etc.) not yet
 chosen, this is the field set regardless of format:
@@ -190,6 +232,15 @@ GuardedPattern:
     release forward is deliberate/manual, but reverting an already-
     adopted bad one stays automatic — different risk profiles, not a
     contradiction.
+  - **`icg update` doesn't need to be restricted to a human-attributable
+    session.** `docs/notes/runtime-config-vs-hardcoded.md` requires that
+    reload isn't triggered by something the guarded agent controls — but
+    what actually matters is *what* gets loaded, not *who* asked for the
+    check. The trust pointer (Layer 4) already constrains that to
+    whatever a human already vetted and released; the guarded agent
+    running `icg update` itself can only cause an early adoption of
+    something already-trusted, never cause anything untrusted to load. No
+    additional restriction needed.
   - Nothing shipped in later phases is meaningfully tamper-resistant until
     this phase lands — without it, this project reproduces
     `org-rule-guard.py`'s existing self-edit gap under a new name, just
@@ -201,8 +252,11 @@ GuardedPattern:
       to the Write/Edit path), Vault/OpenBao destructive verbs (the core
       motivating gap — `kv destroy`, `secrets disable`, `policy delete`,
       token/lease revoke), `ssd`/`ssd-large` storage class, bare-SHA image
-      pinning, force-push, stale-HEAD-before-push (`icg-2m8`), `.beads/`
-      protection (`.git` file-vs-directory check, not a path block),
+      pinning, force-push, stale-HEAD-before-push (`icg-2m8` — the one
+      Tier 1 rule with a live remote check, a deliberate, scoped exception
+      to the engine's zero-I/O rule since `git push` is already a network
+      operation; see Architecture), `.beads/` protection (`.git`
+      file-vs-directory check, not a path block),
       deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
       ready to retarget at `bf` once it's deprecated), `needle cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
@@ -225,6 +279,16 @@ GuardedPattern:
       de-risk the mechanism early — considered and deliberately deferred
       to notes only, not adopted as a bead; see
       `docs/notes/ideas-ledger.md`.)
+
+      **`additionalContext`-channel rules are Claude-Code-only for now** —
+      per `docs/notes/multi-harness-integration.md`, Codex's hook schema
+      accepts the field but doesn't yet honor it, so a warning sent that
+      way would be silently dropped on Codex, violating the "every rule
+      needs an actionable redirect" principle on that harness. Any rule
+      that reaches for `additionalContext` needs an explicit Codex
+      fallback (most likely downgrading to `deny` there until Codex's
+      hook implementation catches up) rather than assuming the same
+      behavior on both front-ends.
 - [ ] **Out of scope for now:** per-worker git worktree isolation for
       NEEDLE (Tier 3) — not a good fit for command-pattern matching, since
       the identical `git worktree add` command is legitimate in other
@@ -247,7 +311,13 @@ GuardedPattern:
       - `icg-z5n` — Codex hook-version compatibility matrix in `icg-ci`
       - `icg-2i8` — per-repo signed override (routed through Layer 1/2)
       - `icg-59u` — practice/dry-run mode (ships only with the mandatory
-        persistent active-indicator the kill pass required)
+        persistent active-indicator the kill pass required). Near-miss
+        feedback deliberately does **not** rely on `additionalContext` —
+        given that channel isn't honored on Codex yet (see Phase 3), a
+        practice-mode report needs to reach both harnesses identically;
+        the persistent banner requirement already covers this, surfaced
+        directly rather than through a hook-response field either harness
+        might drop.
       - `icg-d3i` — Docker destructive-ops pack (new Phase-1-shaped pack,
         same architecture as `vault`)
 - [ ] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
@@ -257,10 +327,13 @@ GuardedPattern:
       section:
       - `icg-4p8` — guard CI/build pods on iad-ci, including this
         project's own `icg-ci` release pipeline
-      - `icg-2m8` — stale-HEAD push guard (compares tracked vs. actual
-        remote HEAD before `git push`; revised, simpler mechanism per user
-        direction — a deliberate, scoped exception to the no-I/O-hot-path
-        rule, since `git push` is already a network operation)
+      - `icg-2m8` — stale-HEAD push guard, the shipped form of ledger
+        finalist #2 ("shared-tree collision protection") after user
+        revision (compares tracked vs. actual remote HEAD before
+        `git push`, a simpler mechanism than the originally-proposed
+        cross-process `/proc` scanning — a deliberate, scoped exception
+        to the no-I/O-hot-path rule, since `git push` is already a
+        network operation)
       - `icg-4bu` — graduated fail-open→fail-closed policy for guard
         crashes: fails open until the guard's reliability is validated
         (tied to `icg-2ck`'s poison-pill health signal), then shifts to
@@ -276,6 +349,13 @@ GuardedPattern:
         deprecation (see Overview)
       - README's "What this does not do" section — done directly, not a
         bead (see `README.md`)
+
+      Finalists #3 (dead-man's-switch SCRAM), #4 (guard-as-MCP-server),
+      and #5 (separation of duties: author ≠ approver) were considered and
+      **deliberately deferred to notes only, not adopted as beads**, per
+      user direction — same treatment as run 1's finalist #10. See
+      `docs/notes/ideas-ledger.md`'s second-run section for their full
+      reasoning if revisited later.
 - [ ] **Explicitly not attempted:** narrowing the existing `org-rule-guard.py`
       kubectl-mutation block down to "only ArgoCD-managed resources" —
       doing so accurately requires live cluster state, which trades away
@@ -291,11 +371,10 @@ GuardedPattern:
 - **Value-derivation helpers' Phase 1 inclusion**: scoped to Phase 3 as a
   judgment call, not an explicit decision — worth revisiting once Phase
   1's actual rule count makes the manual-authoring cost concrete.
-- **`beads`-in-`bf` question — leaning more firmly toward "keep it here"
-  as of 2026-08-13**: with `bf` itself now confirmed heading toward
-  deprecation (see the Architecture section and `icg-1vj`), embedding the
-  `.beads/` protection check inside a tool that's about to be superseded
-  would just mean redoing this work again at the next cutover. Not
-  formally closed, but the deprecation news is a real point in favor of
-  keeping it in this project rather than inside whichever bead CLI happens
-  to be canonical this month.
+- ~~`beads`-in-`bf` question~~ — **resolved 2026-08-13: stays in this
+  project.** With `bf` itself now confirmed heading toward deprecation
+  (see the Architecture section and `icg-1vj`), embedding the `.beads/`
+  protection check inside a tool that's about to be superseded would just
+  mean redoing this work again at the next cutover. Phase 1 already
+  unconditionally depends on this answer, so leaving it formally open any
+  longer served no purpose — the deprecation news settles it.
