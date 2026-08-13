@@ -72,9 +72,38 @@ pack handles exactly this).
 
 ## How to apply
 
-This project should not duplicate rules 1–5 above — those stay
-`org-rule-guard.py`'s job. The open scope is: (a) the Bash-channel secret
-gap, (b) Vault/OpenBao destructive verbs, (c) whichever of the
-"No" rows in the table above are worth mechanical enforcement rather than
-documentation-only trust. Not all of them necessarily are — see
-`docs/plan/plan.md`'s open questions on scope.
+The original framing here — "this project should not duplicate rules 1–5" —
+assumed indefinite coexistence with `org-rule-guard.py`. That's stale: per
+`docs/plan/plan.md`'s Overview, `org-rule-guard.py` "is expected to be
+deprecated once this project's coverage supersedes it" (2026-08-13
+direction), and coexistence is now explicitly an interim state, not the end
+state. The plan already absorbs pieces of the five rules above rather than
+avoiding them:
+
+- **Rule 3 (`:latest` image tags)** — Phase 1's `image-tag` pack extends the
+  existing `:latest` check with the bare-SHA half of the same policy
+  (plan.md's Architecture section), so as of Phase 1 this project's own pack
+  covers both halves of rule 3, not just the gap.
+- **Rule 5 (credential values)** — Phase 1 reuses `org-rule-guard.py`'s own
+  secret-scanning regex machinery to close exactly the Bash-channel gap
+  documented above (rule 5 only fires on the Write/Edit path today). The
+  Write/Edit path itself isn't moving yet.
+- **Rule 4 (mutating `kubectl`)** — deliberately excluded, not scheduled for
+  absorption at all: plan.md's "Explicitly not attempted" phase item rules
+  out narrowing the blanket kubectl-mutation block, because doing so
+  accurately needs live cluster state that would break this project's
+  zero-I/O determinism. This rule stays `org-rule-guard.py`'s alone even
+  after the others are absorbed.
+- **Rules 1–2 (`.github/workflows`, `kind: Job`/`CronJob`)** — no phase in
+  plan.md picks these up yet. They remain solely `org-rule-guard.py`'s job
+  for now — not because of a standing "don't duplicate" policy, but simply
+  because nothing has scheduled the absorption.
+
+`icg-53q` (Phase 5) is the concrete marker of the trajectory: an
+install-time smoke test against `org-rule-guard.py`, explicitly framed as
+"interim... pending that hook's eventual deprecation," not as a permanent
+coexistence check. Beyond rule absorption, the open scope is still (a)
+Vault/OpenBao destructive verbs (the original motivating gap) and (b)
+whichever other "No" rows in the table above are worth mechanical
+enforcement rather than documentation-only trust — see `docs/plan/plan.md`'s
+open questions on scope.
