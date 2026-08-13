@@ -52,6 +52,22 @@ it's validated. These are two different questions — "did this one check
 error out" vs. "is the guard even still running" — and only the second one
 is allowed to graduate away from fail-open over time.
 
+**Open implementation question `icg-4bu` doesn't resolve on its own:**
+"fail closed when the process is dead" needs *something* to notice the
+process is gone and substitute a deny — a standing watchdog is exactly the
+"guard as a standing daemon" architecture Lens-1 idea #69 was killed for
+during ideation (real architecture change for unclear benefit against the
+current per-invocation model). Leading hypothesis, **not yet confirmed**:
+the fail-closed transition doesn't need icg's own watchdog at all if
+Claude Code's and Codex's own PreToolUse hook systems already have
+configurable behavior for "the hook command errored, timed out, or never
+responded" — in which case "fail closed" means configuring *that* harness
+setting once reliability is validated, not building new standing
+infrastructure. Needs verifying against both harnesses' actual hook specs
+before `icg-4bu` is implemented; if neither harness supports it, this
+finalist needs to either accept the standing-daemon cost after all or be
+re-scoped.
+
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `vault`, `storage-class`, `image-tag` (extends
 `org-rule-guard.py`'s existing `:latest` check with the bare-SHA half),
@@ -62,8 +78,11 @@ existing regex machinery to a path it doesn't currently cover — see Phase
 1), and `misc` (`needle cleanup`, deprecated-bead-CLI usage). `kubectl` is
 deliberately **not** a pack here — its mutating-verb coverage stays
 `org-rule-guard.py`'s job (see "Explicitly not attempted" below), so it's
-not one of the binaries the PATH-wrapper needs its own rules for. Modeled
-on
+not one of the binaries the PATH-wrapper needs its own rules for. The
+`:latest`/secrets/kubectl claims above are grounded in
+`docs/notes/existing-enforcement-infrastructure.md`'s direct read of
+`org-rule-guard.py`'s source — re-check that note if the source ever
+changes. Modeled on
 `destructive_command_guard`'s per-vendor pack structure — see
 `docs/research/prior-art.md`. Modularity here means "one file per tool
 domain," not "runtime-editable by anyone."
@@ -92,9 +111,12 @@ somewhere the guarded agent can cause to become trusted).
 **Integration point: resolved — both layers, both harnesses**, not a
 choice between them. Two independent, complementary front-ends sharing one
 engine:
-- A **PATH-wrapper binary** shadowing `vault`/`bao`/`git`/`docker`/etc. (not
-  `kubectl` — see Architecture's pack list) — harness-agnostic by
-  construction, proven pattern already running in this
+- A **PATH-wrapper binary** shadowing whatever binaries the *currently
+  loaded* rule packs cover — `vault`/`bao`/`git` from Phase 1, `docker`
+  once Phase 4's `icg-d3i` pack ships (not before; shadowing a binary with
+  no pack behind it yet is a pure no-op) — never `kubectl` (see
+  Architecture's pack list). Harness-agnostic by construction, proven
+  pattern already running in this
   environment (`~/.local/bin/cargo` transparently intercepts `cargo test`;
   see `CLAUDE.md`'s "Rust Build/Test Offloading"). Confirmed to work for
   Codex CLI too: its command execution is `$PATH`-resolved (`execvp`-style),
@@ -113,11 +135,22 @@ for Codex is still maturing). Full reasoning in
 
 ## Components
 
-- **Engine** — reads a command description (from PreToolUse JSON on stdin,
-  or from wrapped-command argv via the PATH-wrapper), segments shell lines
-  the same way `org-rule-guard.py`'s `check_bash` does (splits on
-  `;`/`&&`/`||`, skips `sudo`/env-assignment/wrapper prefixes), and matches
-  the resulting tokens against loaded rule packs.
+- **Engine** — two input modes, not one. **Command mode**: reads a command
+  description (from PreToolUse JSON on stdin, or from wrapped-command argv
+  via the PATH-wrapper), segments shell lines the same way
+  `org-rule-guard.py`'s `check_bash` does (splits on `;`/`&&`/`||`, skips
+  `sudo`/env-assignment/wrapper prefixes), and matches the resulting tokens
+  against loaded rule packs — what `vault`, `git`, `secrets`, `misc`, and
+  `tmux` packs use. **Content mode**: reads a file path + content (from
+  `Write`/`Edit` PreToolUse JSON, mirroring exactly how `org-rule-guard.py`
+  itself is triggered today), matched against packs whose checks are
+  content regexes, not command-text ones. `storage-class` and `image-tag`
+  are content-mode packs — the target text is a YAML manifest line
+  (`storageClassName: ssd`, `image: foo:latest`), never a shell command, so
+  they can only ever fire on the hook front-end, never the PATH-wrapper
+  (which only ever sees a subprocess exec, not a file write). The `beads`
+  pack is content-mode-adjacent but distinct again — its predicate reads
+  the filesystem at the target repo root, not the write's own content.
 - **Rule packs** — one file per tool domain (see Architecture). Each entry
   carries a pattern (or, for non-regex checks like the `beads` pack, a
   predicate — see Data Models), a tier, a severity, an explanation, and a
@@ -126,6 +159,16 @@ for Codex is still maturing). Full reasoning in
   for intent-preserving substitutions — stripping `--force`, never a
   silent intent-swap), or `additionalContext` (non-blocking warning). See
   `docs/notes/redirect-not-just-block.md`.
+- **`icg` binary — one binary, two dispatch modes.** Invoked under its own
+  name (`icg update`, `icg status`, `icg new-pack`, ...), it runs
+  subcommand dispatch for administrative commands. Invoked under a
+  shadowed tool's name (`vault`, `git`, `docker`, ...) — via symlinks
+  installed earlier in `$PATH` than the real binaries, the same shape as
+  the existing `cargo` precedent — it dispatches on `argv[0]` instead:
+  runs the engine's command-mode checks, and if allowed, execs the real
+  binary (found further down `$PATH`) with the original arguments
+  untouched. This is the PATH-wrapper front-end's actual implementation,
+  not a separate component from it.
 - **`beads` pack's check**, specifically: not a path-prefix block. Gates on
   whether `.git` at the target repo's root is a directory (shared/primary
   tree — the actual concurrent-corruption risk) or a file (linked
@@ -186,8 +229,12 @@ Pack:
 
 GuardedPattern:
   id: string
-  check: Regex | Predicate       # most packs use a command-text regex; `beads`
-                                  # uses a filesystem predicate (.git file vs. dir)
+  check: CommandRegex | ContentRegex | Predicate
+                                  # CommandRegex: matched against shell tokens (vault/git/secrets/
+                                  # misc/tmux packs, both front-ends). ContentRegex: matched
+                                  # against Write/Edit file content (storage-class/image-tag
+                                  # packs, hook front-end only — see Components' Engine).
+                                  # Predicate: filesystem check (beads pack's .git file-vs-dir).
   tier: 1 | 2 | 3                # deterministic-difficulty tier, see Implementation Phases
   severity: Critical | High | Medium
   explanation: string            # why this is dangerous
@@ -233,14 +280,16 @@ GuardedPattern:
     adopted bad one stays automatic — different risk profiles, not a
     contradiction.
   - **`icg update` doesn't need to be restricted to a human-attributable
-    session.** `docs/notes/runtime-config-vs-hardcoded.md` requires that
-    reload isn't triggered by something the guarded agent controls — but
-    what actually matters is *what* gets loaded, not *who* asked for the
-    check. The trust pointer (Layer 4) already constrains that to
-    whatever a human already vetted and released; the guarded agent
-    running `icg update` itself can only cause an early adoption of
-    something already-trusted, never cause anything untrusted to load. No
-    additional restriction needed.
+    session** — a deliberate, documented exception to
+    `docs/notes/runtime-config-vs-hardcoded.md`'s general rule (updated to
+    state this exception explicitly, so the two documents agree): what
+    actually matters is *what* gets loaded, not *who* asked for the check.
+    The trust pointer (Layer 4) already constrains that to whatever a
+    human already vetted and released; the guarded agent running `icg
+    update` itself can only cause an early adoption of something
+    already-trusted, never cause anything untrusted to load. This
+    exception holds only because release-cutting is separately human-gated
+    — it would not hold without that.
   - Nothing shipped in later phases is meaningfully tamper-resistant until
     this phase lands — without it, this project reproduces
     `org-rule-guard.py`'s existing self-edit gap under a new name, just
@@ -251,25 +300,39 @@ GuardedPattern:
       `org-rule-guard.py`'s existing regex machinery, currently only wired
       to the Write/Edit path), Vault/OpenBao destructive verbs (the core
       motivating gap — `kv destroy`, `secrets disable`, `policy delete`,
-      token/lease revoke), `ssd`/`ssd-large` storage class, bare-SHA image
-      pinning, force-push, stale-HEAD-before-push (`icg-2m8` — the one
-      Tier 1 rule with a live remote check, a deliberate, scoped exception
-      to the engine's zero-I/O rule since `git push` is already a network
-      operation; see Architecture), `.beads/` protection (`.git`
-      file-vs-directory check, not a path block),
+      token/lease revoke), `ssd`/`ssd-large` storage class, **both halves**
+      of image-tag pinning (`:latest` re-detection *and* bare-SHA — the
+      `image-tag` pack fully absorbs this rule from `org-rule-guard.py` as
+      of Phase 1, not just the bare-SHA gap; see Architecture and
+      `docs/notes/existing-enforcement-infrastructure.md`), force-push,
+      stale-HEAD-before-push (`icg-2m8` — the one Tier 1 rule with a live
+      remote check, a deliberate, scoped exception to the engine's
+      zero-I/O rule since `git push` is already a network operation; see
+      Architecture), `.beads/` protection (`.git` file-vs-directory check,
+      not a path block),
       deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
       ready to retarget at `bf` once it's deprecated), `needle cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
       reason for all of these — skip `updatedInput`/`additionalContext`
       complexity for v1.
-- [ ] **Phase 2 — cross-invocation state.** Flush-before-pull /
-      flush-before-repair ordering (Tier 2) — needs the state-store
-      component, which nothing in Phase 1 requires. Author against
-      whichever bead CLI is canonical at implementation time (`bf`'s
-      `sync --flush-only` flag today; `bead-rs`'s `sync flush-only`
-      subcommand has different syntax entirely if the cutover happens
-      first — see `icg-1vj`, don't assume the two are interchangeable
-      here).
+- [ ] **Phase 2 — cross-invocation state (Tier 2).** Two rules, stated by
+      enforcement direction, not by parallel naming — they have *opposite*
+      required polarity and "flush-before-X" phrasing for both would
+      invite building one of them backwards:
+      - **Deny `bf sync --flush-only` unless a `git pull` has already
+        happened in this session.** Flushing before pulling is the
+        prohibited sequence — pull must come first.
+      - **Deny `bf doctor --repair` unless a flush has already happened in
+        this session.** Here flush must come *first* — the opposite
+        requirement from the rule above, despite the superficially similar
+        name.
+
+      Needs the state-store component, which nothing in Phase 1 requires.
+      Author against whichever bead CLI is canonical at implementation
+      time (`bf`'s `sync --flush-only` flag today; `bead-rs`'s `sync
+      flush-only` subcommand has different syntax entirely if the cutover
+      happens first — see `icg-1vj`, don't assume the two are
+      interchangeable here).
 - [ ] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
       for confirmed intent-preserving cases (force-push flag stripping is
       the clearest candidate) and `additionalContext` for non-blocking
@@ -368,9 +431,16 @@ GuardedPattern:
 - ~~Release-gating mechanism~~ — **resolved 2026-08-13**, see Phase 0.
 - ~~Hot-reload trigger specifics~~ — **resolved 2026-08-13**, see Phase 0
   and Components.
-- **Value-derivation helpers' Phase 1 inclusion**: scoped to Phase 3 as a
-  judgment call, not an explicit decision — worth revisiting once Phase
-  1's actual rule count makes the manual-authoring cost concrete.
+- **Value-derivation helpers' Phase 1 inclusion — known tradeoff, not an
+  oversight.** `docs/notes/redirect-not-just-block.md` uses the exact
+  `image-tag` bare-SHA case as its own canonical illustration of an
+  inadequate redirect ("pin a semver tag read from
+  `containers/<name>/VERSION`" vs. embedding the real value). Phase 1
+  ships that identical rule without value-derivation anyway, deliberately
+  deferred to Phase 3 for scope reasons — this project reproduces, for one
+  phase, the specific shortfall its own design notes single out. Accepted
+  consciously, not silently; revisit once Phase 1's actual rule count
+  makes the manual-authoring cost of doing it earlier concrete.
 - ~~`beads`-in-`bf` question~~ — **resolved 2026-08-13: stays in this
   project.** With `bf` itself now confirmed heading toward deprecation
   (see the Architecture section and `icg-1vj`), embedding the `.beads/`

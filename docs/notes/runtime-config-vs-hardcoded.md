@@ -87,7 +87,17 @@ question — independent of code-vs-data style:
    and only the second one needs to stay outside the agent's control. This
    gets the maintainability win of "configurable" without reopening the
    self-edit hole, as long as reload isn't triggered by anything the
-   guarded agent's own session can invoke.
+   guarded agent's own session can invoke — **unless a separate,
+   independently-verified content gate already fully constrains what a
+   reload could possibly adopt.** `irreversible-command-gate` (see
+   `docs/plan/plan.md` Phase 0) relaxes this specific requirement on
+   exactly that basis: release-cutting is already human-gated, so the set
+   of things a reload could ever pull in is already fully human-controlled
+   before the agent's `icg update` trigger enters the picture at all — the
+   trigger can only cause *early* adoption of something already vetted,
+   never adoption of something untrusted. Absent that separate content
+   gate, the stricter original rule stands: don't let the agent trigger
+   reload either.
 
 **Recommendation:** keep the evaluation engine simple and hardcoded — no
 reason to depart from `org-rule-guard.py`'s proven zero-I/O, fails-open
