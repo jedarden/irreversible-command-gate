@@ -177,7 +177,11 @@ GuardedPattern:
       for confirmed intent-preserving cases (force-push flag stripping is
       the clearest candidate) and `additionalContext` for non-blocking
       warnings; add value-derivation helpers so deny reasons embed real
-      answers instead of pointers.
+      answers instead of pointers. (Ideation finalist #10 proposed
+      building the force-push `updatedInput` case in Phase 1 instead, to
+      de-risk the mechanism early — considered and deliberately deferred
+      to notes only, not adopted as a bead; see
+      `docs/notes/ideas-ledger.md`.)
 - [ ] **Out of scope for now:** per-worker git worktree isolation for
       NEEDLE (Tier 3) — not a good fit for command-pattern matching, since
       the identical `git worktree add` command is legitimate in other
@@ -185,6 +189,24 @@ GuardedPattern:
       throwaway-worktree `.beads`-conflict pattern this project's own
       `beads` pack now depends on). If ever pursued, it would be a
       heuristic, non-blocking `additionalContext` warning, not a `deny`.
+- [ ] **Phase 4 — from ideation (2026-08-13 `/plan-idea-gen` run).** Nine
+      finalists adopted, tracked as beads (`bf` prefix `icg`), full
+      dossiers and kill-pass objections in `docs/notes/ideas-ledger.md`.
+      Deepens Phase 0's release-integrity/self-update work and Phase 1's
+      rule coverage rather than opening new phases of its own:
+      - `icg-rri` — auto-denial-becomes-test (strengthens Layer 1; needs a
+        curation step so the suite doesn't grow unbounded)
+      - `icg-ncf` — `icg new-pack` scaffolding tool
+      - `icg-2ck` — poison-pill auto-rollback (extends Phase 0's Layer 4)
+      - `icg-l75` — canary rollout via NEEDLE `--identifier` (concrete
+        Layer 4 staged-rollout implementation)
+      - `icg-1tj` — `icg status` with blind-spot self-report
+      - `icg-z5n` — Codex hook-version compatibility matrix in `icg-ci`
+      - `icg-2i8` — per-repo signed override (routed through Layer 1/2)
+      - `icg-59u` — practice/dry-run mode (ships only with the mandatory
+        persistent active-indicator the kill pass required)
+      - `icg-d3i` — Docker destructive-ops pack (new Phase-1-shaped pack,
+        same architecture as `vault`)
 - [ ] **Explicitly not attempted:** narrowing the existing `org-rule-guard.py`
       kubectl-mutation block down to "only ArgoCD-managed resources" —
       doing so accurately requires live cluster state, which trades away
