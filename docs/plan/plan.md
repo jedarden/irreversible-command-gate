@@ -6,6 +6,7 @@ A guard for AI coding/automation agents that intercepts commands before they
 execute and blocks irreversible or destructive operations, while letting
 normal operations through unimpeded — extending the coverage of the
 existing `org-rule-guard.py` PreToolUse hook rather than replacing it.
+Covers both **Claude Code and Codex CLI** as guarded harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
 knowing the sanctioned alternative, actionable in its very next step — not
@@ -15,10 +16,16 @@ just that its attempt failed. See `docs/notes/redirect-not-just-block.md`.
 fallible agent that might miss a subtlety of a rule it's already trying to
 follow — not a defense against a genuinely adversarial or compromised one.
 `org-rule-guard.py` doesn't protect its own source from being edited by the
-agent it guards, and nothing in this plan changes that fact for whatever
-this project ships either, unless the deploy-location open question below
-gets resolved in a way that removes the guarded agent's write access to the
-rule source. Don't oversell this project's guarantees past that line.
+agent it guards; this project only improves on that if the deploy-location
+and release-gating requirements below (Architecture, Phase 0) are actually
+implemented, not just designed. Don't oversell this project's guarantees
+past that line.
+
+**Known coverage gap, accepted rather than solved:** OpenAI's cloud-hosted
+Codex (ChatGPT web / async "Codex cloud tasks") runs in an OpenAI-managed
+container this project has no reach into — neither the PATH-wrapper nor a
+native hook adapter can see it. Only the local `codex` and Claude Code CLIs
+are covered. See `docs/notes/multi-harness-integration.md`.
 
 ## Architecture
 
@@ -31,63 +38,77 @@ logic itself.
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `vault`, `storage-class`, `image-tag` (extends
 `org-rule-guard.py`'s existing `:latest` check with the bare-SHA half),
-`git` (force-push), `beads` (`.beads/` path block), `tmux` (bare NATO
-session names), and `misc` (`needle cleanup`, `br` vs `bf`). Modeled on
-`destructive_command_guard`'s per-vendor pack structure — see
-`docs/research/prior-art.md`. Modularity here means "one file per tool
-domain," not "runtime-editable by anyone" — see the next point.
+`git` (force-push), `beads` (`.beads/` protection — see the refined check
+below), `tmux` (bare NATO session names), and `misc` (`needle cleanup`,
+`br` vs `bf`). Modeled on `destructive_command_guard`'s per-vendor pack
+structure — see `docs/research/prior-art.md`. Modularity here means "one
+file per tool domain," not "runtime-editable by anyone."
 
 **Deploy location: rule source must not simply live under
-`~/.claude/hooks/` again.** Per `docs/notes/runtime-config-vs-hardcoded.md`,
-the axis that matters is not hardcoded-vs-configurable, it's whether the
-rule source (in either form) sits somewhere the guarded agent's own process
-can write to. `org-rule-guard.py` currently doesn't clear this bar. This
-project should: this repo is the authoring location (human-edited,
-git-tracked, PR/commit-reviewed like everything else here), and the
-*deployed, live-checked* copy needs to reach the guarded agent's hook
-invocation through a path the agent's own tool calls don't control — a
-pull-based sync (matching this environment's own declarative-config /
-ArgoCD pattern) rather than a file the agent can `Write`/`Edit` directly.
-The exact mechanism is an open question below; the constraint is settled.
+`~/.claude/hooks/` again**, and self-updating from GitHub Releases only
+counts as satisfying this if release-cutting itself is human-gated — see
+Phase 0 and `docs/notes/self-update-and-release-gating.md`. Per
+`docs/notes/runtime-config-vs-hardcoded.md`, the axis that matters is not
+hardcoded-vs-configurable, it's whether the rule source sits somewhere the
+guarded agent's own process can write to (or, for the self-update case,
+somewhere the guarded agent can cause to become trusted).
 
-**Integration point: still open between two shapes**, both with working
-precedent already in this environment:
-- A second Claude Code PreToolUse hook, wired via `settings.json` like
-  `org-rule-guard.py` — simplest, but only protects Claude Code sessions
-  specifically.
-- A standalone binary agents shell out through via PATH interception —
-  this environment already runs exactly this pattern for a different
-  purpose: `~/.local/bin/cargo` transparently intercepts `cargo test` calls
-  and redirects them to remote CI (see `CLAUDE.md`'s "Rust Build/Test
-  Offloading" section) without the calling agent doing anything different.
-  A `vault`/`bao`/`git`/`kubectl` wrapper on PATH could apply the same
-  proven interception shape across NEEDLE-dispatched workers and any other
-  harness, not just Claude Code.
+**Integration point: resolved — both layers, both harnesses**, not a
+choice between them. Two independent, complementary front-ends sharing one
+engine:
+- A **PATH-wrapper binary** shadowing `vault`/`bao`/`git`/`kubectl`/etc. —
+  harness-agnostic by construction, proven pattern already running in this
+  environment (`~/.local/bin/cargo` transparently intercepts `cargo test`;
+  see `CLAUDE.md`'s "Rust Build/Test Offloading"). Confirmed to work for
+  Codex CLI too: its command execution is `$PATH`-resolved (`execvp`-style),
+  and its sandbox restricts filesystem/network, not binary discovery.
+- **Native PreToolUse hook adapters** for both Claude Code and Codex CLI —
+  Codex ships a structurally similar hook (deny/allow + `updatedInput`, on
+  Bash and `apply_patch`), confirmed via OpenAI's own docs, though notably
+  younger and still stabilizing (~5 months old as of this writing) than
+  Claude Code's.
 
-See Open Questions for why this isn't decided yet.
+Rationale for running both rather than picking one: they have non-
+overlapping blind spots (a wrapper misses structured/MCP tool calls a hook
+sees; a hook is only as reliable as its harness's own implementation, which
+for Codex is still maturing). Full reasoning in
+`docs/notes/multi-harness-integration.md`.
 
 ## Components
 
 - **Engine** — reads a command description (from PreToolUse JSON on stdin,
-  or from wrapped-command argv if the PATH-wrapper shape is chosen),
-  segments shell lines the same way `org-rule-guard.py`'s `check_bash` does
-  (splits on `;`/`&&`/`||`, skips `sudo`/env-assignment/wrapper prefixes),
-  and matches the resulting tokens against loaded rule packs.
+  or from wrapped-command argv via the PATH-wrapper), segments shell lines
+  the same way `org-rule-guard.py`'s `check_bash` does (splits on
+  `;`/`&&`/`||`, skips `sudo`/env-assignment/wrapper prefixes), and matches
+  the resulting tokens against loaded rule packs.
 - **Rule packs** — one file per tool domain (see Architecture). Each entry
-  carries a pattern, a tier (from the deterministic-difficulty scoping
-  below), a severity, an explanation, and a redirect specification.
+  carries a pattern (or, for non-regex checks like the `beads` pack, a
+  predicate — see Data Models), a tier, a severity, an explanation, and a
+  redirect specification.
 - **Redirect dispatch** — chooses `deny` (default), `updatedInput` (only
-  for intent-preserving substitutions — stripping `--force`, not swapping
-  in a different operation), or `additionalContext` (non-blocking warning).
-  See `docs/notes/redirect-not-just-block.md` for the boundary between
-  these.
+  for intent-preserving substitutions — stripping `--force`, never a
+  silent intent-swap), or `additionalContext` (non-blocking warning). See
+  `docs/notes/redirect-not-just-block.md`.
+- **`beads` pack's check**, specifically: not a path-prefix block. Gates on
+  whether `.git` at the target repo's root is a directory (shared/primary
+  tree — the actual concurrent-corruption risk) or a file (linked
+  worktree, by construction not shared fleet state). See
+  `docs/notes/beads-protection-scope.md` for why the originally-proposed
+  `~/`-boundary heuristic doesn't hold and this is the precise substitute.
+- **Self-updater** — polls the GitHub Releases API on an interval (not on
+  every hook invocation — no network I/O added to the hot path itself),
+  swaps in new rule packs without dropping in-flight checks.
+  `crates.io`'s API as a secondary version-check signal if this ships as a
+  published crate. See `docs/notes/self-update-and-release-gating.md` for
+  why release-cutting, specifically, needs its own human gate separate
+  from routine CI-on-push.
 - **Value-derivation helpers** (later phase, not Phase 1) — for cases where
   the correct redirect value is programmatically derivable at check-time
   (e.g. the real semver from `containers/<name>/VERSION`), embed it
   directly in the deny reason rather than pointing at where to look.
 - **State store** (later phase, not Phase 1) — minimal persistent marker
-  needed only for Tier 2 ordering rules (see Implementation Phases).
-  `org-rule-guard.py` has no equivalent today; this is new surface.
+  needed only for Tier 2 ordering rules. `org-rule-guard.py` has no
+  equivalent today; this is new surface.
 
 ## Data Models
 
@@ -96,14 +117,15 @@ chosen, this is the field set regardless of format:
 
 ```
 Pack:
-  id: string                     # "vault", "git", "storage-class", ...
+  id: string                     # "vault", "git", "storage-class", "beads", ...
   tool_keywords: [string]        # executables this pack inspects, e.g. ["vault", "bao"]
   safe_patterns: [Pattern]       # explicitly-allowed shapes, checked first
   guarded_patterns: [GuardedPattern]
 
 GuardedPattern:
   id: string
-  pattern: regex
+  check: Regex | Predicate       # most packs use a command-text regex; `beads`
+                                  # uses a filesystem predicate (.git file vs. dir)
   tier: 1 | 2 | 3                # deterministic-difficulty tier, see Implementation Phases
   severity: Critical | High | Medium
   explanation: string            # why this is dangerous
@@ -115,23 +137,33 @@ GuardedPattern:
 
 ## Implementation Phases
 
-- [ ] **Phase 0 — deploy path.** Resolve and implement the rule-source
-      deploy location (see Architecture's deploy-location constraint and
-      the open question below). Nothing shipped in Phase 1 is meaningfully
-      tamper-resistant until this lands — without it, this project just
-      reproduces `org-rule-guard.py`'s existing self-edit gap under a new
-      name.
-- [ ] **Phase 1 — Tier 1 rules, deny-only.** The rules already scoped as
-      "same difficulty as what `org-rule-guard.py` already does":
-      Bash-channel secret-value scanning (reuse `org-rule-guard.py`'s
-      existing regex machinery, currently only wired to the Write/Edit
-      path), Vault/OpenBao destructive verbs (the core motivating gap —
-      `kv destroy`, `secrets disable`, `policy delete`, token/lease
-      revoke), `ssd`/`ssd-large` storage class, bare-SHA image pinning,
-      force-push, `.beads/` path block, `br` vs `bf`, `needle cleanup`,
-      bare NATO tmux session targeting. Redirect channel: `deny` +
-      specific reason for all of these — skip `updatedInput`/
-      `additionalContext` complexity for v1.
+- [ ] **Phase 0 — deploy path.**
+  - Build the `icg-ci` Argo WorkflowTemplate (`declarative-config/k8s/iad-ci/argo-workflows/`)
+    on the existing `forge-ci`/`needle-ci`/`agentscribe-ci`/`sigil-ci`
+    pattern — Rust binary → GitHub Release, never GitHub Actions.
+  - Decide and implement the release-gating mechanism: CI builds/tests on
+    every push (fine), but cutting a *release* the self-updater will trust
+    needs a distinct human-gated step. Not yet decided which specific
+    mechanism (manual `gh release create`, a protected/approval-gated
+    workflow, or something else) — see Open Questions.
+  - Decide and implement the hot-reload trigger cadence and mechanism
+    (poll interval; process restart vs. in-memory rule-pack swap).
+  - Nothing shipped in later phases is meaningfully tamper-resistant until
+    this phase lands — without it, this project reproduces
+    `org-rule-guard.py`'s existing self-edit gap under a new name, just
+    with extra steps.
+- [ ] **Phase 1 — Tier 1 rules, both front-ends, deny-only.** Build the
+      PATH-wrapper binary and both hook adapters (Claude Code, Codex).
+      Rule set: Bash-channel secret-value scanning (reuse
+      `org-rule-guard.py`'s existing regex machinery, currently only wired
+      to the Write/Edit path), Vault/OpenBao destructive verbs (the core
+      motivating gap — `kv destroy`, `secrets disable`, `policy delete`,
+      token/lease revoke), `ssd`/`ssd-large` storage class, bare-SHA image
+      pinning, force-push, `.beads/` protection (`.git` file-vs-directory
+      check, not a path block), `br` vs `bf`, `needle cleanup`, bare NATO
+      tmux session targeting. Redirect channel: `deny` + specific reason
+      for all of these — skip `updatedInput`/`additionalContext`
+      complexity for v1.
 - [ ] **Phase 2 — cross-invocation state.** `bf` flush-before-pull /
       flush-before-repair ordering (Tier 2) — needs the state-store
       component, which nothing in Phase 1 requires.
@@ -143,8 +175,10 @@ GuardedPattern:
 - [ ] **Out of scope for now:** per-worker git worktree isolation for
       NEEDLE (Tier 3) — not a good fit for command-pattern matching, since
       the identical `git worktree add` command is legitimate in other
-      contexts elsewhere in this environment. If ever pursued, it would be
-      a heuristic, non-blocking `additionalContext` warning, not a `deny`.
+      contexts elsewhere in this environment (including the sanctioned
+      throwaway-worktree `.beads`-conflict pattern this project's own
+      `beads` pack now depends on). If ever pursued, it would be a
+      heuristic, non-blocking `additionalContext` warning, not a `deny`.
 - [ ] **Explicitly not attempted:** narrowing the existing `org-rule-guard.py`
       kubectl-mutation block down to "only ArgoCD-managed resources" —
       doing so accurately requires live cluster state, which trades away
@@ -154,19 +188,19 @@ GuardedPattern:
 
 ## Open Questions
 
-- **Integration shape**: second Claude Code PreToolUse hook (simple,
-  Claude-Code-only) vs. PATH-wrapper standalone binary (broader coverage
-  across NEEDLE/other harnesses, proven pattern via the existing
-  `cargo`/`cargo-remote` wrapper, more engineering). Blocks Phase 1's
-  concrete implementation, not just Phase 0.
-- **Deploy mechanism specifics**: given "pull-based, agent doesn't control
-  the reload" is the resolved constraint, what actually triggers the pull —
-  a timer, a separate always-running process, something else? And does the
-  live copy live outside `~/.claude/hooks/` entirely, or in a
-  root-owned/agent-unwritable path within it?
-- **`.beads/` scope boundary**: does path-blocking `.beads/` writes belong
-  in this project at all, or should that protection live inside `bf`
-  itself? Flagged as unresolved since the project's original scaffold.
-- **Value-derivation helpers' Phase 1 inclusion**: scoped to Phase 3 above
-  as a judgment call, not an explicit decision — worth revisiting once
-  Phase 1's actual rule count makes the manual-authoring cost concrete.
+- **Release-gating mechanism specifics**: constraint is settled (release-
+  cutting needs a human gate, separate from CI-on-push), but the actual
+  mechanism isn't chosen — manual `gh release create`, a signed-release
+  requirement, an approval-gated workflow, or something else.
+- **Hot-reload trigger specifics**: poll interval, and process-restart vs.
+  in-memory rule-pack hot-swap.
+- **Value-derivation helpers' Phase 1 inclusion**: scoped to Phase 3 as a
+  judgment call, not an explicit decision — worth revisiting once Phase
+  1's actual rule count makes the manual-authoring cost concrete.
+- **`beads`-in-`bf` question, narrower now than originally framed**: given
+  the refined check lives at the filesystem-predicate level (`.git`
+  file-vs-directory), does it still make more sense inside `bf` itself
+  (which already knows about worktrees and shared trees) than as a generic
+  guard pack here? Leaning toward keeping it here since the rest of the
+  `beads` pack's context (this is a *guard*, invoked pre-execution) doesn't
+  naturally live inside `bf`, but not settled.
