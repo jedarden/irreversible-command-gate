@@ -4,8 +4,12 @@
 
 A guard for AI coding/automation agents that intercepts commands before they
 execute and blocks irreversible or destructive operations, while letting
-normal operations through unimpeded — extending the coverage of the
-existing `org-rule-guard.py` PreToolUse hook rather than replacing it.
+normal operations through unimpeded — currently extending the coverage of
+the existing `org-rule-guard.py` PreToolUse hook, not replacing it, but
+**`org-rule-guard.py` is expected to be deprecated once this project's
+coverage supersedes it** (per user direction 2026-08-13) — coexistence is
+an interim state, not the intended end state. `icg-53q` (install-time
+smoke test confirming no conflict between the two) is framed accordingly.
 Covers both **Claude Code and Codex CLI** as guarded harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
@@ -207,6 +211,32 @@ GuardedPattern:
         persistent active-indicator the kill pass required)
       - `icg-d3i` — Docker destructive-ops pack (new Phase-1-shaped pack,
         same architecture as `vault`)
+- [ ] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
+      Six finalists adopted as beads, one (explicit README non-goals)
+      done directly rather than tracked as a bead. Full dossiers and
+      kill-pass objections in `docs/notes/ideas-ledger.md`'s second-run
+      section:
+      - `icg-4p8` — guard CI/build pods on iad-ci, including this
+        project's own `icg-ci` release pipeline
+      - `icg-2m8` — stale-HEAD push guard (compares tracked vs. actual
+        remote HEAD before `git push`; revised, simpler mechanism per user
+        direction — a deliberate, scoped exception to the no-I/O-hot-path
+        rule, since `git push` is already a network operation)
+      - `icg-4bu` — graduated fail-open→fail-closed policy for guard
+        crashes: fails open until the guard's reliability is validated
+        (tied to `icg-2ck`'s poison-pill health signal), then shifts to
+        fail-closed
+      - `icg-3xz` — ReDoS check on submitted rule packs in `icg-ci`
+      - `icg-4mu` — per-rule enable/disable feature flag, revised from a
+        dedicated fast-path kill-switch to reuse the normal Layer 1/2
+        release pipeline (tradeoff: no longer sub-release-cycle-fast —
+        flagged as a real, unresolved gap if true emergency speed is ever
+        needed)
+      - `icg-53q` — install-time smoke test vs. `org-rule-guard.py`,
+        framed as an interim check pending that hook's eventual
+        deprecation (see Overview)
+      - README's "What this does not do" section — done directly, not a
+        bead (see `README.md`)
 - [ ] **Explicitly not attempted:** narrowing the existing `org-rule-guard.py`
       kubectl-mutation block down to "only ArgoCD-managed resources" —
       doing so accurately requires live cluster state, which trades away
