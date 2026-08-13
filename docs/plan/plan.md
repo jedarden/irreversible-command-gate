@@ -141,11 +141,17 @@ GuardedPattern:
   - Build the `icg-ci` Argo WorkflowTemplate (`declarative-config/k8s/iad-ci/argo-workflows/`)
     on the existing `forge-ci`/`needle-ci`/`agentscribe-ci`/`sigil-ci`
     pattern — Rust binary → GitHub Release, never GitHub Actions.
-  - Decide and implement the release-gating mechanism: CI builds/tests on
-    every push (fine), but cutting a *release* the self-updater will trust
-    needs a distinct human-gated step. Not yet decided which specific
-    mechanism (manual `gh release create`, a protected/approval-gated
-    workflow, or something else) — see Open Questions.
+  - Implement release-integrity verification per
+    `docs/notes/release-integrity-verification.md`: a fixed
+    deny-must-still-fire regression suite plus a structured coverage-diff
+    check (removed patterns, widened `safe_patterns`, narrowed
+    `destructive_patterns`) as required, build-failing `icg-ci` gates
+    (Layer 1); human review informed by that generated diff report, not
+    raw regex (Layer 2); and a self-updater that tracks a separately-
+    advancing trust pointer rather than bare "latest release" (Layer 4,
+    minimal form). Build provenance/signing and staged/canary rollout
+    (Layer 3 and Layer 4's full form) are real hardening but explicitly
+    deferred, not required for Phase 0 — see that note's "How to apply."
   - Decide and implement the hot-reload trigger cadence and mechanism
     (poll interval; process restart vs. in-memory rule-pack swap).
   - Nothing shipped in later phases is meaningfully tamper-resistant until
@@ -188,10 +194,12 @@ GuardedPattern:
 
 ## Open Questions
 
-- **Release-gating mechanism specifics**: constraint is settled (release-
-  cutting needs a human gate, separate from CI-on-push), but the actual
-  mechanism isn't chosen — manual `gh release create`, a signed-release
-  requirement, an approval-gated workflow, or something else.
+- **Release-gating mechanism, narrowed**: the verification layers are
+  chosen (regression suite + coverage-diff + informed review + trust
+  pointer, per `docs/notes/release-integrity-verification.md`), but the
+  literal trigger for cutting a release still isn't — manual `gh release
+  create`, an approval-gated workflow, or something else. Smaller decision
+  than before, not a fully open one.
 - **Hot-reload trigger specifics**: poll interval, and process-restart vs.
   in-memory rule-pack hot-swap.
 - **Value-derivation helpers' Phase 1 inclusion**: scoped to Phase 3 as a
