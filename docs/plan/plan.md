@@ -6,11 +6,18 @@ A guard for AI coding/automation agents that intercepts commands before they
 execute and blocks irreversible or destructive operations, while letting
 normal operations through unimpeded — currently extending the coverage of
 the existing `org-rule-guard.py` PreToolUse hook, not replacing it, but
-**`org-rule-guard.py` is expected to be deprecated once this project's
-coverage supersedes it** (per user direction 2026-08-13) — coexistence is
-an interim state, not the intended end state. `icg-53q` (install-time
-smoke test confirming no conflict between the two) is framed accordingly.
-Covers both **Claude Code and Codex CLI** as guarded harnesses.
+**`org-rule-guard.py` is expected to shrink toward deprecation as this
+project's coverage supersedes it** (per user direction 2026-08-13) —
+coexistence is an interim state, not the intended end state. **Realistic
+end state, stated precisely rather than aspirationally**: not full
+removal — the "Explicitly not attempted" phase item permanently excludes
+`org-rule-guard.py`'s kubectl-mutation rule from absorption (zero-I/O
+determinism reasons that don't go away), so `org-rule-guard.py` is
+expected to shrink to a kubectl-only rump hook, not disappear entirely.
+"Deprecated" means "superseded for everything except that one rule," not
+"deleted." `icg-53q` (install-time smoke test confirming no conflict
+between the two) is framed accordingly. Covers both **Claude Code and
+Codex CLI** as guarded harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
 knowing the sanctioned alternative, actionable in its very next step — not
@@ -139,9 +146,18 @@ for Codex is still maturing). Full reasoning in
   description (from PreToolUse JSON on stdin, or from wrapped-command argv
   via the PATH-wrapper), segments shell lines the same way
   `org-rule-guard.py`'s `check_bash` does (splits on `;`/`&&`/`||`, skips
-  `sudo`/env-assignment/wrapper prefixes), and matches the resulting tokens
-  against loaded rule packs — what `vault`, `git`, `secrets`, `misc`, and
-  `tmux` packs use. **Content mode**: reads a file path + content (from
+  `sudo`/env-assignment/wrapper prefixes), **basename-matches each token
+  against `tool_keywords`** (strips directory components before
+  comparing, so `/usr/local/bin/vault kv destroy` matches the `vault` pack
+  the same as a bare `vault kv destroy` would), and matches the resulting
+  tokens against loaded rule packs — what `vault`, `git`, `secrets`,
+  `misc`, and `tmux` packs use. This basename-match only helps the *hook*
+  front-end (`icg hook`), which sees the full command string regardless of
+  how it would resolve — the PATH-wrapper front-end can't be reached at
+  all by an absolute-path invocation, since it never goes through `$PATH`
+  resolution in the first place; that's a limitation of the wrapper
+  specifically, not of command-mode tokenization. See README's "What this
+  does not do" for the wrapper-specific version of this caveat. **Content mode**: reads a file path + content (from
   `Write`/`Edit` PreToolUse JSON, mirroring exactly how `org-rule-guard.py`
   itself is triggered today), matched against packs whose checks are
   content regexes, not command-text ones. `storage-class` and `image-tag`
@@ -159,22 +175,47 @@ for Codex is still maturing). Full reasoning in
   for intent-preserving substitutions — stripping `--force`, never a
   silent intent-swap), or `additionalContext` (non-blocking warning). See
   `docs/notes/redirect-not-just-block.md`.
-- **`icg` binary — one binary, two dispatch modes.** Invoked under its own
-  name (`icg update`, `icg status`, `icg new-pack`, ...), it runs
-  subcommand dispatch for administrative commands. Invoked under a
+
+  **Each channel is realized differently per front-end — same decision,
+  different mechanism.** On the hook front-end (`icg hook`), all three map
+  directly onto the native JSON response fields (`permissionDecision:
+  deny`, `updatedInput`, `additionalContext`) both harnesses already
+  support. On the PATH-wrapper front-end there's no such protocol — the
+  wrapper itself has to implement the equivalent: `deny` means refusing to
+  exec the real binary and printing the reason to stderr with a non-zero
+  exit; `updatedInput` means rewriting `argv` before exec (e.g. dropping
+  `--force`) rather than filling a JSON field; `additionalContext` means
+  printing the warning to stderr and still exec'ing normally. Phase 3's
+  flagship `updatedInput` example (force-push stripping, a `git`-pack
+  command-mode rule) fires on both front-ends, so both realizations need
+  to exist together, not just the hook-side one.
+- **`icg` binary — one binary, three dispatch modes.** (1) Invoked under
+  its own name (`icg update`, `icg status`, `icg new-pack`, ...), it runs
+  subcommand dispatch for administrative commands. (2) Invoked under a
   shadowed tool's name (`vault`, `git`, `docker`, ...) — via symlinks
   installed earlier in `$PATH` than the real binaries, the same shape as
   the existing `cargo` precedent — it dispatches on `argv[0]` instead:
   runs the engine's command-mode checks, and if allowed, execs the real
   binary (found further down `$PATH`) with the original arguments
   untouched. This is the PATH-wrapper front-end's actual implementation,
-  not a separate component from it.
-- **`beads` pack's check**, specifically: not a path-prefix block. Gates on
-  whether `.git` at the target repo's root is a directory (shared/primary
-  tree — the actual concurrent-corruption risk) or a file (linked
-  worktree, by construction not shared fleet state). See
-  `docs/notes/beads-protection-scope.md` for why the originally-proposed
-  `~/`-boundary heuristic doesn't hold and this is the precise substitute.
+  not a separate component from it. (3) Invoked as `icg hook` by Claude
+  Code's/Codex's own `settings.json`/`hooks.json` wiring, it reads
+  PreToolUse JSON from stdin instead of argv — the native-hook front-end's
+  implementation, and the only mode content-mode packs (`storage-class`,
+  `image-tag`) can run under, since a Write/Edit never goes through the
+  PATH-wrapper at all.
+- **`beads` pack's check** is a conjunction, not a bare predicate: (a) the
+  write target is under `.beads/`, **and** (b) `.git` at that repo's root
+  is a directory (shared/primary tree — the actual concurrent-corruption
+  risk) rather than a file (linked worktree, by construction not shared
+  fleet state). Condition (a) is an ordinary path-prefix match — what's
+  refined from the originally-proposed design is condition (b), replacing
+  a `~/`-boundary heuristic that didn't hold with the precise git-type
+  check. Stating this as "not a path block" without the conjunction would
+  be a serious over-match: nearly every normal (non-worktree) repo has
+  `.git` as a directory, so condition (b) alone would deny writes
+  anywhere in almost any repo, not just `.beads/`. See
+  `docs/notes/beads-protection-scope.md` for the full reasoning.
 - **Self-updater** — user-triggered, not polling (resolved 2026-08-13; see
   Phase 0). On trigger, checks the GitHub Releases API once and performs
   an in-memory rule-pack hot-swap without dropping in-flight checks or
@@ -223,9 +264,19 @@ chosen, this is the field set regardless of format:
 ```
 Pack:
   id: string                     # "vault", "git", "storage-class", "beads", ...
-  tool_keywords: [string]        # executables this pack inspects, e.g. ["vault", "bao"]
+  tool_keywords: [string]        # command-mode packs: executables this pack inspects,
+                                  # e.g. ["vault", "bao"]. Unused by content-mode packs.
+  applies_to: [FileGlob]         # content-mode packs: which Write/Edit targets this pack
+                                  # scans, e.g. ["*.yaml", "*.yml"] for storage-class/image-tag
+                                  # -- mirrors org-rule-guard.py's own .yaml/.yml scoping for
+                                  # its equivalent rules. Unused by command-mode packs.
   safe_patterns: [Pattern]       # explicitly-allowed shapes, checked first
   guarded_patterns: [GuardedPattern]
+
+Pattern:                         # lighter than GuardedPattern -- no tier/severity/redirect,
+  check: CommandRegex | ContentRegex | Predicate
+                                  # just a shape that's explicitly allowed and skips the rest
+                                  # of the pack's guarded_patterns for that command/write.
 
 GuardedPattern:
   id: string
@@ -234,7 +285,9 @@ GuardedPattern:
                                   # misc/tmux packs, both front-ends). ContentRegex: matched
                                   # against Write/Edit file content (storage-class/image-tag
                                   # packs, hook front-end only — see Components' Engine).
-                                  # Predicate: filesystem check (beads pack's .git file-vs-dir).
+                                  # Predicate: filesystem check -- beads pack combines this
+                                  # (.git file-vs-dir) WITH a .beads/ path match via applies_to;
+                                  # the predicate alone is not the whole check, see Components.
   tier: 1 | 2 | 3                # deterministic-difficulty tier, see Implementation Phases
   severity: Critical | High | Medium
   explanation: string            # why this is dangerous
@@ -308,8 +361,9 @@ GuardedPattern:
       stale-HEAD-before-push (`icg-2m8` — the one Tier 1 rule with a live
       remote check, a deliberate, scoped exception to the engine's
       zero-I/O rule since `git push` is already a network operation; see
-      Architecture), `.beads/` protection (`.git` file-vs-directory check,
-      not a path block),
+      Architecture), `.beads/` protection (path-under-`.beads/` **and**
+      `.git` file-vs-directory check — see Components, both conditions
+      required),
       deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
       ready to retarget at `bf` once it's deprecated), `needle cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
@@ -384,10 +438,14 @@ GuardedPattern:
       - `icg-d3i` — Docker destructive-ops pack (new Phase-1-shaped pack,
         same architecture as `vault`)
 - [ ] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
-      Six finalists adopted as beads, one (explicit README non-goals)
-      done directly rather than tracked as a bead. Full dossiers and
-      kill-pass objections in `docs/notes/ideas-ledger.md`'s second-run
-      section:
+      Like Phase 4, this isn't a new sequential build phase — its
+      findings fold into earlier phases' actual scope (`icg-2m8` is a
+      Phase 1 rule; `icg-4bu` is discussed under Architecture's fail-open
+      policy; both are listed here only because this is where their
+      ideation provenance and bead IDs are tracked). Six finalists adopted
+      as beads, one (explicit README non-goals) done directly rather than
+      tracked as a bead. Full dossiers and kill-pass objections in
+      `docs/notes/ideas-ledger.md`'s second-run section:
       - `icg-4p8` — guard CI/build pods on iad-ci, including this
         project's own `icg-ci` release pipeline
       - `icg-2m8` — stale-HEAD push guard, the shipped form of ledger
@@ -409,7 +467,13 @@ GuardedPattern:
         needed)
       - `icg-53q` — install-time smoke test vs. `org-rule-guard.py`,
         framed as an interim check pending that hook's eventual
-        deprecation (see Overview)
+        deprecation (see Overview). **Success criterion, precise**: during
+        coexistence, icg's `image-tag` pack and `org-rule-guard.py`'s rule
+        3 will both independently fire on the same `:latest` violation —
+        that's expected, redundant-but-harmless double-deny, not a
+        failure. The test passes on consistent verdicts (both deny, or
+        both allow) and only fails on a *divergent* verdict (one denies,
+        the other doesn't) — that's the actual conflict worth catching.
       - README's "What this does not do" section — done directly, not a
         bead (see `README.md`)
 

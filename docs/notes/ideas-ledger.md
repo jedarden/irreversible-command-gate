@@ -471,5 +471,5 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
     - **Pitch:** An install-time check that confirms the new guard doesn't conflict with or duplicate `org-rule-guard.py`'s existing denials.
     - **Why it won:** Its hybrid pairing, H4 (`#92` migration guide `×` `#82` smoke test), was cut by cluster cap; #82 was selected standalone, with #92 noted as "stronger combined with it at implementation time" rather than required now.
     - **Complexity:** S
-    - **First step:** Write an install-time check that runs both `org-rule-guard.py` and icg's hook adapter against the same known-bad test command, confirming they don't double-fire or conflict.
+    - **First step:** Write an install-time check that runs both `org-rule-guard.py` and icg's hook adapter against the same known-bad test command, confirming they agree (both deny, or both allow) — expected redundant double-deny is a pass, not a failure; only a *divergent* verdict (one denies, the other doesn't) fails the check. See `docs/plan/plan.md`'s Phase 5 entry for `icg-53q`.
     - **Strongest surviving objection:** Per the Overview, coexistence with `org-rule-guard.py` is "an interim state, not the intended end state" — this smoke test's relevance is temporary by design, valuable only until that hook is actually deprecated.
