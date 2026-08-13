@@ -60,19 +60,35 @@ constraint (shape 3: "pull-based, agent doesn't control the reload") and
 merely looking like it does while leaving the exact same hole open at
 fleet scale.
 
-## Hot-reload
+## Hot-reload — resolved 2026-08-13: user-triggered, not polling
 
-Once a new release is confirmed available (via the GitHub Releases API,
-polled on an interval, not on every hook invocation — avoid adding network
-I/O to the security-critical hot path itself), the running guard swaps in
-the new rule packs without dropping in-flight checks. Mechanism specifics
-(process restart vs. live rule-pack hot-swap in memory) are implementation
-detail, not yet decided.
+Not an automatic background poll on an interval. An operator explicitly
+triggers an update (e.g. an `icg update` command) when they want a
+specific host to pick up a new release — at that point the guard checks
+the GitHub Releases API once and performs an in-memory rule-pack hot-swap,
+never a process restart, so the host being updated never blocks its own
+guarded agent sessions while updating. No fleet-wide synchronization point
+either: triggering one host doesn't require pausing or waiting on any
+other host, which is what makes the already-adopted canary-rollout design
+(`icg-l75`) actually work as "one host first, the rest later" rather than
+an all-or-nothing flip. This also means there's no network I/O on the
+guarded-check hot path at all under normal operation — the only time the
+guard talks to GitHub is the moment a human explicitly asks it to.
+
+Worth noting the asymmetry this creates with `icg-2ck`'s poison-pill
+auto-rollback: adopting a new release forward is deliberate and manual,
+but *reverting* an already-adopted bad one stays fully automatic. That's
+intentional, not an inconsistency — the two directions carry different
+risk (a human choosing when to move forward vs. a machine needing to react
+immediately when something already live turns out to be bad).
 
 ## How to apply
 
-Phase 0 (deploy path) now has two concrete sub-requirements: build the
-`icg-ci` WorkflowTemplate for the build/release pipeline, and make sure
+Phase 0 (deploy path) now has three concrete sub-requirements: build the
+`icg-ci` WorkflowTemplate for the build/release pipeline; make sure
 release-cutting specifically — not just pushing to `main` — is the human-
-gated step. Don't let "we have CI" stand in for "releases are gated";
-they're different claims.
+gated step (resolved: manual `gh release create` once `icg-ci` passes, no
+additional approval-workflow layer, since Layers 1/2/4 already provide
+sufficient protection); and implement the self-updater as user-triggered
+rather than polling. Don't let "we have CI" stand in for "releases are
+gated"; they're different claims.
