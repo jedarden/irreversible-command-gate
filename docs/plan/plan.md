@@ -42,11 +42,24 @@ logic itself.
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `vault`, `storage-class`, `image-tag` (extends
 `org-rule-guard.py`'s existing `:latest` check with the bare-SHA half),
-`git` (force-push), `beads` (`.beads/` protection — see the refined check
-below), `tmux` (bare NATO session names), and `misc` (`needle cleanup`,
-`br` vs `bf`). Modeled on `destructive_command_guard`'s per-vendor pack
-structure — see `docs/research/prior-art.md`. Modularity here means "one
-file per tool domain," not "runtime-editable by anyone."
+`git` (force-push, stale-HEAD-before-push), `beads` (`.beads/` protection
+— see the refined check below), `tmux` (bare NATO session names), and
+`misc` (`needle cleanup`, deprecated-bead-CLI usage). Modeled on
+`destructive_command_guard`'s per-vendor pack structure — see
+`docs/research/prior-art.md`. Modularity here means "one file per tool
+domain," not "runtime-editable by anyone."
+
+**`misc` pack's deprecated-bead-CLI rule is data-driven by design, not
+hardcoded to one tool name.** `br` (beads_rust) is already deprecated in
+favor of `bf` (bead-forge) — but `bf` is itself being prepared for
+deprecation in favor of `bead-rs` (`~/bead-rs`, binary `bead`, a separate
+clean-room reimplementation, not the same lineage as `br` despite the
+similar name). The rule's actual policy is "don't invoke a deprecated bead
+CLI," which outlives any single tool's canonical status — the pack stores
+"currently canonical" and "deprecated" as data (a small list this rule
+reads), not as logic hardcoded to `bf` specifically, so the eventual
+`bf`→`bead` cutover is a one-line data change, not a rule rewrite. See
+Phase 1 and `icg-1vj`.
 
 **Deploy location: rule source must not simply live under
 `~/.claude/hooks/` again**, and self-updating from GitHub Releases only
@@ -99,13 +112,16 @@ for Codex is still maturing). Full reasoning in
   worktree, by construction not shared fleet state). See
   `docs/notes/beads-protection-scope.md` for why the originally-proposed
   `~/`-boundary heuristic doesn't hold and this is the precise substitute.
-- **Self-updater** — polls the GitHub Releases API on an interval (not on
-  every hook invocation — no network I/O added to the hot path itself),
-  swaps in new rule packs without dropping in-flight checks.
-  `crates.io`'s API as a secondary version-check signal if this ships as a
-  published crate. See `docs/notes/self-update-and-release-gating.md` for
-  why release-cutting, specifically, needs its own human gate separate
-  from routine CI-on-push.
+- **Self-updater** — user-triggered, not polling (resolved 2026-08-13; see
+  Phase 0). On trigger, checks the GitHub Releases API once and performs
+  an in-memory rule-pack hot-swap without dropping in-flight checks or
+  restarting the process — no network I/O on the guarded-check hot path
+  itself, since the check only happens on an explicit trigger, never
+  automatically. `crates.io`'s API as a secondary version-check signal if
+  this ships as a published crate. See
+  `docs/notes/self-update-and-release-gating.md` for why release-cutting,
+  specifically, needs its own human gate separate from routine
+  CI-on-push.
 - **Value-derivation helpers** (later phase, not Phase 1) — for cases where
   the correct redirect value is programmatically derivable at check-time
   (e.g. the real semver from `containers/<name>/VERSION`), embed it
@@ -156,8 +172,24 @@ GuardedPattern:
     minimal form). Build provenance/signing and staged/canary rollout
     (Layer 3 and Layer 4's full form) are real hardening but explicitly
     deferred, not required for Phase 0 — see that note's "How to apply."
-  - Decide and implement the hot-reload trigger cadence and mechanism
-    (poll interval; process restart vs. in-memory rule-pack swap).
+  - **Release-cutting trigger, resolved (2026-08-13):** a human manually
+    runs `gh release create` once `icg-ci` has passed on the target
+    commit — no additional approval-workflow layer beyond that. Layers
+    1/2/4 already provide sufficient protection; a heavier gated-workflow
+    mechanism isn't needed on top of them.
+  - **Hot-reload, resolved (2026-08-13):** user-triggered, not automatic
+    background polling — an operator explicitly triggers an update (e.g.
+    an `icg update` command) when they want a host to pick up a new
+    release. On trigger, the guard performs an in-memory rule-pack
+    hot-swap, never a process restart, so the host being updated never
+    blocks its own guarded agent sessions while updating. No fleet-wide
+    synchronization point — triggering one host doesn't require pausing
+    or waiting on any other host, consistent with the already-adopted
+    canary-rollout design (`icg-l75`). This is asymmetric with
+    `icg-2ck`'s poison-pill auto-rollback by design: adopting a new
+    release forward is deliberate/manual, but reverting an already-
+    adopted bad one stays automatic — different risk profiles, not a
+    contradiction.
   - Nothing shipped in later phases is meaningfully tamper-resistant until
     this phase lands — without it, this project reproduces
     `org-rule-guard.py`'s existing self-edit gap under a new name, just
@@ -169,14 +201,21 @@ GuardedPattern:
       to the Write/Edit path), Vault/OpenBao destructive verbs (the core
       motivating gap — `kv destroy`, `secrets disable`, `policy delete`,
       token/lease revoke), `ssd`/`ssd-large` storage class, bare-SHA image
-      pinning, force-push, `.beads/` protection (`.git` file-vs-directory
-      check, not a path block), `br` vs `bf`, `needle cleanup`, bare NATO
-      tmux session targeting. Redirect channel: `deny` + specific reason
-      for all of these — skip `updatedInput`/`additionalContext`
+      pinning, force-push, stale-HEAD-before-push (`icg-2m8`), `.beads/`
+      protection (`.git` file-vs-directory check, not a path block),
+      deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
+      ready to retarget at `bf` once it's deprecated), `needle cleanup`,
+      bare NATO tmux session targeting. Redirect channel: `deny` + specific
+      reason for all of these — skip `updatedInput`/`additionalContext`
       complexity for v1.
-- [ ] **Phase 2 — cross-invocation state.** `bf` flush-before-pull /
+- [ ] **Phase 2 — cross-invocation state.** Flush-before-pull /
       flush-before-repair ordering (Tier 2) — needs the state-store
-      component, which nothing in Phase 1 requires.
+      component, which nothing in Phase 1 requires. Author against
+      whichever bead CLI is canonical at implementation time (`bf`'s
+      `sync --flush-only` flag today; `bead-rs`'s `sync flush-only`
+      subcommand has different syntax entirely if the cutover happens
+      first — see `icg-1vj`, don't assume the two are interchangeable
+      here).
 - [ ] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
       for confirmed intent-preserving cases (force-push flag stripping is
       the clearest candidate) and `additionalContext` for non-blocking
@@ -246,21 +285,17 @@ GuardedPattern:
 
 ## Open Questions
 
-- **Release-gating mechanism, narrowed**: the verification layers are
-  chosen (regression suite + coverage-diff + informed review + trust
-  pointer, per `docs/notes/release-integrity-verification.md`), but the
-  literal trigger for cutting a release still isn't — manual `gh release
-  create`, an approval-gated workflow, or something else. Smaller decision
-  than before, not a fully open one.
-- **Hot-reload trigger specifics**: poll interval, and process-restart vs.
-  in-memory rule-pack hot-swap.
+- ~~Release-gating mechanism~~ — **resolved 2026-08-13**, see Phase 0.
+- ~~Hot-reload trigger specifics~~ — **resolved 2026-08-13**, see Phase 0
+  and Components.
 - **Value-derivation helpers' Phase 1 inclusion**: scoped to Phase 3 as a
   judgment call, not an explicit decision — worth revisiting once Phase
   1's actual rule count makes the manual-authoring cost concrete.
-- **`beads`-in-`bf` question, narrower now than originally framed**: given
-  the refined check lives at the filesystem-predicate level (`.git`
-  file-vs-directory), does it still make more sense inside `bf` itself
-  (which already knows about worktrees and shared trees) than as a generic
-  guard pack here? Leaning toward keeping it here since the rest of the
-  `beads` pack's context (this is a *guard*, invoked pre-execution) doesn't
-  naturally live inside `bf`, but not settled.
+- **`beads`-in-`bf` question — leaning more firmly toward "keep it here"
+  as of 2026-08-13**: with `bf` itself now confirmed heading toward
+  deprecation (see the Architecture section and `icg-1vj`), embedding the
+  `.beads/` protection check inside a tool that's about to be superseded
+  would just mean redoing this work again at the next cutover. Not
+  formally closed, but the deprecation news is a real point in favor of
+  keeping it in this project rather than inside whichever bead CLI happens
+  to be canonical this month.
