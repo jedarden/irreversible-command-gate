@@ -209,7 +209,7 @@ mitigation for Codex's confirmed-still-churning hook API specifically.
 
 6. **Codex hook-version compatibility matrix** (Gap round, G4) — bead `icg-z5n`
    - **Pitch:** Run `icg-ci` against a matrix of recent Codex CLI releases to catch hook-API drift before it ships.
-   - **Why it won:** Directly answers the completeness-gap round's third identified hole — "no mitigation for Codex's confirmed-still-churning hook API specifically" — grounded in the Overview's own note that Codex's hook API is "notably younger and still stabilizing (~5 months old as of this writing)."
+   - **Why it won:** Directly answers the completeness-gap round's third identified hole — "no mitigation for Codex's confirmed-still-churning hook API specifically" — grounded in plan.md's Architecture section, which notes Codex's hook API is "notably younger and still stabilizing (~5 months old as of this writing)."
    - **Complexity:** M
    - **First step:** Add an `icg-ci` matrix job that runs the Codex hook adapter against a pinned set of recent Codex CLI releases, failing the build on adapter/API drift.
    - **Strongest surviving objection:** The matrix itself needs ongoing maintenance as Codex's still-churning hook API keeps moving — a compatibility check against a moving target is only as good as how often the pinned version set gets refreshed.

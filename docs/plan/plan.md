@@ -238,12 +238,19 @@ for Codex is still maturing). Full reasoning in
   anywhere in almost any repo, not just `.beads/`. See
   `docs/notes/beads-protection-scope.md` for the full reasoning.
 - **Self-updater** — user-triggered, not polling (resolved 2026-08-13; see
-  Phase 0). On trigger, checks the GitHub Releases API once and performs
-  an in-memory rule-pack hot-swap without dropping in-flight checks or
-  restarting the process — no network I/O on the guarded-check hot path
-  itself, since the check only happens on an explicit trigger, never
-  automatically. `crates.io`'s API as a secondary version-check signal if
-  this ships as a published crate. See
+  Phase 0). **No persistent process to update** — the guard is
+  per-invocation (a fresh process per check, per the "no standing daemon"
+  architecture decision — see `icg-4bu`'s discussion in Architecture), so
+  "hot-swap" doesn't mean an in-memory reload of a resident process.
+  Concretely: on trigger, `icg update` checks the GitHub Releases API
+  once, downloads the new rule-pack artifact, and atomically replaces the
+  on-disk artifact (write-then-rename) — any check process already
+  mid-invocation reads a consistent old-*or*-new version, never a
+  partially-written one, and every check spawned after the rename picks
+  up the new version automatically, with nothing to "restart." No network
+  I/O on the guarded-check hot path itself, since the check only happens
+  on an explicit trigger, never automatically. `crates.io`'s API as a
+  secondary version-check signal if this ships as a published crate. See
   `docs/notes/self-update-and-release-gating.md` for why release-cutting,
   specifically, needs its own human gate separate from routine
   CI-on-push.
@@ -268,11 +275,16 @@ for Codex is still maturing). Full reasoning in
 
 **Tier definitions**, for classifying a new `GuardedPattern` (referenced
 throughout Implementation Phases but not previously defined in one place):
-- **Tier 1** — stateless, decidable from a single invocation's command
-  text or a filesystem predicate alone. What Phase 1 ships.
-- **Tier 2** — deterministic, but needs state that persists *across*
-  invocations (e.g. "did a `git pull` happen earlier in this session").
-  What Phase 2's state store exists for.
+- **Tier 1** — stateless, decidable from a single invocation alone:
+  command text, a filesystem predicate, or (the one documented exception,
+  `icg-2m8`) a single synchronous network check that doesn't depend on
+  anything from a prior invocation. "Stateless" is the actual dividing
+  line, not "no I/O" — Tier 1 vs. Tier 2 is about whether a check needs
+  memory of past invocations, not about what kind of check it runs. What
+  Phase 1 ships.
+- **Tier 2** — needs state that persists *across* invocations (e.g. "did a
+  `git pull` happen earlier in this session"). What Phase 2's state store
+  exists for.
 - **Tier 3** — not reliably decidable from command syntax at all; the
   same command is legitimate in some contexts and dangerous in others
   (the canonical example: `git worktree add`). Never a `deny` — at most a
@@ -308,12 +320,16 @@ GuardedPattern:
   check: CommandRegex | ContentRegex | Predicate
                                   # CommandRegex: matched against shell tokens (vault/git/misc/tmux
                                   # packs, both front-ends; secrets pack also uses CommandRegex but
-                                  # is hook-only despite the shared check type — see Components'
-                                  # Engine for why). ContentRegex: matched against Write/Edit file
-                                  # content (storage-class/image-tag packs, hook front-end only).
-                                  # Predicate: filesystem check -- beads pack combines this
-                                  # (.git file-vs-dir) WITH a .beads/ path match via applies_to;
-                                  # the predicate alone is not the whole check, see Components.
+                                  # is hook-only despite the shared check type — see Architecture
+                                  # for why). ContentRegex: matched against Write/Edit file
+                                  # content (storage-class/image-tag/beads packs, hook front-end
+                                  # only -- beads is content-mode-adjacent, same front-end
+                                  # restriction, since Write/Edit never reaches the wrapper).
+                                  # Predicate: a general custom-check-function umbrella, NOT
+                                  # filesystem-only -- covers beads' filesystem stat (combined
+                                  # with a .beads/ path match via applies_to, not the predicate
+                                  # alone), icg-2m8's synchronous network lookup (the Tier 1
+                                  # exception), and Phase 2's state-store-backed checks alike.
   tier: 1 | 2 | 3                # deterministic-difficulty tier, see Implementation Phases
   severity: Critical | High | Medium
   explanation: string            # why this is dangerous
@@ -348,9 +364,12 @@ GuardedPattern:
   - **Hot-reload, resolved (2026-08-13):** user-triggered, not automatic
     background polling — an operator explicitly triggers an update (e.g.
     an `icg update` command) when they want a host to pick up a new
-    release. On trigger, the guard performs an in-memory rule-pack
-    hot-swap, never a process restart, so the host being updated never
-    blocks its own guarded agent sessions while updating. No fleet-wide
+    release. On trigger, `icg update` atomically replaces the on-disk
+    rule-pack artifact (write-then-rename — see Components' Self-updater
+    for why this, not an in-memory reload, is the right framing given the
+    per-invocation architecture); nothing to restart, so the host being
+    updated never blocks its own guarded agent sessions while updating.
+    No fleet-wide
     synchronization point — triggering one host doesn't require pausing
     or waiting on any other host, consistent with the already-adopted
     canary-rollout design (`icg-l75`). This is asymmetric with
@@ -389,8 +408,8 @@ GuardedPattern:
       `docs/notes/existing-enforcement-infrastructure.md`), force-push,
       stale-HEAD-before-push (`icg-2m8` — the one Tier 1 rule with a live
       remote check, a deliberate, scoped exception to the engine's
-      zero-I/O rule since `git push` is already a network operation; see
-      Architecture), `.beads/` protection (path-under-`.beads/` **and**
+      zero-*network*-I/O rule since `git push` is already a network
+      operation; see Architecture), `.beads/` protection (path-under-`.beads/` **and**
       `.git` file-vs-directory check — see Components, both conditions
       required),
       deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
@@ -482,7 +501,7 @@ GuardedPattern:
         revision (compares tracked vs. actual remote HEAD before
         `git push`, a simpler mechanism than the originally-proposed
         cross-process `/proc` scanning — a deliberate, scoped exception
-        to the no-I/O-hot-path rule, since `git push` is already a
+        to the zero-*network*-I/O rule, since `git push` is already a
         network operation)
       - `icg-4bu` — graduated fail-open→fail-closed policy for guard
         crashes: fails open until the guard's reliability is validated

@@ -65,9 +65,13 @@ fleet scale.
 Not an automatic background poll on an interval. An operator explicitly
 triggers an update (e.g. an `icg update` command) when they want a
 specific host to pick up a new release — at that point the guard checks
-the GitHub Releases API once and performs an in-memory rule-pack hot-swap,
-never a process restart, so the host being updated never blocks its own
-guarded agent sessions while updating. No fleet-wide synchronization point
+the GitHub Releases API once and atomically replaces the on-disk rule-pack
+artifact (write-then-rename). There's no persistent guard process to
+restart in the first place — the architecture is per-invocation (a fresh
+process per check, per the "no standing daemon" decision plan.md's
+Architecture section makes for `icg-4bu`) — so "hot-swap" means the next
+spawned check simply reads the new artifact, not an in-memory reload of a
+resident process. No fleet-wide synchronization point
 either: triggering one host doesn't require pausing or waiting on any
 other host, which is what makes the already-adopted canary-rollout design
 (`icg-l75`) actually work as "one host first, the rest later" rather than
