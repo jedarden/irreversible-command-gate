@@ -10,14 +10,20 @@ the existing `org-rule-guard.py` PreToolUse hook, not replacing it, but
 project's coverage supersedes it** (per user direction 2026-08-13) —
 coexistence is an interim state, not the intended end state. **Realistic
 end state, stated precisely rather than aspirationally**: not full
-removal — the "Explicitly not attempted" phase item permanently excludes
-`org-rule-guard.py`'s kubectl-mutation rule from absorption (zero-I/O
-determinism reasons that don't go away), so `org-rule-guard.py` is
-expected to shrink to a kubectl-only rump hook, not disappear entirely.
-"Deprecated" means "superseded for everything except that one rule," not
-"deleted." `icg-53q` (install-time smoke test confirming no conflict
-between the two) is framed accordingly. Covers both **Claude Code and
-Codex CLI** as guarded harnesses.
+removal. Two things keep it alive under the plan's *current*, actually
+scheduled scope: (1) its kubectl-mutation rule is **permanently** excluded
+from absorption ("Explicitly not attempted" — zero-I/O determinism
+reasons that don't go away), and (2) its `.github/workflows` and `kind:
+Job`/`CronJob` rules aren't excluded on principle, just **not yet
+scheduled** by any phase (see
+`docs/notes/existing-enforcement-infrastructure.md`). So today's accurate
+claim is "shrinks to at least a kubectl-only rump, plus whichever of the
+workflows/Job-CronJob rules remain unscheduled" — not "kubectl-only,"
+until a future phase actually picks up (2). "Deprecated" means
+"superseded for everything a phase has scheduled," not "deleted." `icg-53q`
+(install-time smoke test confirming no conflict between the two) is
+framed accordingly. Covers both **Claude Code and Codex CLI** as guarded
+harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
 knowing the sanctioned alternative, actionable in its very next step — not
@@ -41,13 +47,18 @@ are covered. See `docs/notes/multi-harness-integration.md`.
 ## Architecture
 
 **Evaluation engine: hardcoded, not data-parsed.** Matches
-`org-rule-guard.py`'s proven design — zero I/O beyond stdin, fails open on
-any parse failure or exception ("a missed violation is recoverable, a stuck
-fleet is not"). No reason to depart from this for the dispatch/parsing
-logic itself. **One deliberate, scoped exception**: `icg-2m8`'s
+`org-rule-guard.py`'s proven design — **zero *network* I/O** beyond stdin,
+fails open on any parse failure or exception ("a missed violation is
+recoverable, a stuck fleet is not"). No reason to depart from this for the
+dispatch/parsing logic itself. This is a network-I/O restriction
+specifically, not a blanket "no I/O of any kind" claim — local filesystem
+reads the design already requires (the `beads` pack's `.git` stat check,
+rule-pack loading itself, value-derivation helpers reading a `VERSION`
+file) are fine and not exceptions to anything. **One deliberate, scoped
+exception to the *network*-I/O restriction**: `icg-2m8`'s
 stale-HEAD-before-push check needs a live remote lookup, justified only
 because `git push` is already a network operation — not a precedent for
-adding I/O to any other guarded command.
+adding network I/O to any other guarded command.
 
 **This fail-open guarantee is scoped to in-process errors** — a single
 check throwing or failing to parse always fails open, unconditionally,
@@ -82,8 +93,15 @@ separate units for `vault`, `storage-class`, `image-tag` (extends
 — see the refined check below), `tmux` (bare NATO session names), `secrets`
 (Bash-channel credential-value scanning, extending `org-rule-guard.py`'s
 existing regex machinery to a path it doesn't currently cover — see Phase
-1), and `misc` (`needle cleanup`, deprecated-bead-CLI usage). `kubectl` is
-deliberately **not** a pack here — its mutating-verb coverage stays
+1; **hook-front-end-only, not "both front-ends"** — its regex scans the
+*entire raw Bash command string* regardless of which executable is being
+invoked, which the PATH-wrapper's dispatch model structurally can't do:
+the wrapper is only ever invoked as one specific shadowed binary via
+`argv[0]`, so it never sees a command line for a binary it doesn't
+shadow, e.g. `echo "ghp_..." >> file`. Only the hook, which receives every
+Bash call's full command text regardless of executable, can realize
+this), and `misc` (`needle cleanup`, deprecated-bead-CLI usage). `kubectl`
+is deliberately **not** a pack here — its mutating-verb coverage stays
 `org-rule-guard.py`'s job (see "Explicitly not attempted" below), so it's
 not one of the binaries the PATH-wrapper needs its own rules for. The
 `:latest`/secrets/kubectl claims above are grounded in
@@ -179,8 +197,11 @@ for Codex is still maturing). Full reasoning in
   **Each channel is realized differently per front-end — same decision,
   different mechanism.** On the hook front-end (`icg hook`), all three map
   directly onto the native JSON response fields (`permissionDecision:
-  deny`, `updatedInput`, `additionalContext`) both harnesses already
-  support. On the PATH-wrapper front-end there's no such protocol — the
+  deny`, `updatedInput`, `additionalContext`) both harnesses accept in
+  their schema — though Codex doesn't yet *honor* `additionalContext`
+  specifically, same caveat as Phase 3 below; "accepts in schema" and
+  "acts on it" aren't the same claim. On the PATH-wrapper front-end
+  there's no such protocol — the
   wrapper itself has to implement the equivalent: `deny` means refusing to
   exec the real binary and printing the reason to stderr with a non-zero
   exit; `updatedInput` means rewriting `argv` before exec (e.g. dropping
@@ -264,12 +285,16 @@ chosen, this is the field set regardless of format:
 ```
 Pack:
   id: string                     # "vault", "git", "storage-class", "beads", ...
-  tool_keywords: [string]        # command-mode packs: executables this pack inspects,
-                                  # e.g. ["vault", "bao"]. Unused by content-mode packs.
-  applies_to: [FileGlob]         # content-mode packs: which Write/Edit targets this pack
-                                  # scans, e.g. ["*.yaml", "*.yml"] for storage-class/image-tag
-                                  # -- mirrors org-rule-guard.py's own .yaml/.yml scoping for
-                                  # its equivalent rules. Unused by command-mode packs.
+  tool_keywords: [string]        # command-mode packs (vault/git/secrets/misc/tmux):
+                                  # executables this pack inspects, e.g. ["vault", "bao"].
+                                  # Unused by content-mode packs and by beads.
+  applies_to: [FileGlob]         # content-mode packs (storage-class/image-tag): which
+                                  # Write/Edit targets this pack scans, e.g. ["*.yaml", "*.yml"]
+                                  # -- mirrors org-rule-guard.py's own .yaml/.yml scoping.
+                                  # ALSO used by beads (Predicate-type check) to scope its
+                                  # .beads/ path match, even though beads isn't a content-mode
+                                  # pack -- see Components for why it's a third, distinct case.
+                                  # Unused by pure command-mode packs (vault/git/secrets/misc/tmux).
   safe_patterns: [Pattern]       # explicitly-allowed shapes, checked first
   guarded_patterns: [GuardedPattern]
 
@@ -281,10 +306,11 @@ Pattern:                         # lighter than GuardedPattern -- no tier/severi
 GuardedPattern:
   id: string
   check: CommandRegex | ContentRegex | Predicate
-                                  # CommandRegex: matched against shell tokens (vault/git/secrets/
-                                  # misc/tmux packs, both front-ends). ContentRegex: matched
-                                  # against Write/Edit file content (storage-class/image-tag
-                                  # packs, hook front-end only — see Components' Engine).
+                                  # CommandRegex: matched against shell tokens (vault/git/misc/tmux
+                                  # packs, both front-ends; secrets pack also uses CommandRegex but
+                                  # is hook-only despite the shared check type — see Components'
+                                  # Engine for why). ContentRegex: matched against Write/Edit file
+                                  # content (storage-class/image-tag packs, hook front-end only).
                                   # Predicate: filesystem check -- beads pack combines this
                                   # (.git file-vs-dir) WITH a .beads/ path match via applies_to;
                                   # the predicate alone is not the whole check, see Components.
@@ -347,8 +373,11 @@ GuardedPattern:
     this phase lands — without it, this project reproduces
     `org-rule-guard.py`'s existing self-edit gap under a new name, just
     with extra steps.
-- [ ] **Phase 1 — Tier 1 rules, both front-ends, deny-only.** Build the
-      PATH-wrapper binary and both hook adapters (Claude Code, Codex).
+- [ ] **Phase 1 — Tier 1 rules, both front-ends where applicable,
+      deny-only.** Build the PATH-wrapper binary and both hook adapters
+      (Claude Code, Codex). Most Phase 1 rules run on both front-ends;
+      `secrets` and the image-tag/storage-class content-mode rules are
+      hook-only, per Architecture — not every rule reaches the wrapper.
       Rule set: Bash-channel secret-value scanning (reuse
       `org-rule-guard.py`'s existing regex machinery, currently only wired
       to the Write/Edit path), Vault/OpenBao destructive verbs (the core

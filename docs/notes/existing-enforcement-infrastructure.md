@@ -74,11 +74,16 @@ pack handles exactly this).
 
 The original framing here — "this project should not duplicate rules 1–5" —
 assumed indefinite coexistence with `org-rule-guard.py`. That's stale: per
-`docs/plan/plan.md`'s Overview, `org-rule-guard.py` "is expected to be
-deprecated once this project's coverage supersedes it" (2026-08-13
-direction), and coexistence is now explicitly an interim state, not the end
-state. The plan already absorbs pieces of the five rules above rather than
-avoiding them:
+`docs/plan/plan.md`'s Overview (2026-08-13 direction, since refined), that
+hook is expected to shrink toward deprecation as this project's coverage
+supersedes it — but not to full removal. Its kubectl-mutation rule is
+*permanently* excluded from absorption, and its `.github/workflows`/`kind:
+Job`/`CronJob` rules (1–2 below) aren't excluded on principle, just not yet
+scheduled by any phase — see plan.md's Overview for the precise current
+wording, which this note only paraphrases and shouldn't be treated as a
+substitute for. Coexistence is an interim state for whichever rules *do*
+get scheduled, not a permanent policy for all five. The plan already
+absorbs pieces of the five rules above rather than avoiding them:
 
 - **Rule 3 (`:latest` image tags)** — Phase 1's `image-tag` pack extends the
   existing `:latest` check with the bare-SHA half of the same policy
