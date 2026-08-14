@@ -20,7 +20,7 @@ scheduled** by any phase (see
 claim is "shrinks to at least a kubectl-only rump, plus whichever of the
 workflows/Job-CronJob rules remain unscheduled" — not "kubectl-only,"
 until a future phase actually picks up (2). "Deprecated" means
-"superseded for everything a phase has scheduled," not "deleted." `icg-53q`
+"superseded for everything a phase has scheduled," not "deleted." `irrevers-2e1c5a48`
 (install-time smoke test confirming no conflict between the two) is
 framed accordingly. Covers both **Claude Code and Codex CLI** as guarded
 harnesses.
@@ -55,7 +55,7 @@ specifically, not a blanket "no I/O of any kind" claim — local filesystem
 reads the design already requires (the `beads` pack's `.git` stat check,
 rule-pack loading itself, value-derivation helpers reading a `VERSION`
 file) are fine and not exceptions to anything. **One deliberate, scoped
-exception to the *network*-I/O restriction**: `icg-2m8`'s
+exception to the *network*-I/O restriction**: `irrevers-8cff8cf4`'s
 stale-HEAD-before-push check needs a live remote lookup, justified only
 because `git push` is already a network operation — not a precedent for
 adding network I/O to any other guarded command.
@@ -64,13 +64,13 @@ adding network I/O to any other guarded command.
 check throwing or failing to parse always fails open, unconditionally,
 matching `org-rule-guard.py`'s exact behavior. **The guard process itself
 disappearing (OOM-killed, crashed) is a separate failure class**, governed
-by `icg-4bu`'s graduated fail-open→fail-closed policy (Phase 5): fails
+by `irrevers-cd3f4c44`'s graduated fail-open→fail-closed policy (Phase 5): fails
 open while the guard's reliability is unproven, shifts to fail-closed once
 it's validated. These are two different questions — "did this one check
 error out" vs. "is the guard even still running" — and only the second one
 is allowed to graduate away from fail-open over time.
 
-**Open implementation question `icg-4bu` doesn't resolve on its own:**
+**Open implementation question `irrevers-cd3f4c44` doesn't resolve on its own:**
 "fail closed when the process is dead" needs *something* to notice the
 process is gone and substitute a deny — a standing watchdog is exactly the
 "guard as a standing daemon" architecture Lens-1 idea #69 was killed for
@@ -82,7 +82,7 @@ configurable behavior for "the hook command errored, timed out, or never
 responded" — in which case "fail closed" means configuring *that* harness
 setting once reliability is validated, not building new standing
 infrastructure. Needs verifying against both harnesses' actual hook specs
-before `icg-4bu` is implemented; if neither harness supports it, this
+before `irrevers-cd3f4c44` is implemented; if neither harness supports it, this
 finalist needs to either accept the standing-daemon cost after all or be
 re-scoped.
 
@@ -123,7 +123,7 @@ CLI," which outlives any single tool's canonical status — the pack stores
 "currently canonical" and "deprecated" as data (a small list this rule
 reads), not as logic hardcoded to `bf` specifically, so the eventual
 `bf`→`bead` cutover is a one-line data change, not a rule rewrite. See
-Phase 1 and `icg-1vj`.
+Phase 1 and `irrevers-480aa9c5`.
 
 **Deploy location: rule source must not simply live under
 `~/.claude/hooks/` again**, and self-updating from GitHub Releases only
@@ -139,7 +139,7 @@ choice between them. Two independent, complementary front-ends sharing one
 engine:
 - A **PATH-wrapper binary** shadowing whatever binaries the *currently
   loaded* rule packs cover — `vault`/`bao`/`git` from Phase 1, `docker`
-  once Phase 4's `icg-d3i` pack ships (not before; shadowing a binary with
+  once Phase 4's `irrevers-54d477dd` pack ships (not before; shadowing a binary with
   no pack behind it yet is a pure no-op) — never `kubectl` (see
   Architecture's pack list). Harness-agnostic by construction, proven
   pattern already running in this
@@ -241,7 +241,7 @@ for Codex is still maturing). Full reasoning in
 - **Self-updater** — user-triggered, not polling (resolved 2026-08-13; see
   Phase 0). **No persistent process to update** — the guard is
   per-invocation (a fresh process per check, per the "no standing daemon"
-  architecture decision — see `icg-4bu`'s discussion in Architecture), so
+  architecture decision — see `irrevers-cd3f4c44`'s discussion in Architecture), so
   "hot-swap" doesn't mean an in-memory reload of a resident process.
   Concretely: on trigger, `icg update` checks the GitHub Releases API
   once, downloads the new rule-pack artifact, and atomically replaces the
@@ -262,7 +262,7 @@ for Codex is still maturing). Full reasoning in
 - **State store** (later phase, not Phase 1) — minimal persistent marker
   needed only for Tier 2 ordering rules. `org-rule-guard.py` has no
   equivalent today; this is new surface.
-- **Per-repo override (`icg-2i8`), "signed" clarified**: not a bespoke
+- **Per-repo override (`irrevers-e354aca2`), "signed" clarified**: not a bespoke
   cryptographic signing scheme with its own key to manage — an override
   file is "signed" in the sense that it only takes effect after going
   through the exact same Layer 1/2 release-integrity pipeline as any other
@@ -278,7 +278,7 @@ for Codex is still maturing). Full reasoning in
 throughout Implementation Phases but not previously defined in one place):
 - **Tier 1** — stateless, decidable from a single invocation alone:
   command text, a filesystem predicate, or (the one documented exception,
-  `icg-2m8`) a single synchronous network check that doesn't depend on
+  `irrevers-8cff8cf4`) a single synchronous network check that doesn't depend on
   anything from a prior invocation. "Stateless" is the actual dividing
   line, not "no I/O" — Tier 1 vs. Tier 2 is about whether a check needs
   memory of past invocations, not about what kind of check it runs. What
@@ -373,8 +373,8 @@ GuardedPattern:
     No fleet-wide
     synchronization point — triggering one host doesn't require pausing
     or waiting on any other host, consistent with the already-adopted
-    canary-rollout design (`icg-l75`). This is asymmetric with
-    `icg-2ck`'s poison-pill auto-rollback by design: adopting a new
+    canary-rollout design (`irrevers-6de781f4`). This is asymmetric with
+    `irrevers-0f49129d`'s poison-pill auto-rollback by design: adopting a new
     release forward is deliberate/manual, but reverting an already-
     adopted bad one stays automatic — different risk profiles, not a
     contradiction.
@@ -407,15 +407,11 @@ GuardedPattern:
       `image-tag` pack fully absorbs this rule from `org-rule-guard.py` as
       of Phase 1, not just the bare-SHA gap; see Architecture and
       `docs/notes/existing-enforcement-infrastructure.md`), force-push,
-      stale-HEAD-before-push (`icg-2m8` — the one Tier 1 rule with a live
+      stale-HEAD-before-push (`irrevers-8cff8cf4` — the one Tier 1 rule with a live
       remote check, a deliberate, scoped exception to the engine's
       zero-*network*-I/O rule since `git push` is already a network
       operation; see Architecture), **commit-without-pathspec** (added
-      2026-08-14, `irrevers-57af0680` — real bead-rs ID; this repo's plan
-      text otherwise cites the earlier `icg-*` decomposition IDs, which
-      don't match the live bead-rs workspace's generated IDs, a
-      pre-existing drift this addition doesn't attempt to reconcile
-      elsewhere). Denies `git commit -a`/`--all` and any bare
+      2026-08-14, `irrevers-57af0680`). Denies `git commit -a`/`--all` and any bare
       `git commit -m "..."` with no trailing pathspec — the command commits
       the *entire* staged index, not just what the agent's own `git add`
       just staged, so a precisely-scoped `git add` (already required by
@@ -437,7 +433,7 @@ GuardedPattern:
       (path-under-`.beads/` **and**
       `.git` file-vs-directory check — see Components, both conditions
       required),
-      deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
+      deprecated-bead-CLI usage (data-driven, `irrevers-480aa9c5` — currently `br`;
       ready to retarget at `bf` once it's deprecated), `needle cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
       reason for all of these — skip `updatedInput`/`additionalContext`
@@ -458,7 +454,7 @@ GuardedPattern:
       Author against whichever bead CLI is canonical at implementation
       time (`bf`'s `sync --flush-only` flag today; `bead-rs`'s `sync
       flush-only` subcommand has different syntax entirely if the cutover
-      happens first — see `icg-1vj`, don't assume the two are
+      happens first — see `irrevers-480aa9c5`, don't assume the two are
       interchangeable here).
 - [ ] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
       for confirmed intent-preserving cases (force-push flag stripping is
@@ -491,16 +487,16 @@ GuardedPattern:
       dossiers and kill-pass objections in `docs/notes/ideas-ledger.md`.
       Deepens Phase 0's release-integrity/self-update work and Phase 1's
       rule coverage rather than opening new phases of its own:
-      - `icg-rri` — auto-denial-becomes-test (strengthens Layer 1; needs a
+      - `irrevers-ce059aaa` — auto-denial-becomes-test (strengthens Layer 1; needs a
         curation step so the suite doesn't grow unbounded)
-      - `icg-ncf` — `icg new-pack` scaffolding tool
-      - `icg-2ck` — poison-pill auto-rollback (extends Phase 0's Layer 4)
-      - `icg-l75` — canary rollout via NEEDLE `--identifier` (concrete
+      - `irrevers-54b33e0c` — `icg new-pack` scaffolding tool
+      - `irrevers-0f49129d` — poison-pill auto-rollback (extends Phase 0's Layer 4)
+      - `irrevers-6de781f4` — canary rollout via NEEDLE `--identifier` (concrete
         Layer 4 staged-rollout implementation)
-      - `icg-1tj` — `icg status` with blind-spot self-report
-      - `icg-z5n` — Codex hook-version compatibility matrix in `icg-ci`
-      - `icg-2i8` — per-repo signed override (routed through Layer 1/2)
-      - `icg-59u` — practice/dry-run mode (ships only with the mandatory
+      - `irrevers-1cad33d2` — `icg status` with blind-spot self-report
+      - `irrevers-8b5faeb9` — Codex hook-version compatibility matrix in `icg-ci`
+      - `irrevers-e354aca2` — per-repo signed override (routed through Layer 1/2)
+      - `irrevers-47e53543` — practice/dry-run mode (ships only with the mandatory
         persistent active-indicator the kill pass required). Near-miss
         feedback deliberately does **not** rely on `additionalContext` —
         given that channel isn't honored on Codex yet (see Phase 3), a
@@ -508,37 +504,37 @@ GuardedPattern:
         the persistent banner requirement already covers this, surfaced
         directly rather than through a hook-response field either harness
         might drop.
-      - `icg-d3i` — Docker destructive-ops pack (new Phase-1-shaped pack,
+      - `irrevers-54d477dd` — Docker destructive-ops pack (new Phase-1-shaped pack,
         same architecture as `vault`)
 - [ ] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
       Like Phase 4, this isn't a new sequential build phase — its
-      findings fold into earlier phases' actual scope (`icg-2m8` is a
-      Phase 1 rule; `icg-4bu` is discussed under Architecture's fail-open
+      findings fold into earlier phases' actual scope (`irrevers-8cff8cf4` is a
+      Phase 1 rule; `irrevers-cd3f4c44` is discussed under Architecture's fail-open
       policy; both are listed here only because this is where their
       ideation provenance and bead IDs are tracked). Six finalists adopted
       as beads, one (explicit README non-goals) done directly rather than
       tracked as a bead. Full dossiers and kill-pass objections in
       `docs/notes/ideas-ledger.md`'s second-run section:
-      - `icg-4p8` — guard CI/build pods on iad-ci, including this
+      - `irrevers-36244640` — guard CI/build pods on iad-ci, including this
         project's own `icg-ci` release pipeline
-      - `icg-2m8` — stale-HEAD push guard, the shipped form of ledger
+      - `irrevers-8cff8cf4` — stale-HEAD push guard, the shipped form of ledger
         finalist #2 ("shared-tree collision protection") after user
         revision (compares tracked vs. actual remote HEAD before
         `git push`, a simpler mechanism than the originally-proposed
         cross-process `/proc` scanning — a deliberate, scoped exception
         to the zero-*network*-I/O rule, since `git push` is already a
         network operation)
-      - `icg-4bu` — graduated fail-open→fail-closed policy for guard
+      - `irrevers-cd3f4c44` — graduated fail-open→fail-closed policy for guard
         crashes: fails open until the guard's reliability is validated
-        (tied to `icg-2ck`'s poison-pill health signal), then shifts to
+        (tied to `irrevers-0f49129d`'s poison-pill health signal), then shifts to
         fail-closed
-      - `icg-3xz` — ReDoS check on submitted rule packs in `icg-ci`
-      - `icg-4mu` — per-rule enable/disable feature flag, revised from a
+      - `irrevers-b8343704` — ReDoS check on submitted rule packs in `icg-ci`
+      - `irrevers-012be0c8` — per-rule enable/disable feature flag, revised from a
         dedicated fast-path kill-switch to reuse the normal Layer 1/2
         release pipeline (tradeoff: no longer sub-release-cycle-fast —
         flagged as a real, unresolved gap if true emergency speed is ever
         needed)
-      - `icg-53q` — install-time smoke test vs. `org-rule-guard.py`,
+      - `irrevers-2e1c5a48` — install-time smoke test vs. `org-rule-guard.py`,
         framed as an interim check pending that hook's eventual
         deprecation (see Overview). **Success criterion, precise**: during
         coexistence, icg's `image-tag` pack and `org-rule-guard.py`'s rule
@@ -580,7 +576,7 @@ GuardedPattern:
   makes the manual-authoring cost of doing it earlier concrete.
 - ~~`beads`-in-`bf` question~~ — **resolved 2026-08-13: stays in this
   project.** With `bf` itself now confirmed heading toward deprecation
-  (see the Architecture section and `icg-1vj`), embedding the `.beads/`
+  (see the Architecture section and `irrevers-480aa9c5`), embedding the `.beads/`
   protection check inside a tool that's about to be superseded would just
   mean redoing this work again at the next cutover. Phase 1 already
   unconditionally depends on this answer, so leaving it formally open any

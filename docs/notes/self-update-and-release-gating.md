@@ -69,17 +69,17 @@ the GitHub Releases API once and atomically replaces the on-disk rule-pack
 artifact (write-then-rename). There's no persistent guard process to
 restart in the first place — the architecture is per-invocation (a fresh
 process per check, per the "no standing daemon" decision plan.md's
-Architecture section makes for `icg-4bu`) — so "hot-swap" means the next
+Architecture section makes for `irrevers-cd3f4c44`) — so "hot-swap" means the next
 spawned check simply reads the new artifact, not an in-memory reload of a
 resident process. No fleet-wide synchronization point
 either: triggering one host doesn't require pausing or waiting on any
 other host, which is what makes the already-adopted canary-rollout design
-(`icg-l75`) actually work as "one host first, the rest later" rather than
+(`irrevers-6de781f4`) actually work as "one host first, the rest later" rather than
 an all-or-nothing flip. This also means there's no network I/O on the
 guarded-check hot path at all under normal operation — the only time the
 guard talks to GitHub is the moment a human explicitly asks it to.
 
-Worth noting the asymmetry this creates with `icg-2ck`'s poison-pill
+Worth noting the asymmetry this creates with `irrevers-0f49129d`'s poison-pill
 auto-rollback: adopting a new release forward is deliberate and manual,
 but *reverting* an already-adopted bad one stays fully automatic. That's
 intentional, not an inconsistency — the two directions carry different

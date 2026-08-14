@@ -172,63 +172,63 @@ mitigation for Codex's confirmed-still-churning hook API specifically.
 
 ### Finalist dossiers
 
-1. **Auto-denial-becomes-test** (Lens 1, #8) — bead `icg-rri`
+1. **Auto-denial-becomes-test** (Lens 1, #8) — bead `irrevers-ce059aaa`
    - **Pitch:** Every denial the guard fires automatically becomes a permanent regression-test case, so coverage can only grow, never silently regress.
    - **Why it won:** Paired with poison-pill auto-rollback (#60) as hybrid H1 ("self-healing coverage"), but the kill pass's dependency objection required the two ship as independently-shippable finalists rather than one coupled deliverable — #8 stands on its own because, unlike killed lens-mates #1 (allowlist-first, would flood benign commands with denials), #7 (capability-grant, "SEAM's shape"), and #26 (LLM-assisted triage, non-deterministic and unregression-testable), it stays fully deterministic and needs zero harness cooperation.
    - **Complexity:** M
    - **First step:** Wire the denial-dispatch path to serialize each fired `GuardedPattern` match into a regression-test stub (command + expected verdict) in the existing suite, before automating it unattended.
    - **Strongest surviving objection:** Per plan.md, it "needs a curation step so the suite doesn't grow unbounded" — without de-duplication, every near-identical denial permanently bloats the suite.
 
-2. **Pack-authoring scaffold tool** (Gap round, G3) — bead `icg-ncf`
+2. **Pack-authoring scaffold tool** (Gap round, G3) — bead `irrevers-54b33e0c`
    - **Pitch:** `icg new-pack <tool>` scaffolds a new rule pack, pre-filling the required Pack/GuardedPattern fields plus a regression-test stub.
    - **Why it won:** Emerged from the completeness-gap round's identified hole — "no tooling to help a human author a new rule pack safely" — a gap none of the other 9 finalists filled.
    - **Complexity:** S
    - **First step:** Build the CLI subcommand to emit a pre-filled Pack/GuardedPattern skeleton modeled on an existing pack (e.g. `vault`) as the template.
    - **Strongest surviving objection:** No specific kill-pass caveat was recorded for this idea, but it inherits the project's standing constraint that rule source is "not agent-writable or agent-triggerable-trusted" — the scaffold must still route new packs through Layer 1/2 review, not let authorship itself become a trust shortcut.
 
-3. **Poison-pill auto-rollback** (Lens 6, #60) — bead `icg-2ck`
+3. **Poison-pill auto-rollback** (Lens 6, #60) — bead `irrevers-0f49129d`
    - **Pitch:** A bad release automatically reverts itself rather than waiting for a human to notice.
    - **Why it won:** The other half of hybrid H1 with #8 — the kill pass's dependency objection meant the two ship independently rather than as one coupled feature, so #60 had to stand alone as a real, self-contained extension of Phase 0's Layer 4 self-updater rather than assuming #8's test-generation exists first.
    - **Complexity:** M
    - **First step:** Define the poison-pill health signal (what makes a release "bad") and wire the self-updater's trust pointer to automatically fall back to the last-known-good release when it fires.
-   - **Strongest surviving objection:** Must work standalone, without depending on #8/`icg-rri`'s auto-generated tests existing yet — the kill pass explicitly rejected coupling the two into one deliverable.
+   - **Strongest surviving objection:** Must work standalone, without depending on #8/`irrevers-ce059aaa`'s auto-generated tests existing yet — the kill pass explicitly rejected coupling the two into one deliverable.
 
-4. **Canary rollout via NEEDLE `--identifier`** (Lens 5, #56) — bead `icg-l75`
+4. **Canary rollout via NEEDLE `--identifier`** (Lens 5, #56) — bead `irrevers-6de781f4`
    - **Pitch:** Roll a new release out to a named subset of hosts before it goes fleet-wide.
    - **Why it won:** Absorbed the fleet-health signals from hybrid H2 (`#56 × merged-59/61/62`, "canary-aware fleet health") — staleness heartbeat, split-brain version detection, graceful degradation — as a scope note rather than shipping those as separate finalists, making #56 the single concrete Layer 4 staged-rollout implementation.
    - **Complexity:** M
    - **First step:** Add a `--identifier`-scoped rollout gate to the self-updater so a release can target a named host subset before going fleet-wide.
    - **Strongest surviving objection:** Must stay scoped to the `--identifier` subsets NEEDLE already supports today — the closely-related hybrid H3 (`#50 × #47`, "scoped grant matrix") was killed specifically for hard-depending on NEEDLE per-worker tsnet identity, which doesn't exist yet; canary rollout must not quietly grow into needing that same missing infrastructure.
 
-5. **`icg status` with blind-spot self-report** (Lens 6/7, #97/#72 merged) — bead `icg-1tj`
+5. **`icg status` with blind-spot self-report** (Lens 6/7, #97/#72 merged) — bead `irrevers-1cad33d2`
    - **Pitch:** A status command that reports the guard's own known blind spots (e.g. the cloud-hosted-Codex gap), not just "healthy/unhealthy."
    - **Why it won:** Two independently-generated ideas (#97 from the reliability lens, #72 from the novice-UX lens) converged on the same command and were merged rather than shipped as competing tools.
    - **Complexity:** S
    - **First step:** Implement `icg status` reading the guard's own documented blind-spot list (cloud Codex gap, deferred Layer 3, etc.) plus live self-health state, and print both.
    - **Strongest surviving objection:** Must stay a read-only report of already-known state — this pool repeatedly kills ideas that require new persistent usage-history tracking (#88/#89's "same stateful-tracking objection," #92's cold-start problem); `icg status` has to avoid sliding into that territory.
 
-6. **Codex hook-version compatibility matrix** (Gap round, G4) — bead `icg-z5n`
+6. **Codex hook-version compatibility matrix** (Gap round, G4) — bead `irrevers-8b5faeb9`
    - **Pitch:** Run `icg-ci` against a matrix of recent Codex CLI releases to catch hook-API drift before it ships.
    - **Why it won:** Directly answers the completeness-gap round's third identified hole — "no mitigation for Codex's confirmed-still-churning hook API specifically" — grounded in plan.md's Architecture section, which notes Codex's hook API is "notably younger and still stabilizing (~5 months old as of this writing)."
    - **Complexity:** M
    - **First step:** Add an `icg-ci` matrix job that runs the Codex hook adapter against a pinned set of recent Codex CLI releases, failing the build on adapter/API drift.
    - **Strongest surviving objection:** The matrix itself needs ongoing maintenance as Codex's still-churning hook API keeps moving — a compatibility check against a moving target is only as good as how often the pinned version set gets refreshed.
 
-7. **Per-repo signed override** (Lens 5, #47) — bead `icg-2i8`
+7. **Per-repo signed override** (Lens 5, #47) — bead `irrevers-e354aca2`
    - **Pitch:** A signed, per-repo file that lets an operator explicitly override a specific rule, routed through the normal review layers.
    - **Why it won:** Its natural extension, hybrid H3 (`#50 × #47`, "scoped grant matrix"), was killed for hard-depending on NEEDLE per-worker tsnet identity — infrastructure that doesn't exist yet (the same blocker later noted for SEAM's own Phase 7). #47 alone carries no such dependency and survives on that basis.
    - **Complexity:** M
    - **First step:** Define the per-repo override file format (signed, Layer 1/2-reviewed) and the verification check the engine runs before honoring it.
    - **Strongest surviving objection:** If override scope is ever extended from per-repo to per-identity, it hits the exact missing-tsnet-identity wall that killed H3 — the design has to resist that scope creep.
 
-8. **Practice/dry-run mode** (Lens 7, #84) — bead `icg-59u`
+8. **Practice/dry-run mode** (Lens 7, #84) — bead `irrevers-47e53543`
    - **Pitch:** A mode that runs the full check path and reports what would have been blocked, without ever actually blocking.
    - **Why it won:** Its hybrid pairing, H4 (`#84 × #53`, "shadow mode against live traffic"), was cut by cluster cap; #84 alone carried forward as the standalone finalist.
    - **Complexity:** S
    - **First step:** Add a dry-run flag/env var that runs the full check path but substitutes deny-with-log for actual blocking, paired with the persistent active-indicator noted below.
    - **Strongest surviving objection:** Per plan.md, it "ships only with the mandatory persistent active-indicator the kill pass required" — without an always-visible indicator, an operator could forget the mode is active and mistake "nothing got blocked" for a real pass.
 
-9. **Docker destructive-ops pack** (Gap round, G1) — bead `icg-d3i`
+9. **Docker destructive-ops pack** (Gap round, G1) — bead `irrevers-54d477dd`
    - **Pitch:** A new rule pack covering Docker/container destructive ops (`system prune -a`, `volume rm`, forced image removal), same shape as the `vault` pack.
    - **Why it won:** Beat its gap-round sibling G2 (Backblaze B2 CLI pack), which survived but wasn't selected specifically because of "genuine open uncertainty whether agents invoke a `b2` CLI directly versus only via library/API calls" — Docker CLI invocation carries no equivalent uncertainty in this environment.
    - **Complexity:** S
@@ -391,7 +391,7 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
 ## Finalists (10) — second run
 
 1. Guard CI/build pods on iad-ci too, including this project's own `icg-ci` (Lens 1, #1)
-2. Shared-tree collision protection for concurrent agents (Lens 1, #9) — later revised by the user into a simpler mechanism (tracked-vs-actual remote git HEAD comparison before push) and shipped as bead `icg-2m8`; see plan.md Phase 5.
+2. Shared-tree collision protection for concurrent agents (Lens 1, #9) — later revised by the user into a simpler mechanism (tracked-vs-actual remote git HEAD comparison before push) and shipped as bead `irrevers-8cff8cf4`; see plan.md Phase 5.
 3. Dead-man's-switch SCRAM, debounced (Hybrid H1)
 4. Guard-as-MCP-server, local-only (Hybrid H3)
 5. Separation of duties: rule-pack author ≠ release-approver (Lens 2, #56)
@@ -403,20 +403,20 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
 
 ### Finalist dossiers
 
-1. **Guard CI/build pods on iad-ci** (Lens 1, #1) — bead `icg-4p8`
+1. **Guard CI/build pods on iad-ci** (Lens 1, #1) — bead `irrevers-36244640`
    - **Pitch:** Extend guard coverage to CI/build pods on `iad-ci`, including this project's own `icg-ci` release pipeline, not just interactive agent sessions.
    - **Why it won:** Requires no architecture change, unlike lens-mate #69 (triaged out: "guard as a standing daemon... real architecture change for unclear benefit given the current per-invocation model already works") — it's the same per-invocation engine applied to a new execution context.
    - **Complexity:** M
    - **First step:** Identify where the PATH-wrapper/hook adapters need to be installed inside `icg-ci`'s own Argo Workflow pod image, starting with guarding `icg-ci`'s own release pipeline first.
    - **Strongest surviving objection:** CI pods are a different execution environment than an interactive shell — the concrete adapter shape has to stay a per-invocation check, not drift toward the "standing daemon" architecture #69 was killed for.
 
-2. **Shared-tree collision protection for concurrent agents** (Lens 1, #9) — later revised into bead `icg-2m8` (see note)
+2. **Shared-tree collision protection for concurrent agents** (Lens 1, #9) — later revised into bead `irrevers-8cff8cf4` (see note)
    - **Pitch:** Protect other agents from one agent's in-flight, uncommitted shared-tree changes.
    - **Why it won:** Grounded directly in this environment's own recorded incident class — the shared-checkout git-index race and the `.beads/` file-vs-directory collision risk the Architecture section already treats as real.
    - **Complexity:** L (as originally proposed)
    - **First step (as originally proposed):** Prototype the collision check against a known concurrent-shared-checkout scenario to confirm the detection approach doesn't produce false positives under normal sequential ops.
    - **Strongest surviving objection:** The mechanism as originally proposed didn't ship as designed — see the revision note below.
-   - **Note (Gap C):** Per plan.md Phase 5, this finalist was later revised by the user into a simpler mechanism — comparing tracked-vs-actual remote git HEAD before a `git push` — and shipped as bead `icg-2m8` ("stale-HEAD push guard"), not the collision-detection shape described above.
+   - **Note (Gap C):** Per plan.md Phase 5, this finalist was later revised by the user into a simpler mechanism — comparing tracked-vs-actual remote git HEAD before a `git push` — and shipped as bead `irrevers-8cff8cf4` ("stale-HEAD push guard"), not the collision-detection shape described above.
 
 3. **Dead-man's-switch SCRAM, debounced** (Hybrid H1) — no bead listed in plan.md Phase 5
    - **Pitch:** A fleet-wide halt that triggers automatically after N consecutive missed heartbeats, rather than requiring a human to notice something's wrong.
@@ -439,23 +439,23 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
    - **First step:** Define what makes two sessions "genuinely separate" (different NEEDLE identifiers, or simply distinct human-invoked sessions) and encode that as a release-approval precondition alongside the existing Layer 1/2 review.
    - **Strongest surviving objection:** Without a concrete mechanism for verifying separateness, it risks becoming exactly the kind of paperwork-only requirement that got #55 killed as redundant ceremony.
 
-6. **Explicit fail-open/fail-closed decision for guard OOM-kill** (Lens 6, #42) — bead `icg-4bu`
+6. **Explicit fail-open/fail-closed decision for guard OOM-kill** (Lens 6, #42) — bead `irrevers-cd3f4c44`
    - **Pitch:** Force an explicit, tested decision for what happens when the guard itself is OOM-killed mid-check, rather than leaving it to the engine's general fails-open default.
    - **Why it won:** The Architecture's fails-open design ("a missed violation is recoverable, a stuck fleet is not") was written for parse failures and exceptions; this finalist closes the gap for the specific mid-check-death case, which isn't automatically the same failure mode.
    - **Complexity:** M
-   - **First step:** Verify whether Claude Code's/Codex's own hook-timeout/hook-error configuration can substitute for detecting a dead guard process — if either harness supports "deny on hook failure," the fail-closed transition may just mean flipping that harness setting once `icg-2ck`'s poison-pill signal confirms reliability, with no new icg-side process needed. Only build a dedicated supervisor/watchdog if neither harness supports it — see `docs/plan/plan.md` Architecture, which flags this as unresolved and explicitly notes a watchdog is the same "standing daemon" shape ideation killed elsewhere (Lens 1 idea #69).
+   - **First step:** Verify whether Claude Code's/Codex's own hook-timeout/hook-error configuration can substitute for detecting a dead guard process — if either harness supports "deny on hook failure," the fail-closed transition may just mean flipping that harness setting once `irrevers-0f49129d`'s poison-pill signal confirms reliability, with no new icg-side process needed. Only build a dedicated supervisor/watchdog if neither harness supports it — see `docs/plan/plan.md` Architecture, which flags this as unresolved and explicitly notes a watchdog is the same "standing daemon" shape ideation killed elsewhere (Lens 1 idea #69).
    - **Strongest surviving objection:** Per plan.md, it "fails open until the guard's reliability is validated" — during that interim window, an OOM-killed check silently lets a command through with no denial, the same accepted-but-real risk the Architecture's fails-open default already carries, now made an explicit, tracked instance of it.
 
-7. **CI check for catastrophic-backtracking (ReDoS) regexes** (Lens 6, #38) — bead `icg-3xz`
+7. **CI check for catastrophic-backtracking (ReDoS) regexes** (Lens 6, #38) — bead `irrevers-b8343704`
    - **Pitch:** Catch pathological, catastrophically-backtracking regexes in submitted rule packs at CI time, before they ship.
    - **Why it won:** #79 ("regex timeout on legitimately oversized input") was folded into the same testing effort as a near-duplicate rather than competing separately — #38 became the umbrella for both the static CI-time check and the runtime-timeout angle.
    - **Complexity:** S
    - **First step:** Add an `icg-ci` lint step that runs each submitted pack's regexes against adversarial pathological-backtracking inputs with a timeout, failing the build on any regex that doesn't terminate quickly.
    - **Strongest surviving objection:** A CI-time static check alone doesn't cover a regex that only backtracks catastrophically on unusually large real input at runtime — #79's runtime-timeout half needs to genuinely be folded in, not just cut from the pool.
 
-8. **Fleet-wide single-rule kill-switch** (Gap round, G2) — bead `icg-4mu`
+8. **Fleet-wide single-rule kill-switch** (Gap round, G2) — bead `irrevers-012be0c8`
    - **Pitch:** Disable one misbehaving rule fleet-wide, independent of the per-repo override — a different axis of granularity (which rules, not which repos).
-   - **Why it won:** Identified explicitly in the second run's completeness-gap round as a real, uncovered axis — run 1's per-repo override (`icg-2i8`) scopes by repo, not by rule, so this fills a genuine gap rather than duplicating it.
+   - **Why it won:** Identified explicitly in the second run's completeness-gap round as a real, uncovered axis — run 1's per-repo override (`irrevers-e354aca2`) scopes by repo, not by rule, so this fills a genuine gap rather than duplicating it.
    - **Complexity:** S
    - **First step:** Add a per-rule enabled/disabled boolean to the `GuardedPattern` data model, gated the same way as any other rule-pack change (Layer 1/2 review), not a separate fast path.
    - **Strongest surviving objection:** Per plan.md, the revised implementation "reuses the normal Layer 1/2 release pipeline instead of a dedicated fast path" — the tradeoff is explicit: it's "no longer sub-release-cycle-fast... flagged as a real, unresolved gap if true emergency speed is ever needed."
@@ -467,9 +467,9 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
    - **First step:** Already done — see `README.md`'s "What this does not do" section (per plan.md Phase 5).
    - **Strongest surviving objection:** None recorded — the lowest-risk finalist of the second run, consistent with it being shipped directly rather than tracked as a bead.
 
-10. **Install-time smoke test vs. `org-rule-guard.py`** (Lens 7, #82) — bead `icg-53q`
+10. **Install-time smoke test vs. `org-rule-guard.py`** (Lens 7, #82) — bead `irrevers-2e1c5a48`
     - **Pitch:** An install-time check that confirms the new guard doesn't conflict with or duplicate `org-rule-guard.py`'s existing denials.
     - **Why it won:** Its hybrid pairing, H4 (`#92` migration guide `×` `#82` smoke test), was cut by cluster cap; #82 was selected standalone, with #92 noted as "stronger combined with it at implementation time" rather than required now.
     - **Complexity:** S
-    - **First step:** Write an install-time check that runs both `org-rule-guard.py` and icg's hook adapter against the same known-bad test command, confirming they agree (both deny, or both allow) — expected redundant double-deny is a pass, not a failure; only a *divergent* verdict (one denies, the other doesn't) fails the check. See `docs/plan/plan.md`'s Phase 5 entry for `icg-53q`.
+    - **First step:** Write an install-time check that runs both `org-rule-guard.py` and icg's hook adapter against the same known-bad test command, confirming they agree (both deny, or both allow) — expected redundant double-deny is a pass, not a failure; only a *divergent* verdict (one denies, the other doesn't) fails the check. See `docs/plan/plan.md`'s Phase 5 entry for `irrevers-2e1c5a48`.
     - **Strongest surviving objection:** Per the Overview, coexistence with `org-rule-guard.py` is "an interim state, not the intended end state" — this smoke test's relevance is temporary by design, valuable only until that hook is actually deprecated.

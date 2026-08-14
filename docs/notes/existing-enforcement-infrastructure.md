@@ -104,7 +104,7 @@ absorbs pieces of the five rules above rather than avoiding them:
   for now — not because of a standing "don't duplicate" policy, but simply
   because nothing has scheduled the absorption.
 
-`icg-53q` (Phase 5) is the concrete marker of the trajectory: an
+`irrevers-2e1c5a48` (Phase 5) is the concrete marker of the trajectory: an
 install-time smoke test against `org-rule-guard.py`, explicitly framed as
 "interim... pending that hook's eventual deprecation," not as a permanent
 coexistence check. Beyond rule absorption, the open scope is still (a)
