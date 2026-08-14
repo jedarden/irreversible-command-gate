@@ -89,7 +89,8 @@ re-scoped.
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `vault`, `storage-class`, `image-tag` (extends
 `org-rule-guard.py`'s existing `:latest` check with the bare-SHA half),
-`git` (force-push, stale-HEAD-before-push), `beads` (`.beads/` protection
+`git` (force-push, stale-HEAD-before-push, commit-without-pathspec — see
+Phase 1), `beads` (`.beads/` protection
 — see the refined check below), `tmux` (bare NATO session names), `secrets`
 (Bash-channel credential-value scanning, extending `org-rule-guard.py`'s
 existing regex machinery to a path it doesn't currently cover — see Phase
@@ -409,7 +410,31 @@ GuardedPattern:
       stale-HEAD-before-push (`icg-2m8` — the one Tier 1 rule with a live
       remote check, a deliberate, scoped exception to the engine's
       zero-*network*-I/O rule since `git push` is already a network
-      operation; see Architecture), `.beads/` protection (path-under-`.beads/` **and**
+      operation; see Architecture), **commit-without-pathspec** (added
+      2026-08-14, `irrevers-57af0680` — real bead-rs ID; this repo's plan
+      text otherwise cites the earlier `icg-*` decomposition IDs, which
+      don't match the live bead-rs workspace's generated IDs, a
+      pre-existing drift this addition doesn't attempt to reconcile
+      elsewhere). Denies `git commit -a`/`--all` and any bare
+      `git commit -m "..."` with no trailing pathspec — the command commits
+      the *entire* staged index, not just what the agent's own `git add`
+      just staged, so a precisely-scoped `git add` (already required by
+      CLAUDE.md) can still be defeated by an imprecise `git commit`.
+      Root-caused live 2026-08-14 (commitgraph, worker
+      `claude-code-glm-5-adr018`, bead `cg-194i4a`): a correctly-scoped
+      `git add <2 files>` followed by a bare `git commit -m` produced a
+      commit also containing ~430 unrelated lines from another concurrent
+      NEEDLE worker's pre-staged, uncommitted files in the same shared
+      checkout; the worker self-corrected before pushing, but only because
+      it happened to check its own diff — this rule makes that check
+      unconditional rather than dependent on a worker's diligence. Applies
+      **globally, not scoped to known-shared-checkout repos** (explicit
+      pathspecs on `git commit` cost nothing in an uncontended repo), unlike
+      the narrower `.beads/`-protection conjunction check below. Deny-only,
+      no `updatedInput` — the safe replacement pathspec isn't derivable from
+      the `git commit` call's own text without Tier 2 state (see
+      `docs/notes/redirect-not-just-block.md`). `.beads/` protection
+      (path-under-`.beads/` **and**
       `.git` file-vs-directory check — see Components, both conditions
       required),
       deprecated-bead-CLI usage (data-driven, `icg-1vj` — currently `br`;
