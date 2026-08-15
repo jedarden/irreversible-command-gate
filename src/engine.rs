@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use crate::rule_pack::Pack;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
@@ -267,6 +267,10 @@ pub struct Engine {
     packs: HashMap<String, crate::rule_pack::Pack>,
     /// tool_keywords -> pack_id mapping for fast dispatch
     keyword_index: HashMap<String, Vec<String>>,
+    /// Rule IDs exempted by the currently verified per-repository override.
+    /// This is populated only by `load_verified_override`; there is no public
+    /// raw-ID bypass.
+    exempted_rule_ids: HashSet<String>,
     /// Once an in-process failure occurs, every subsequent check must allow.
     /// This remains set for the lifetime of one engine invocation.
     fail_open: bool,
@@ -303,6 +307,7 @@ impl Engine {
             ignored_prefixes,
             packs: HashMap::new(),
             keyword_index: HashMap::new(),
+            exempted_rule_ids: HashSet::new(),
             fail_open: false,
         }
     }
@@ -568,6 +573,46 @@ impl Engine {
         Ok(())
     }
 
+    /// Load a per-repository override only after proving its scope, trusted
+    /// release reference, freshness, and rule IDs against every loaded pack.
+    /// A malformed or untrusted override is an error and is never installed.
+    pub fn load_verified_override(
+        &mut self,
+        manifest: &crate::overrides::RepoOverride,
+        repository: &str,
+        trusted_ref: &str,
+    ) -> Result<()> {
+        let packs: Vec<crate::rule_pack::Pack> = self.packs.values().cloned().collect();
+        crate::overrides::validate_override(manifest, repository, trusted_ref, &packs)?;
+        self.exempted_rule_ids = manifest
+            .exempted_rule_ids
+            .iter()
+            .cloned()
+            .collect();
+        Ok(())
+    }
+
+    /// Load a verified override from its release artifact.
+    pub fn load_verified_override_from_file<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        repository: &str,
+        trusted_ref: &str,
+    ) -> Result<()> {
+        let packs: Vec<crate::rule_pack::Pack> = self.packs.values().cloned().collect();
+        let manifest = crate::overrides::load_verified_override(
+            path,
+            repository,
+            trusted_ref,
+            &packs,
+        )?;
+        self.exempted_rule_ids = manifest
+            .exempted_rule_ids
+            .into_iter()
+            .collect();
+        Ok(())
+    }
+
     /// Load one rule pack file. Any unreadable, malformed, or otherwise
     /// invalid file leaves this engine in its unconditional fail-open state.
     pub fn load_pack_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
@@ -705,6 +750,9 @@ impl Engine {
 
             // Check guarded_patterns
             for guarded_pattern in &pack.guarded_patterns {
+                if self.exempted_rule_ids.contains(&guarded_pattern.id) {
+                    continue;
+                }
                 // Create a temporary Pattern wrapper for the guarded pattern's check
                 let pattern_wrapper = crate::rule_pack::Pattern {
                     id: guarded_pattern.id.clone(),
@@ -952,6 +1000,9 @@ impl Engine {
 
             // Check guarded_patterns
             for guarded_pattern in &pack.guarded_patterns {
+                if self.exempted_rule_ids.contains(&guarded_pattern.id) {
+                    continue;
+                }
                 // Create a temporary Pattern wrapper for the guarded pattern's check
                 let pattern_wrapper = crate::rule_pack::Pattern {
                     id: guarded_pattern.id.clone(),
