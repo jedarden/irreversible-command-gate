@@ -31,6 +31,28 @@ Two automated checks, both run by the `icg-ci` release pipeline, both
   automatic fail — additions and genuine deprecations are legitimate,
   silent narrowing isn't.
 
+### Coverage-diff report contract
+
+The coverage-diff command emits the versioned Markdown format
+`coverage-diff/v1` for the Layer 2 reviewer. The header contains the previous
+and current manifest paths, a `status` field, and a required `justification`
+field. Each of the three sections is always present, even when it contains
+`None`:
+
+- `Removed guarded_patterns` lists the pattern ID, its previous check value,
+  and `current: <removed>`.
+- `Widened safe_patterns` lists the pattern ID plus `previous` and `current`
+  check values.
+- `Narrowed guarded_patterns (destructive: true)` lists the pattern ID plus
+  `previous` and `current` check values. Only guarded patterns marked
+  `destructive: true` in both manifests are included in this section.
+
+When any regression is present, the report's `justification` field must be
+populated with a non-blank release-approval rationale using
+`--justification <rationale>`. Without it, the command exits non-zero after
+printing the report with `justification: REQUIRED`. A clean report records
+that justification is not required because no coverage regression was found.
+
 ## Layer 2 — review, informed by Layer 1's output (Phase 0, required)
 
 The human gate from `self-update-and-release-gating.md`, refined: the

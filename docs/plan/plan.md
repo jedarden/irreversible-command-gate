@@ -368,10 +368,12 @@ GuardedPattern:
     pattern — Rust binary → GitHub Release, never GitHub Actions.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
-    deny-must-still-fire regression suite plus a structured coverage-diff
-    check (removed patterns, widened `safe_patterns`, narrowed
-    `guarded_patterns` (especially those where `destructive: true`)) as required, build-failing `icg-ci` gates
-    (Layer 1); human review informed by that generated diff report, not
+    deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
+    report (removed patterns, widened `safe_patterns`, narrowed
+    `guarded_patterns` (especially those where `destructive: true`), with
+    previous/current values and an explicit justification field) as required,
+    build-failing `icg-ci` gates (Layer 1); human review informed by that
+    generated diff report, not
     raw regex (Layer 2); and a self-updater that tracks a separately-
     advancing trust pointer rather than bare "latest release" (Layer 4,
     minimal form). Build provenance/signing and staged/canary rollout

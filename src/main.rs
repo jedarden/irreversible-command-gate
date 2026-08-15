@@ -31,6 +31,9 @@ enum Commands {
         previous: PathBuf,
         /// Path to current release's rule pack manifest
         current: PathBuf,
+        /// Explicit rationale required when the diff reports a regression
+        #[arg(short, long)]
+        justification: Option<String>,
     },
     /// Generate and validate the fixed deny-regression suite for a rule pack
     RegressionSuite {
@@ -146,56 +149,30 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::CoverageDiff { previous, current } => {
-            let diff = run_coverage_diff(previous, current)?;
+        Commands::CoverageDiff {
+            previous,
+            current,
+            justification,
+        } => {
+            let diff = run_coverage_diff(previous.clone(), current.clone())?;
+            let report = render_coverage_diff_report(
+                &previous,
+                &current,
+                &diff,
+                justification.as_deref(),
+            );
+            print!("{report}");
 
-            // Print structured report
-            println!("# Coverage Diff Report\n");
-            println!("## Removed Guarded Patterns");
-
-            if diff.removed_guarded_patterns.is_empty() {
-                println!("No removed guarded patterns\n");
-            } else {
-                for id in &diff.removed_guarded_patterns {
-                    println!("- {}", id);
-                }
-                println!();
-            }
-
-            println!("## Widened Safe Patterns");
-
-            if diff.widened_safe_patterns.is_empty() {
-                println!("No widened safe patterns\n");
-            } else {
-                for change in &diff.widened_safe_patterns {
-                    println!("- Pattern ID: {}", change.pattern_id);
-                    println!("  Previous: {}", change.previous);
-                    println!("  Current: {}", change.current);
-                    println!();
-                }
-            }
-
-            println!("## Narrowed Destructive Patterns");
-
-            if diff.narrowed_destructive_patterns.is_empty() {
-                println!("No narrowed destructive patterns\n");
-            } else {
-                for change in &diff.narrowed_destructive_patterns {
-                    println!("- Pattern ID: {}", change.pattern_id);
-                    println!("  Previous: {}", change.previous);
-                    println!("  Current: {}", change.current);
-                    println!();
-                }
-            }
-
-            // Exit with error if regressions detected
-            if diff.has_regressions() {
-                eprintln!("\n❌ Coverage regressions detected!");
-                eprintln!("This release contains changes that reduce protection coverage.");
-                eprintln!("Explicit justification required for release approval.");
-                std::process::exit(1);
-            } else {
-                println!("✅ No coverage regressions detected.");
+            // A regression may be approved only when the report carries an
+            // explicit, non-blank rationale. The report is printed first so
+            // the missing field is still visible in CI output for Layer 2.
+            if diff.has_regressions()
+                && !CoverageDiff::has_explicit_justification(justification.as_deref())
+            {
+                eprintln!(
+                    "Coverage regressions detected; rerun with --justification <rationale>."
+                );
+                std::process::exit(2);
             }
 
             Ok(())
