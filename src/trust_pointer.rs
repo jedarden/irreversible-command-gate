@@ -65,6 +65,7 @@ impl TrustPointerStore {
     ///
     /// The trust pointer file is stored in a root-owned system location:
     /// - Default: `/etc/icg/trust-pointer.json`
+    /// - With channel: `/etc/icg/trust-pointer-<channel>.json` (e.g., `trust-pointer-canary.json`)
     /// - Or a custom path for testing/CI contexts
     ///
     /// See docs/plan/plan.md Architecture 'Deploy location' for security rationale
@@ -72,6 +73,31 @@ impl TrustPointerStore {
         Self {
             path: path.as_ref().to_path_buf(),
         }
+    }
+
+    /// Create a trust pointer store for a specific channel
+    ///
+    /// This supports canary rollout patterns where different fleet segments
+    /// track different release channels (e.g., "stable" vs "canary").
+    ///
+    /// # Arguments
+    /// * `channel` - The channel name (e.g., "canary", "stable")
+    ///
+    /// # Returns
+    /// A TrustPointerStore that reads from `/etc/icg/trust-pointer-<channel>.json`
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use icg::trust_pointer::TrustPointerStore;
+    /// // Canary channel worker (launched via NEEDLE --identifier canary-icg)
+    /// let canary_store = TrustPointerStore::for_channel("canary");
+    /// // Stable channel (default fleet)
+    /// let stable_store = TrustPointerStore::for_channel("stable");
+    /// ```
+    pub fn for_channel(channel: &str) -> Self {
+        let filename = format!("trust-pointer-{}.json", channel);
+        let path = PathBuf::from("/etc/icg").join(filename);
+        Self::new(path)
     }
 
     /// Verify that the artifact directory is secure
@@ -180,6 +206,11 @@ impl TrustPointerStore {
         // Use root-owned system location, not user-writable path
         // See docs/plan/plan.md Architecture 'Deploy location'
         Ok(PathBuf::from("/etc/icg/trust-pointer.json"))
+    }
+
+    /// Get the path to the trust pointer file
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Load the current trust pointer
@@ -346,6 +377,55 @@ mod tests {
         // Second write (should atomic-replace, not corrupt)
         store.set_trusted_ref("v0.2.0")?;
         assert_eq!(store.get_trusted_ref()?, Some("v0.2.0".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_for_channel_path() {
+        let canary_store = TrustPointerStore::for_channel("canary");
+        assert_eq!(
+            canary_store.path,
+            PathBuf::from("/etc/icg/trust-pointer-canary.json")
+        );
+
+        let stable_store = TrustPointerStore::for_channel("stable");
+        assert_eq!(
+            stable_store.path,
+            PathBuf::from("/etc/icg/trust-pointer-stable.json")
+        );
+
+        let custom_store = TrustPointerStore::for_channel("beta");
+        assert_eq!(
+            custom_store.path,
+            PathBuf::from("/etc/icg/trust-pointer-beta.json")
+        );
+    }
+
+    #[test]
+    fn test_channel_isolation() -> Result<()> {
+        let dir = tempdir()?;
+
+        // Create two separate channel stores
+        let canary_path = dir.path().join("trust-pointer-canary.json");
+        let stable_path = dir.path().join("trust-pointer-stable.json");
+
+        let canary_store = TrustPointerStore::new(&canary_path);
+        let stable_store = TrustPointerStore::new(&stable_path);
+
+        // Set different refs for each channel
+        canary_store.set_trusted_ref("v0.2.0-canary")?;
+        stable_store.set_trusted_ref("v0.1.0-stable")?;
+
+        // Verify they're isolated
+        assert_eq!(
+            canary_store.get_trusted_ref()?,
+            Some("v0.2.0-canary".to_string())
+        );
+        assert_eq!(
+            stable_store.get_trusted_ref()?,
+            Some("v0.1.0-stable".to_string())
+        );
 
         Ok(())
     }

@@ -106,6 +106,13 @@ pub struct UpdateConfig {
     pub trust_pointer_path: PathBuf,
     /// Path to the update check state file
     pub state_path: PathBuf,
+    /// Optional channel identifier for canary rollout (e.g., "canary", "stable")
+    ///
+    /// When set, the updater uses a channel-specific trust pointer file
+    /// (`trust-pointer-<channel>.json`) instead of the default.
+    /// This supports staged rollout patterns where different fleet segments
+    /// track different release channels.
+    pub channel: Option<String>,
 }
 
 impl Default for UpdateConfig {
@@ -120,6 +127,7 @@ impl Default for UpdateConfig {
             artifact_path,
             trust_pointer_path: PathBuf::from("/etc/icg/trust-pointer.json"),
             state_path: PathBuf::from("/etc/icg/last-update-check.json"),
+            channel: None,
         }
     }
 }
@@ -170,11 +178,22 @@ pub fn run_update(config: UpdateConfig) -> Result<UpdateResult> {
 
 /// Async implementation of the updater
 async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
+    // Determine trust pointer path based on channel
+    let trust_pointer_path = if let Some(channel) = &config.channel {
+        // Use channel-specific trust pointer for canary rollout
+        TrustPointerStore::for_channel(channel).path().to_path_buf()
+    } else {
+        config.trust_pointer_path.clone()
+    };
+
     // Load the trust pointer to get the trusted reference
-    let trust_store = TrustPointerStore::new(&config.trust_pointer_path);
+    let trust_store = TrustPointerStore::new(&trust_pointer_path);
     let trusted_ref = trust_store.get_trusted_ref()?
         .context("No trust pointer exists. Set one with: icg trust set <reference>")?;
 
+    if config.channel.is_some() {
+        println!("📋 Channel: `{}`", config.channel.as_ref().unwrap());
+    }
     println!("📋 Trusted reference: `{}`", trusted_ref);
 
     // Check GitHub Releases API for the release

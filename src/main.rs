@@ -41,12 +41,26 @@ enum Commands {
         /// Path where the rule pack artifact should be stored (defaults to /etc/icg/rule-pack.json)
         #[arg(short, long)]
         artifact_path: Option<PathBuf>,
+        /// Channel identifier for canary rollout (e.g., "canary", "stable")
+        ///
+        /// When set, uses a channel-specific trust pointer file
+        /// (e.g., /etc/icg/trust-pointer-canary.json instead of /etc/icg/trust-pointer.json).
+        /// This supports staged rollout patterns where different fleet segments
+        /// track different release channels.
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Show current status and blind-spot self-report
     Status {
         /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         trust_pointer_path: Option<PathBuf>,
+        /// Channel identifier for canary rollout (e.g., "canary", "stable")
+        ///
+        /// When set, uses a channel-specific trust pointer file
+        /// (e.g., /etc/icg/trust-pointer-canary.json instead of /etc/icg/trust-pointer.json).
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Scaffold a new rule pack
     NewPack {
@@ -74,6 +88,12 @@ enum TrustSubcommand {
         /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
+        /// Channel identifier for canary rollout (e.g., "canary", "stable")
+        ///
+        /// When set, uses a channel-specific trust pointer file
+        /// (e.g., /etc/icg/trust-pointer-canary.json instead of /etc/icg/trust-pointer.json).
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Set a new trusted release reference
     Set {
@@ -85,6 +105,12 @@ enum TrustSubcommand {
         /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
+        /// Channel identifier for canary rollout (e.g., "canary", "stable")
+        ///
+        /// When set, uses a channel-specific trust pointer file
+        /// (e.g., /etc/icg/trust-pointer-canary.json instead of /etc/icg/trust-pointer.json).
+        #[arg(long)]
+        channel: Option<String>,
     },
     /// Check if a given reference is currently trusted
     Check {
@@ -93,6 +119,12 @@ enum TrustSubcommand {
         /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
+        /// Channel identifier for canary rollout (e.g., "canary", "stable")
+        ///
+        /// When set, uses a channel-specific trust pointer file
+        /// (e.g., /etc/icg/trust-pointer-canary.json instead of /etc/icg/trust-pointer.json).
+        #[arg(long)]
+        channel: Option<String>,
     },
 }
 
@@ -214,15 +246,24 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Trust(subcommand) => match subcommand {
-            TrustSubcommand::Show { path } => {
-                let store_path = path.or_else(|| TrustPointerStore::default_path().ok())
-                    .context("Failed to determine trust pointer path")?;
-                let store = TrustPointerStore::new(store_path);
+            TrustSubcommand::Show { path, channel } => {
+                let store_path = if let Some(ref ch) = channel {
+                    // Use channel-specific trust pointer for canary rollout
+                    TrustPointerStore::for_channel(ch).path().to_path_buf()
+                } else {
+                    path.or_else(|| TrustPointerStore::default_path().ok())
+                        .context("Failed to determine trust pointer path")?
+                };
+                let store = TrustPointerStore::new(store_path.clone());
 
                 match store.load()? {
                     Some(pointer) => {
                         println!("# Trust Pointer Status");
+                        if let Some(ref ch) = channel {
+                            println!("**Channel:** `{}`", ch);
+                        }
                         println!();
+                        println!("**Path:** {}", store_path.display());
                         println!("**Trusted Reference:** `{}`", pointer.trusted_ref);
                         println!("**Last Updated:** {}", pointer.updated_at);
                         if let Some(justification) = pointer.justification {
@@ -230,10 +271,19 @@ fn main() -> Result<()> {
                         }
                     }
                     None => {
-                        println!("No trust pointer exists yet.");
+                        if let Some(ref ch) = channel {
+                            println!("No trust pointer exists for channel `{}`.", ch);
+                        } else {
+                            println!("No trust pointer exists yet.");
+                        }
                         println!();
-                        println!("To set one, run:");
-                        println!("  icg trust set <reference>");
+                        if let Some(ref ch) = channel {
+                            println!("To set one, run:");
+                            println!("  icg trust set --channel {} <reference>", ch);
+                        } else {
+                            println!("To set one, run:");
+                            println!("  icg trust set <reference>");
+                        }
                     }
                 }
 
@@ -243,10 +293,16 @@ fn main() -> Result<()> {
                 trusted_ref,
                 justification,
                 path,
+                channel,
             } => {
-                let store_path = path.or_else(|| TrustPointerStore::default_path().ok())
-                    .context("Failed to determine trust pointer path")?;
-                let store = TrustPointerStore::new(store_path);
+                let store_path = if let Some(ref ch) = channel {
+                    // Use channel-specific trust pointer for canary rollout
+                    TrustPointerStore::for_channel(ch).path().to_path_buf()
+                } else {
+                    path.or_else(|| TrustPointerStore::default_path().ok())
+                        .context("Failed to determine trust pointer path")?
+                };
+                let store = TrustPointerStore::new(store_path.clone());
 
                 if let Some(justification) = justification {
                     store.set_trusted_ref_with_justification(&trusted_ref, justification)?;
@@ -254,29 +310,51 @@ fn main() -> Result<()> {
                     store.set_trusted_ref(&trusted_ref)?;
                 }
 
-                println!("✅ Trust pointer updated to: `{}`", trusted_ref);
+                if let Some(ref ch) = channel {
+                    println!("✅ Trust pointer for channel `{}` updated to: `{}`", ch, trusted_ref);
+                } else {
+                    println!("✅ Trust pointer updated to: `{}`", trusted_ref);
+                }
 
                 Ok(())
             }
-            TrustSubcommand::Check { reference, path } => {
-                let store_path = path.or_else(|| TrustPointerStore::default_path().ok())
-                    .context("Failed to determine trust pointer path")?;
-                let store = TrustPointerStore::new(store_path);
+            TrustSubcommand::Check { reference, path, channel } => {
+                let store_path = if let Some(ref ch) = channel {
+                    // Use channel-specific trust pointer for canary rollout
+                    TrustPointerStore::for_channel(ch).path().to_path_buf()
+                } else {
+                    path.or_else(|| TrustPointerStore::default_path().ok())
+                        .context("Failed to determine trust pointer path")?
+                };
+                let store = TrustPointerStore::new(store_path.clone());
 
                 let is_trusted = store.is_trusted(&reference)?;
 
                 if is_trusted {
-                    println!("✅ Reference `{}` is trusted.", reference);
+                    if let Some(ref ch) = channel {
+                        println!("✅ Reference `{}` is trusted on channel `{}`.", reference, ch);
+                    } else {
+                        println!("✅ Reference `{}` is trusted.", reference);
+                    }
                     std::process::exit(0);
                 } else {
                     match store.get_trusted_ref()? {
                         Some(trusted) => {
-                            println!("❌ Reference `{}` is NOT trusted.", reference);
+                            if let Some(ref ch) = channel {
+                                println!("❌ Reference `{}` is NOT trusted on channel `{}`.", reference, ch);
+                            } else {
+                                println!("❌ Reference `{}` is NOT trusted.", reference);
+                            }
                             println!("Current trusted reference: `{}`", trusted);
                         }
                         None => {
-                            println!("❌ Reference `{}` is NOT trusted.", reference);
-                            println!("No trust pointer exists yet.");
+                            if let Some(ref ch) = channel {
+                                println!("❌ Reference `{}` is NOT trusted on channel `{}`.", reference, ch);
+                                println!("No trust pointer exists for channel `{}` yet.", ch);
+                            } else {
+                                println!("❌ Reference `{}` is NOT trusted.", reference);
+                                println!("No trust pointer exists yet.");
+                            }
                         }
                     }
                     std::process::exit(1);
@@ -286,10 +364,15 @@ fn main() -> Result<()> {
         Commands::Update {
             trust_pointer_path,
             artifact_path,
+            channel,
         } => {
             let mut config = UpdateConfig::default();
 
-            if let Some(trust_path) = trust_pointer_path {
+            // Set channel if specified
+            if let Some(ref ch) = channel {
+                config.channel = Some(ch.clone());
+                config.trust_pointer_path = TrustPointerStore::for_channel(ch).path().to_path_buf();
+            } else if let Some(trust_path) = trust_pointer_path {
                 config.trust_pointer_path = trust_path;
             }
 
@@ -319,16 +402,28 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        Commands::Status { trust_pointer_path } => {
-            let store_path = trust_pointer_path
-                .or_else(|| TrustPointerStore::default_path().ok())
-                .context("Failed to determine trust pointer path")?;
-            let store = TrustPointerStore::new(store_path);
+        Commands::Status { trust_pointer_path, channel } => {
+            let store_path = if let Some(ref ch) = channel {
+                // Use channel-specific trust pointer for canary rollout
+                TrustPointerStore::for_channel(ch).path().to_path_buf()
+            } else {
+                trust_pointer_path
+                    .or_else(|| TrustPointerStore::default_path().ok())
+                    .context("Failed to determine trust pointer path")?
+            };
+            let store = TrustPointerStore::new(store_path.clone());
 
             println!("# icg Status\n");
 
+            // Channel info if applicable
+            if let Some(ref ch) = channel {
+                println!("**Channel:** `{}`", ch);
+                println!();
+            }
+
             // Trust Pointer section
             println!("## Trust Pointer");
+            println!("  **Path:** {}", store_path.display());
             match store.load()? {
                 Some(pointer) => {
                     println!("  **Reference:** `{}`", pointer.trusted_ref);
@@ -339,7 +434,11 @@ fn main() -> Result<()> {
                 }
                 None => {
                     println!("  (not configured)");
-                    println!("  Run `icg trust set <reference>` to configure.");
+                    if channel.is_some() {
+                        println!("  Run `icg update --channel {}` to initialize.", channel.as_ref().unwrap());
+                    } else {
+                        println!("  Run `icg trust set <reference>` to configure.");
+                    }
                 }
             }
             println!();
@@ -359,7 +458,11 @@ fn main() -> Result<()> {
                 }
             } else {
                 println!("  (no rule pack found at {})", artifact_path.display());
-                println!("  Run `icg update` to download the rule pack.");
+                if channel.is_some() {
+                    println!("  Run `icg update --channel {}` to download the rule pack.", channel.as_ref().unwrap());
+                } else {
+                    println!("  Run `icg update` to download the rule pack.");
+                }
             }
             println!();
 
@@ -374,7 +477,11 @@ fn main() -> Result<()> {
                 }
                 None => {
                     println!("  (no successful update checks recorded)");
-                    println!("  Run `icg update` to check for and download updates.");
+                    if channel.is_some() {
+                        println!("  Run `icg update --channel {}` to check for and download updates.", channel.as_ref().unwrap());
+                    } else {
+                        println!("  Run `icg update` to check for and download updates.");
+                    }
                 }
             }
             println!();
