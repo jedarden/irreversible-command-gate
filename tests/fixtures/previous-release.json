@@ -1,51 +1,80 @@
 {
   "id": "test-pack-previous",
+  "tool_keywords": ["vault", "git"],
+  "applies_to": [],
   "safe_patterns": [
     {
       "id": "safe-read-operations",
-      "check": "vault kv get"
+      "type": "command_regex",
+      "regex": "vault kv get"
     },
     {
       "id": "safe-list",
-      "check": "vault.*list"
+      "type": "command_regex",
+      "regex": "vault.*list"
     },
     {
       "id": "safe-git-status",
-      "check": "^git status"
+      "type": "command_regex",
+      "regex": "^git status"
     }
   ],
   "guarded_patterns": [
     {
       "id": "vault-kv-destroy",
-      "check": "vault kv destroy",
-      "tier": 1,
+      "type": "command_regex",
+      "regex": "vault kv destroy",
+      "tier": "tier1",
       "severity": "Critical",
       "explanation": "Permanently destroys vault data versions",
-      "destructive": true
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "vault kv destroy is permanently destructive and cannot be undone",
+        "rewrite_template": null
+      }
     },
     {
       "id": "vault-policy-delete",
-      "check": "vault policy delete",
-      "tier": 1,
+      "type": "command_regex",
+      "regex": "vault policy delete",
+      "tier": "tier1",
       "severity": "High",
       "explanation": "Deletes an ACL policy",
-      "destructive": true
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Deleting ACL policies can remove access controls",
+        "rewrite_template": null
+      }
     },
     {
       "id": "git-force-push",
-      "check": "git push.*--force",
-      "tier": 1,
+      "type": "command_regex",
+      "regex": "git push.*--force",
+      "tier": "tier1",
       "severity": "Critical",
       "explanation": "Force-push rewrites git history",
-      "destructive": true
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Force-push rewrites git history and can lose commits. Use git push --force-with-lease instead.",
+        "rewrite_template": "git push --force-with-lease"
+      }
     },
     {
       "id": "vault-secrets-disable",
-      "check": "vault secrets disable",
-      "tier": 1,
+      "type": "command_regex",
+      "regex": "vault secrets disable",
+      "tier": "tier1",
       "severity": "High",
       "explanation": "Disables an entire secrets engine",
-      "destructive": true
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Disabling a secrets engine cuts off access to all secrets under it",
+        "rewrite_template": null
+      }
     }
   ]
 }

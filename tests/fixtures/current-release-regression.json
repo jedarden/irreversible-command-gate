@@ -1,31 +1,47 @@
 {
   "id": "test-pack-current-with-regressions",
+  "tool_keywords": ["vault", "git"],
+  "applies_to": [],
   "safe_patterns": [
     {
       "id": "safe-read-operations",
-      "check": "vault.*get"
+      "type": "command_regex",
+      "regex": "vault.*get"
     },
     {
       "id": "safe-list",
-      "check": ".*"
+      "type": "command_regex",
+      "regex": ".*"
     }
   ],
   "guarded_patterns": [
     {
       "id": "vault-kv-destroy",
-      "check": "vault kv destroy",
-      "tier": 1,
+      "type": "command_regex",
+      "regex": "vault kv destroy",
+      "tier": "tier1",
       "severity": "Critical",
       "explanation": "Permanently destroys vault data versions",
-      "destructive": true
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "vault kv destroy is permanently destructive and cannot be undone",
+        "rewrite_template": null
+      }
     },
     {
       "id": "git-force-push",
-      "check": "git push --force",
-      "tier": 1,
+      "type": "command_regex",
+      "regex": "git push --force",
+      "tier": "tier1",
       "severity": "Critical",
       "explanation": "Force-push rewrites git history",
-      "destructive": true
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Force-push rewrites git history and can lose commits. Use git push --force-with-lease instead.",
+        "rewrite_template": "git push --force-with-lease"
+      }
     }
   ]
 }

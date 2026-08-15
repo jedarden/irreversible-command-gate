@@ -6,6 +6,8 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Trust pointer data structure
@@ -61,14 +63,116 @@ pub struct TrustPointerStore {
 impl TrustPointerStore {
     /// Create a new trust pointer store
     ///
-    /// The trust pointer file is typically stored in:
-    /// - `$XDG_CONFIG_HOME/icg/trust-pointer.json`
-    /// - `$HOME/.config/icg/trust-pointer.json` (fallback)
+    /// The trust pointer file is stored in a root-owned system location:
+    /// - Default: `/etc/icg/trust-pointer.json`
     /// - Or a custom path for testing/CI contexts
+    ///
+    /// See docs/plan/plan.md Architecture 'Deploy location' for security rationale
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
         }
+    }
+
+    /// Verify that the artifact directory is secure
+    ///
+    /// This check ensures that:
+    /// - The directory is owned by root (uid 0)
+    /// - The directory is not world-writable
+    /// - If not running as root, the directory is not writable by the current user
+    ///
+    /// This prevents the guarded agent from being able to modify its own
+    /// trust configuration, which would reproduce the security gap that
+    /// org-rule-guard.py has.
+    ///
+    /// Returns Ok(()) if the directory is secure, Err otherwise.
+    /// For testing/CI contexts using custom paths, this check only warns
+    /// rather than failing.
+    pub fn verify_artifact_directory_security(&self) -> Result<()> {
+        let artifact_dir = self.path
+            .parent()
+            .context("Trust pointer path has no parent directory")?;
+
+        // If the directory doesn't exist yet, we can't verify security yet
+        // This is expected during initial setup with sudo
+        if !artifact_dir.exists() {
+            return Ok(());
+        }
+
+        // Check directory metadata
+        let metadata = fs::metadata(artifact_dir)
+            .with_context(|| format!("Failed to read metadata for directory: {}", artifact_dir.display()))?;
+
+        // Get ownership information
+        let owner = metadata.uid();
+        let perms = metadata.permissions().mode();
+
+        // Check if owned by root
+        if owner != 0 {
+            // If we're using the default /etc/icg path, this is a security issue
+            if artifact_dir == PathBuf::from("/etc/icg") {
+                anyhow::bail!(
+                    "Security violation: Artifact directory {} is NOT owned by root (owned by uid {}). \
+                    This reproduces the self-edit gap that org-rule-guard.py has. \
+                    Run: sudo chown root:root {}",
+                    artifact_dir.display(),
+                    owner,
+                    artifact_dir.display()
+                );
+            } else {
+                // For custom paths (testing/CI), just warn
+                eprintln!(
+                    "⚠️  Warning: Custom artifact directory {} is owned by uid {}, not root. \
+                    This is acceptable for testing but NOT for production.",
+                    artifact_dir.display(),
+                    owner
+                );
+            }
+        }
+
+        // Check if world-writable (should not be)
+        if perms & 0o002 != 0 {
+            anyhow::bail!(
+                "Security violation: Artifact directory {} is world-writable (mode {:o}). \
+                This allows any user to modify trust configuration. \
+                Run: sudo chmod o-w {}",
+                artifact_dir.display(),
+                perms,
+                artifact_dir.display()
+            );
+        }
+
+        // If not running as root, verify we don't have write access
+        if std::env::var("USER").as_deref() != Ok("root") {
+            // Try to create a temporary file in the directory
+            let test_file = artifact_dir.join(".icg-security-test");
+            match fs::write(&test_file, b"test") {
+                Ok(_) => {
+                    // We successfully wrote - this is a security issue for the default path
+                    let _ = fs::remove_file(&test_file); // Clean up
+                    if artifact_dir == PathBuf::from("/etc/icg") {
+                        anyhow::bail!(
+                            "Security violation: Current user can WRITE to artifact directory {}. \
+                            This reproduces the self-edit gap that org-rule-guard.py has. \
+                            The guarded agent must NOT be able to modify its own trust configuration. \
+                            Fix the permissions or run as root to update.",
+                            artifact_dir.display()
+                        );
+                    } else {
+                        eprintln!(
+                            "⚠️  Warning: Current user can write to custom artifact directory {}. \
+                            This is acceptable for testing but NOT for production.",
+                            artifact_dir.display()
+                        );
+                    }
+                }
+                Err(_) => {
+                    // Write failed as expected - directory is secure from this user
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get the default trust pointer file path
@@ -82,6 +186,9 @@ impl TrustPointerStore {
     ///
     /// Returns None if the file doesn't exist yet
     pub fn load(&self) -> Result<Option<TrustPointer>> {
+        // Verify security before reading
+        self.verify_artifact_directory_security()?;
+
         if !self.path.exists() {
             return Ok(None);
         }
@@ -97,6 +204,9 @@ impl TrustPointerStore {
 
     /// Save a trust pointer
     pub fn save(&self, pointer: &TrustPointer) -> Result<()> {
+        // Verify security before writing
+        self.verify_artifact_directory_security()?;
+
         // Write to a temporary file first, then atomic rename
         let temp_path = self.path.with_extension("tmp");
 

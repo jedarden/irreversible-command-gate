@@ -107,6 +107,14 @@ fn test_load_rule_pack() {
     let vault_destroy = pack.guarded_patterns.iter()
         .find(|p| p.id == "vault-kv-destroy")
         .expect("Should find vault-kv-destroy pattern");
-    assert_eq!(vault_destroy.check_value, "vault kv destroy");
+
+    // Extract regex from the check enum
+    match &vault_destroy.check {
+        icg::rule_pack::Check::CommandRegex { regex } => {
+            assert_eq!(regex, "vault kv destroy");
+        }
+        _ => panic!("Expected CommandRegex check"),
+    }
+
     assert!(vault_destroy.destructive);
 }

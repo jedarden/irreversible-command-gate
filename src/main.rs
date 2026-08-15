@@ -1,5 +1,6 @@
 mod coverage;
 mod engine;
+mod rule_pack;
 mod trust_pointer;
 mod update;
 
@@ -34,16 +35,16 @@ enum Commands {
     Trust(TrustSubcommand),
     /// Update rule pack from GitHub Releases (per the trust pointer)
     Update {
-        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         trust_pointer_path: Option<PathBuf>,
-        /// Path where the rule pack artifact should be stored
+        /// Path where the rule pack artifact should be stored (defaults to /etc/icg/rule-pack.json)
         #[arg(short, long)]
         artifact_path: Option<PathBuf>,
     },
     /// Show current status and blind-spot self-report
     Status {
-        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         trust_pointer_path: Option<PathBuf>,
     },
@@ -70,7 +71,7 @@ enum Commands {
 enum TrustSubcommand {
     /// Show the currently trusted release reference
     Show {
-        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
     },
@@ -81,7 +82,7 @@ enum TrustSubcommand {
         /// Optional justification for why this ref is trusted
         #[arg(short, long)]
         justification: Option<String>,
-        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
     },
@@ -89,7 +90,7 @@ enum TrustSubcommand {
     Check {
         /// The reference to check against the trust pointer
         reference: String,
-        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
     },
