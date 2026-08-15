@@ -1,9 +1,10 @@
-//! Engine: command-mode and content-mode input acquisition
+//! Engine: command-mode and content-mode input acquisition and pack dispatch
 //!
 //! This module handles:
 //! - Input acquisition from PreToolUse JSON (hook mode) or argv (wrapper mode)
 //! - Command-mode: shell line segmentation (splits on ;/&&/||/, skips sudo/env-assignment/wrapper prefixes)
 //!   Basename-matching tokens against tool_keywords for pack dispatch
+//! - Pack dispatch: routes tokens to matching packs and evaluates guarded_patterns
 //! - Content-mode: file path + content reading from Write/Edit PreToolUse JSON
 //!   Used for content regex checks (storage-class, image-tag packs)
 
@@ -11,6 +12,7 @@ use anyhow::{Context, Result};
 use crate::rule_pack::Pack;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// PreToolUse hook JSON structure (partial, for input parsing)
@@ -226,7 +228,33 @@ pub struct CommandToken {
     pub args: Vec<String>,
 }
 
-/// Engine: command-mode input acquisition and segmentation
+/// Check result from evaluating a command against a rule pack
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckResult {
+    /// Command is allowed (no patterns matched or only safe_patterns matched)
+    Allowed,
+    /// Command is denied with a reason
+    Denied {
+        reason: String,
+        pack_id: String,
+        pattern_id: String,
+    },
+    /// Command should be rewritten (updatedInput channel)
+    Rewrite {
+        reason: String,
+        rewrite: String,
+        pack_id: String,
+        pattern_id: String,
+    },
+    /// Command allowed but with warning (additionalContext channel)
+    Warning {
+        reason: String,
+        pack_id: String,
+        pattern_id: String,
+    },
+}
+
+/// Engine: command-mode input acquisition, segmentation, and pack dispatch
 pub struct Engine {
     /// Splits on ||, &&, ;, |, &, newline
     segment_splitter: Regex,
@@ -234,6 +262,10 @@ pub struct Engine {
     env_assign_pattern: Regex,
     /// Prefixes to skip: sudo, command, exec, time, nohup
     ignored_prefixes: Vec<String>,
+    /// Loaded rule packs (pack_id -> Pack)
+    packs: HashMap<String, crate::rule_pack::Pack>,
+    /// tool_keywords -> pack_id mapping for fast dispatch
+    keyword_index: HashMap<String, Vec<String>>,
 }
 
 impl Default for Engine {
@@ -267,6 +299,8 @@ impl Engine {
             segment_splitter,
             env_assign_pattern,
             ignored_prefixes,
+            packs: HashMap::new(),
+            keyword_index: HashMap::new(),
         }
     }
 
@@ -462,6 +496,233 @@ impl Engine {
             .into_iter()
             .map(|token| token.executable)
             .collect()
+    }
+
+    /// Load a rule pack into the engine for pack dispatch
+    ///
+    /// This builds an index from tool_keywords to pack_ids so that when
+    /// we evaluate a command, we can quickly find which packs to check.
+    pub fn load_pack(&mut self, pack: crate::rule_pack::Pack) -> Result<()> {
+        let pack_id = pack.id.clone();
+
+        // Index tool_keywords for fast dispatch
+        for keyword in &pack.tool_keywords {
+            self.keyword_index
+                .entry(keyword.clone())
+                .or_insert_with(Vec::new)
+                .push(pack_id.clone());
+        }
+
+        // Store the pack itself
+        self.packs.insert(pack_id.clone(), pack);
+
+        Ok(())
+    }
+
+    /// Load rule packs from a directory
+    ///
+    /// Reads all .json files from the directory and loads them as packs.
+    pub fn load_packs_from_dir<P: AsRef<Path>>(&mut self, dir: P) -> Result<()> {
+        let dir = dir.as_ref();
+        let entries = std::fs::read_dir(dir)
+            .with_context(|| format!("Failed to read pack directory: {}", dir.display()))?;
+
+        for entry in entries {
+            let entry = entry.context("Failed to read directory entry")?;
+            let path = entry.path();
+
+            // Only load .json files
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                let pack = crate::rule_pack::load_pack(&path)
+                    .with_context(|| format!("Failed to load pack from: {}", path.display()))?;
+                self.load_pack(pack)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Evaluate a command token against loaded rule packs
+    ///
+    /// This is the core pack dispatch logic:
+    /// 1. Find packs whose tool_keywords match the token's executable
+    /// 2. Also include packs with empty tool_keywords (unconditional packs like secrets)
+    /// 3. For each matching pack, check safe_patterns first (skip the rest if any match)
+    /// 4. Then check guarded_patterns (return first match)
+    /// 5. Return the most severe result (deny > rewrite > warning > allowed)
+    pub fn evaluate_token(&self, token: &CommandToken) -> CheckResult {
+        let executable = &token.executable;
+
+        // Reconstruct the full command string for regex matching
+        let full_command = format!("{} {}", executable, token.args.join(" "));
+
+        // Find packs that match this executable via tool_keywords
+        let mut matching_pack_ids: Vec<String> = self.keyword_index
+            .get(executable)
+            .map(|ids| ids.iter().cloned().collect())
+            .unwrap_or_default();
+
+        // Also include packs with empty tool_keywords (unconditional packs like secrets)
+        // These packs scan the entire raw Bash command string regardless of executable
+        for (pack_id, pack) in &self.packs {
+            if pack.tool_keywords.is_empty() {
+                matching_pack_ids.push(pack_id.clone());
+            }
+        }
+
+        if matching_pack_ids.is_empty() {
+            // No packs match this executable - allow by default (fail-open)
+            return CheckResult::Allowed;
+        }
+
+        // Check each matching pack
+        let mut result = CheckResult::Allowed;
+
+        for pack_id in &matching_pack_ids {
+            let pack = match self.packs.get(pack_id) {
+                Some(p) => p,
+                None => continue, // Pack not loaded - skip
+            };
+
+            // Check safe_patterns first - if any match, skip this pack entirely
+            let safe_match = pack.safe_patterns.iter().find(|pattern| {
+                self.pattern_matches_command(pattern, &full_command)
+            });
+
+            if safe_match.is_some() {
+                // Safe pattern matched - this pack doesn't apply
+                continue;
+            }
+
+            // Check guarded_patterns
+            for guarded_pattern in &pack.guarded_patterns {
+                // Create a temporary Pattern wrapper for the guarded pattern's check
+                let pattern_wrapper = crate::rule_pack::Pattern {
+                    id: guarded_pattern.id.clone(),
+                    check: guarded_pattern.check.clone(),
+                };
+
+                if self.pattern_matches_command(&pattern_wrapper, &full_command) {
+                    // Pattern matched - convert to CheckResult
+                    let pattern_result = self.guarded_pattern_to_result(
+                        guarded_pattern,
+                        pack_id,
+                        &full_command,
+                    );
+
+                    // Return immediately if this is a deny (most severe)
+                    if matches!(pattern_result, CheckResult::Denied { .. }) {
+                        return pattern_result;
+                    }
+
+                    // Otherwise, track the most severe result so far
+                    result = self.most_severe_result(result, pattern_result);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Evaluate all command tokens and return the most severe result
+    ///
+    /// This is the main entry point for command-mode checking:
+    /// - Segments the command into tokens
+    /// - Evaluates each token against loaded packs
+    /// - Returns the most severe result across all tokens
+    pub fn evaluate_command(&self, source: &CommandSource) -> CheckResult {
+        let tokens = self.segment_command(source);
+
+        if tokens.is_empty() {
+            return CheckResult::Allowed;
+        }
+
+        let mut result = CheckResult::Allowed;
+
+        for token in &tokens {
+            let token_result = self.evaluate_token(token);
+            result = self.most_severe_result(result, token_result);
+
+            // Early exit on deny
+            if matches!(result, CheckResult::Denied { .. }) {
+                return result;
+            }
+        }
+
+        result
+    }
+
+    /// Check if a pattern matches a command string
+    fn pattern_matches_command(&self, pattern: &crate::rule_pack::Pattern, command: &str) -> bool {
+        match &pattern.check {
+            crate::rule_pack::Check::CommandRegex { regex } => {
+                // Compile and match the regex
+                match Regex::new(regex) {
+                    Ok(re) => re.is_match(command),
+                    Err(_) => {
+                        // Invalid regex - fail open by not matching
+                        eprintln!("Warning: Invalid regex in pattern '{}': {}", pattern.id, regex);
+                        false
+                    }
+                }
+            }
+            crate::rule_pack::Check::ContentRegex { .. } => {
+                // Content regex doesn't apply to command-mode checks
+                false
+            }
+            crate::rule_pack::Check::Predicate { .. } => {
+                // Predicate checks are not yet implemented for command-mode
+                false
+            }
+        }
+    }
+
+    /// Convert a GuardedPattern to a CheckResult
+    fn guarded_pattern_to_result(
+        &self,
+        pattern: &crate::rule_pack::GuardedPattern,
+        pack_id: &str,
+        command: &str,
+    ) -> CheckResult {
+        match pattern.redirect.channel {
+            crate::rule_pack::Channel::Deny => CheckResult::Denied {
+                reason: pattern.redirect.reason_template.clone(),
+                pack_id: pack_id.to_string(),
+                pattern_id: pattern.id.clone(),
+            },
+            crate::rule_pack::Channel::UpdatedInput => {
+                let rewrite = pattern.redirect.rewrite_template.clone()
+                    .unwrap_or_else(|| command.to_string());
+                CheckResult::Rewrite {
+                    reason: pattern.redirect.reason_template.clone(),
+                    rewrite,
+                    pack_id: pack_id.to_string(),
+                    pattern_id: pattern.id.clone(),
+                }
+            }
+            crate::rule_pack::Channel::AdditionalContext => CheckResult::Warning {
+                reason: pattern.redirect.reason_template.clone(),
+                pack_id: pack_id.to_string(),
+                pattern_id: pattern.id.clone(),
+            },
+        }
+    }
+
+    /// Determine the most severe of two check results
+    ///
+    /// Severity order: Deny > Rewrite > Warning > Allowed
+    fn most_severe_result(&self, a: CheckResult, b: CheckResult) -> CheckResult {
+        match (&a, &b) {
+            (CheckResult::Denied { .. }, _) => a,
+            (_, CheckResult::Denied { .. }) => b,
+            (CheckResult::Rewrite { .. }, CheckResult::Allowed) => a,
+            (CheckResult::Allowed, CheckResult::Rewrite { .. }) => b,
+            (CheckResult::Rewrite { .. }, _) => a,
+            (_, CheckResult::Rewrite { .. }) => b,
+            (CheckResult::Warning { .. }, CheckResult::Allowed) => a,
+            (CheckResult::Allowed, CheckResult::Warning { .. }) => b,
+            _ => a,
+        }
     }
 
     /// Return packs whose `applies_to` selectors match a Write/Edit target.
@@ -787,5 +1048,375 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].executable, "vault");
         assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    // Pack dispatch tests
+
+    #[test]
+    fn test_load_pack() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "test-pack".to_string(),
+            tool_keywords: vec!["vault".to_string(), "bao".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        // Verify pack is loaded
+        assert!(engine.packs.contains_key("test-pack"));
+        assert_eq!(engine.keyword_index.get("vault").unwrap().len(), 1);
+        assert_eq!(engine.keyword_index.get("bao").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_load_multiple_packs() {
+        let mut engine = default_engine();
+
+        let vault_pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+
+        let git_pack = crate::rule_pack::Pack {
+            id: "git".to_string(),
+            tool_keywords: vec!["git".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+
+        engine.load_pack(vault_pack).unwrap();
+        engine.load_pack(git_pack).unwrap();
+
+        assert_eq!(engine.packs.len(), 2);
+        assert_eq!(engine.keyword_index.get("vault").unwrap().len(), 1);
+        assert_eq!(engine.keyword_index.get("git").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_evaluate_token_no_packs_loaded() {
+        let engine = default_engine();
+        let token = CommandToken {
+            executable: "vault".to_string(),
+            args: vec!["kv".to_string(), "destroy".to_string()],
+        };
+
+        let result = engine.evaluate_token(&token);
+        assert_eq!(result, CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_evaluate_token_safe_pattern_matches() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![crate::rule_pack::Pattern {
+                id: "safe-read".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault kv get".to_string(),
+                },
+            }],
+            guarded_patterns: vec![],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        let token = CommandToken {
+            executable: "vault".to_string(),
+            args: vec!["kv".to_string(), "get".to_string(), "secret/foo".to_string()],
+        };
+
+        let result = engine.evaluate_token(&token);
+        assert_eq!(result, CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_evaluate_token_guarded_pattern_deny() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "vault-kv-destroy".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault kv destroy".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Destructive operation".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "vault kv destroy is permanently destructive".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        let token = CommandToken {
+            executable: "vault".to_string(),
+            args: vec!["kv".to_string(), "destroy".to_string(), "secret/foo".to_string()],
+        };
+
+        let result = engine.evaluate_token(&token);
+
+        match result {
+            CheckResult::Denied { reason, pack_id, pattern_id } => {
+                assert_eq!(pack_id, "vault");
+                assert_eq!(pattern_id, "vault-kv-destroy");
+                assert!(reason.contains("permanently destructive"));
+            }
+            _ => panic!("Expected Denied result, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_token_guarded_pattern_rewrite() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "git".to_string(),
+            tool_keywords: vec!["git".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "git-force-push".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "git push.*--force".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Force-push rewrites history".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::UpdatedInput,
+                    reason_template: "Use --force-with-lease instead".to_string(),
+                    rewrite_template: Some("git push --force-with-lease".to_string()),
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        let token = CommandToken {
+            executable: "git".to_string(),
+            args: vec!["push".to_string(), "origin".to_string(), "main".to_string(), "--force".to_string()],
+        };
+
+        let result = engine.evaluate_token(&token);
+
+        match result {
+            CheckResult::Rewrite { reason, rewrite, pack_id, pattern_id } => {
+                assert_eq!(pack_id, "git");
+                assert_eq!(pattern_id, "git-force-push");
+                assert!(reason.contains("force-with-lease"));
+                assert!(rewrite.contains("--force-with-lease"));
+            }
+            _ => panic!("Expected Rewrite result, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_token_guarded_pattern_warning() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "git".to_string(),
+            tool_keywords: vec!["git".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "git-worktree-add".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "git worktree add".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier3,
+                severity: crate::rule_pack::Severity::Medium,
+                explanation: "Worktree can be shared or isolated".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::AdditionalContext,
+                    reason_template: "Verify this is a throwaway worktree, not a shared one".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: false,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        let token = CommandToken {
+            executable: "git".to_string(),
+            args: vec!["worktree".to_string(), "add".to_string(), "path".to_string(), "branch".to_string()],
+        };
+
+        let result = engine.evaluate_token(&token);
+
+        match result {
+            CheckResult::Warning { reason, pack_id, pattern_id } => {
+                assert_eq!(pack_id, "git");
+                assert_eq!(pattern_id, "git-worktree-add");
+                assert!(reason.contains("throwaway worktree"));
+            }
+            _ => panic!("Expected Warning result, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_command_with_multiple_tokens() {
+        let mut engine = default_engine();
+
+        let vault_pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "vault-kv-destroy".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault kv destroy".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Destructive".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "Denied".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(vault_pack).unwrap();
+
+        let source = CommandSource::Hook("vault status && vault kv destroy secret/foo".to_string());
+        let result = engine.evaluate_command(&source);
+
+        // Should deny because one segment is destructive
+        match result {
+            CheckResult::Denied { .. } => {},
+            _ => panic!("Expected Denied result for multi-segment command with destructive operation, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_command_all_safe() {
+        let mut engine = default_engine();
+
+        let vault_pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![crate::rule_pack::Pattern {
+                id: "safe-status".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault status".to_string(),
+                },
+            }, crate::rule_pack::Pattern {
+                id: "safe-read".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault kv get".to_string(),
+                },
+            }],
+            guarded_patterns: vec![],
+        };
+
+        engine.load_pack(vault_pack).unwrap();
+
+        let source = CommandSource::Hook("vault status && vault kv get secret/foo".to_string());
+        let result = engine.evaluate_command(&source);
+
+        assert_eq!(result, CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_basename_matching_with_absolute_path() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()], // Only basename, not full path
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "vault-kv-destroy".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault kv destroy".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Destructive".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "Denied".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        // Test with absolute path - should still match because we basename-match
+        let source = CommandSource::Hook("/usr/local/bin/vault kv destroy secret/foo".to_string());
+        let result = engine.evaluate_command(&source);
+
+        match result {
+            CheckResult::Denied { .. } => {},
+            _ => panic!("Expected Denied result for absolute-path invocation, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_most_severe_result_ordering() {
+        let engine = default_engine();
+
+        let deny = CheckResult::Denied {
+            reason: "deny".to_string(),
+            pack_id: "test".to_string(),
+            pattern_id: "test".to_string(),
+        };
+        let rewrite = CheckResult::Rewrite {
+            reason: "rewrite".to_string(),
+            rewrite: "rewrite".to_string(),
+            pack_id: "test".to_string(),
+            pattern_id: "test".to_string(),
+        };
+        let warning = CheckResult::Warning {
+            reason: "warning".to_string(),
+            pack_id: "test".to_string(),
+            pattern_id: "test".to_string(),
+        };
+        let allowed = CheckResult::Allowed;
+
+        // Deny is most severe
+        assert!(matches!(engine.most_severe_result(deny.clone(), allowed.clone()), CheckResult::Denied { .. }));
+        assert!(matches!(engine.most_severe_result(deny.clone(), rewrite.clone()), CheckResult::Denied { .. }));
+        assert!(matches!(engine.most_severe_result(deny.clone(), warning.clone()), CheckResult::Denied { .. }));
+
+        // Rewrite is more severe than warning/allowed
+        assert!(matches!(engine.most_severe_result(rewrite.clone(), allowed.clone()), CheckResult::Rewrite { .. }));
+        assert!(matches!(engine.most_severe_result(rewrite.clone(), warning.clone()), CheckResult::Rewrite { .. }));
+
+        // Warning is more severe than allowed
+        assert!(matches!(engine.most_severe_result(warning.clone(), allowed.clone()), CheckResult::Warning { .. }));
+
+        // Same severity returns first
+        assert!(matches!(engine.most_severe_result(allowed.clone(), allowed.clone()), CheckResult::Allowed));
     }
 }
