@@ -21,8 +21,8 @@ Two automated checks, both run by the `icg-ci` release pipeline, both
   diff, it's a pass/fail gate on actual behavior.
 - **Structured coverage-diff.** Diff the new rule-pack manifest against
   the last release's, mechanically, at the data level: which
-  `guarded_pattern` IDs were removed, which `destructive_pattern` regexes
-  got *narrower*, which `safe_pattern` regexes got *wider*. Any of these
+  `guarded_pattern` IDs were removed, which `guarded_pattern` regexes
+  got *narrower* (especially those where `destructive: true`), which `safe_pattern` regexes got *wider*. Any of these
   three changes silently reduces coverage without necessarily failing the
   regression suite (a narrowed regex can still pass every existing test
   case while missing new variants the tests don't happen to cover) — so

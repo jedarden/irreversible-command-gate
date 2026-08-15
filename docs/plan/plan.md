@@ -357,7 +357,7 @@ GuardedPattern:
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured coverage-diff
     check (removed patterns, widened `safe_patterns`, narrowed
-    `destructive_patterns`) as required, build-failing `icg-ci` gates
+    `guarded_patterns` (especially those where `destructive: true`)) as required, build-failing `icg-ci` gates
     (Layer 1); human review informed by that generated diff report, not
     raw regex (Layer 2); and a self-updater that tracks a separately-
     advancing trust pointer rather than bare "latest release" (Layer 4,
