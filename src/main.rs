@@ -1,12 +1,16 @@
 mod coverage;
+mod engine;
 mod trust_pointer;
+mod update;
 
 use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coverage::*;
+use engine::{ContentSource, Engine, InputSource};
 use std::path::PathBuf;
 use trust_pointer::*;
+use update::*;
 
 #[derive(Parser)]
 #[command(name = "icg")]
@@ -28,6 +32,24 @@ enum Commands {
     /// Trust pointer management (Layer 4 minimal form)
     #[command(subcommand)]
     Trust(TrustSubcommand),
+    /// Update rule pack from GitHub Releases (per the trust pointer)
+    Update {
+        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        #[arg(short, long)]
+        trust_pointer_path: Option<PathBuf>,
+        /// Path where the rule pack artifact should be stored
+        #[arg(short, long)]
+        artifact_path: Option<PathBuf>,
+    },
+    /// Hook mode: invoked by Claude Code/Codex's PreToolUse hook system
+    Hook,
+    /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
+    #[command(hide = true)]
+    Wrapper {
+        /// Command arguments (shadowed executable invocation)
+        #[arg(required = true, trailing_var_arg = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -117,6 +139,65 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+        Commands::Hook => {
+            // Hook mode: read PreToolUse JSON from stdin, segment commands, and evaluate
+            let engine = Engine::new();
+
+            // Read input from stdin (either command-mode or content-mode)
+            match engine.read_from_stdin()? {
+                Some(InputSource::Command(source)) => {
+                    // Command-mode: Bash command
+                    let tokens = engine.segment_command(&source);
+
+                    // For now, just print what we found
+                    // TODO: Dispatch to rule packs (bead irrevers-XXXX)
+                    eprintln!("Engine: Hook mode (command-mode) - {} segments found", tokens.len());
+                    for (i, token) in tokens.iter().enumerate() {
+                        eprintln!("  Segment {}: executable='{}', args={:?}",
+                                 i, token.executable, token.args);
+                    }
+
+                    // Allow by default until rule packs are implemented
+                    Ok(())
+                }
+                Some(InputSource::Content(content)) => {
+                    // Content-mode: Write/Edit operation
+                    eprintln!("Engine: Hook mode (content-mode)");
+                    eprintln!("  File path: {}", content.file_path());
+                    eprintln!("  New content length: {} bytes", content.new_content().len());
+
+                    // For now, just print what we found
+                    // TODO: Implement content-mode checks for storage-class/image-tag packs
+                    // TODO: Dispatch to rule packs (separate bead)
+
+                    // Allow by default until content-mode packs are implemented
+                    Ok(())
+                }
+                None => {
+                    // Unrecognized tool - allow by default (fail-open)
+                    Ok(())
+                }
+            }
+        }
+        Commands::Wrapper { args } => {
+            // Wrapper mode: invoked as a shadowed binary (vault, git, docker, etc.)
+            let engine = Engine::new();
+
+            // Read from argv
+            let source = engine.read_from_argv(args);
+            let tokens = engine.segment_command(&source);
+
+            // For now, just print what we found
+            // TODO: Dispatch to rule packs, then exec the real binary if allowed
+            eprintln!("Engine: Wrapper mode - {} segments found", tokens.len());
+            for (i, token) in tokens.iter().enumerate() {
+                eprintln!("  Segment {}: executable='{}', args={:?}",
+                         i, token.executable, token.args);
+            }
+
+            // Allow by default until rule packs are implemented
+            Ok(())
+        }
         Commands::Trust(subcommand) => match subcommand {
             TrustSubcommand::Show { path } => {
                 let store_path = path.or_else(|| TrustPointerStore::default_path().ok())
@@ -187,5 +268,41 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Commands::Update {
+            trust_pointer_path,
+            artifact_path,
+        } => {
+            let mut config = UpdateConfig::default();
+
+            if let Some(trust_path) = trust_pointer_path {
+                config.trust_pointer_path = trust_path;
+            }
+
+            if let Some(artifact_path_override) = artifact_path {
+                config.artifact_path = artifact_path_override;
+            }
+
+            println!("🔄 icg update started");
+            println!("📁 Trust pointer: {}", config.trust_pointer_path.display());
+            println!("📁 Artifact path: {}", config.artifact_path.display());
+            println!();
+
+            let result = run_update(config)
+                .context("Failed to run update")?;
+
+            println!();
+            println!("# Update Summary");
+            println!();
+            println!("**Trusted Reference:** {}", result.trusted_ref);
+            println!("**Release Tag:** {}", result.release_tag);
+            println!("**Artifact Path:** {}", result.artifact_path.display());
+            if let Some(prev) = result.previous_version {
+                println!("**Previous Version:** {}", prev);
+            } else {
+                println!("**Previous Version:** (none)");
+            }
+
+            Ok(())
+        }
     }
 }
