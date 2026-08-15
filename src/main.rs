@@ -81,7 +81,11 @@ enum Commands {
         output_dir: Option<PathBuf>,
     },
     /// Hook mode: invoked by Claude Code/Codex's PreToolUse hook system
-    Hook,
+    Hook {
+        /// Optional rule-pack file (defaults to /etc/icg/rule-pack.json)
+        #[arg(long)]
+        rule_pack: Option<PathBuf>,
+    },
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
     #[command(hide = true)]
     Wrapper {
@@ -211,9 +215,16 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Hook => {
+        Commands::Hook { rule_pack } => {
             // Hook mode: read PreToolUse JSON from stdin, segment commands, and evaluate
-            let engine = Engine::new();
+            let mut engine = Engine::new();
+
+            // Rule-pack failures are deliberately swallowed by the engine. A
+            // broken pack must allow this invocation, never wedge the hook.
+            let pack_path = rule_pack.unwrap_or_else(|| PathBuf::from("/etc/icg/rule-pack.json"));
+            if pack_path.exists() {
+                engine.load_pack_from_file(&pack_path)?;
+            }
 
             // Read input from stdin (either command-mode or content-mode)
             match engine.read_from_stdin()? {

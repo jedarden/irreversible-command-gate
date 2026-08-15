@@ -13,6 +13,7 @@ use crate::rule_pack::Pack;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
 /// PreToolUse hook JSON structure (partial, for input parsing)
@@ -257,15 +258,18 @@ pub enum CheckResult {
 /// Engine: command-mode input acquisition, segmentation, and pack dispatch
 pub struct Engine {
     /// Splits on ||, &&, ;, |, &, newline
-    segment_splitter: Regex,
+    segment_splitter: Option<Regex>,
     /// Detects env assignments like VAR=value or FOO_BAR=value
-    env_assign_pattern: Regex,
+    env_assign_pattern: Option<Regex>,
     /// Prefixes to skip: sudo, command, exec, time, nohup
     ignored_prefixes: Vec<String>,
     /// Loaded rule packs (pack_id -> Pack)
     packs: HashMap<String, crate::rule_pack::Pack>,
     /// tool_keywords -> pack_id mapping for fast dispatch
     keyword_index: HashMap<String, Vec<String>>,
+    /// Once an in-process failure occurs, every subsequent check must allow.
+    /// This remains set for the lifetime of one engine invocation.
+    fail_open: bool,
 }
 
 impl Default for Engine {
@@ -279,13 +283,11 @@ impl Engine {
     pub fn new() -> Self {
         // Match shell command separators: ||, &&, ;, |, &, \n
         // Pattern: (?:\|\||&&|[;&|\n])
-        let segment_splitter = Regex::new(r"(?:\|\||&&|[;&|\n])")
-            .expect("Invalid segment regex");
+        let segment_splitter = Regex::new(r"(?:\|\||&&|[;&|\n])").ok();
 
         // Match env variable assignments: starts with letter or underscore, followed by alphanumerics/underscores, then =
         // Pattern: ^[A-Za-z_][A-Za-z0-9_]*=
-        let env_assign_pattern = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=")
-            .expect("Invalid env assign regex");
+        let env_assign_pattern = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").ok();
 
         let ignored_prefixes = vec![
             "sudo".to_string(),
@@ -301,7 +303,17 @@ impl Engine {
             ignored_prefixes,
             packs: HashMap::new(),
             keyword_index: HashMap::new(),
+            fail_open: false,
         }
+    }
+
+    fn mark_fail_open(&mut self, reason: &str) {
+        self.fail_open = true;
+        report_fail_open(reason);
+    }
+
+    fn should_fail_open(&self) -> bool {
+        self.fail_open
     }
 
     /// Read input from PreToolUse JSON on stdin (hook mode)
@@ -311,6 +323,21 @@ impl Engine {
     /// - ContentSource for Write/Edit tool calls
     /// - None for unrecognized tools
     pub fn read_from_stdin(&self) -> Result<Option<InputSource>> {
+        let result = catch_unwind(AssertUnwindSafe(|| self.read_from_stdin_inner()));
+        match result {
+            Ok(Ok(input)) => Ok(input),
+            Ok(Err(error)) => {
+                report_fail_open(&format!("stdin input failure: {error}"));
+                Ok(None)
+            }
+            Err(_) => {
+                report_fail_open("stdin input panicked");
+                Ok(None)
+            }
+        }
+    }
+
+    fn read_from_stdin_inner(&self) -> Result<Option<InputSource>> {
         use std::io::{self, Read};
 
         let mut input = String::new();
@@ -413,6 +440,12 @@ impl Engine {
     ///
     /// Returns a list of command tokens, one per segment found in the input
     pub fn segment_command(&self, source: &CommandSource) -> Vec<CommandToken> {
+        let (Some(segment_splitter), Some(env_assign_pattern)) =
+            (&self.segment_splitter, &self.env_assign_pattern)
+        else {
+            return vec![];
+        };
+
         let command_text = match source {
             CommandSource::Hook(cmd) => cmd.clone(),
             CommandSource::Argv(argv) => {
@@ -429,7 +462,7 @@ impl Engine {
         let mut tokens = Vec::new();
 
         // Split the command on segment boundaries
-        for segment in self.segment_splitter.split(&command_text) {
+        for segment in segment_splitter.split(&command_text) {
             let segment = segment.trim();
             if segment.is_empty() {
                 continue;
@@ -453,7 +486,7 @@ impl Engine {
                 }
 
                 // Check if this is an env assignment (e.g., VAR=value)
-                if self.env_assign_pattern.is_match(tok) {
+                if env_assign_pattern.is_match(tok) {
                     i += 1;
                     continue;
                 }
@@ -503,6 +536,22 @@ impl Engine {
     /// This builds an index from tool_keywords to pack_ids so that when
     /// we evaluate a command, we can quickly find which packs to check.
     pub fn load_pack(&mut self, pack: crate::rule_pack::Pack) -> Result<()> {
+        let result = catch_unwind(AssertUnwindSafe(|| self.load_pack_inner(pack)));
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.mark_fail_open(&format!("rule pack failure: {error}"));
+                Ok(())
+            }
+            Err(_) => {
+                self.mark_fail_open("rule pack loading panicked");
+                Ok(())
+            }
+        }
+    }
+
+    fn load_pack_inner(&mut self, pack: crate::rule_pack::Pack) -> Result<()> {
+        validate_pack_regexes(&pack)?;
         let pack_id = pack.id.clone();
 
         // Index tool_keywords for fast dispatch
@@ -519,11 +568,49 @@ impl Engine {
         Ok(())
     }
 
+    /// Load one rule pack file. Any unreadable, malformed, or otherwise
+    /// invalid file leaves this engine in its unconditional fail-open state.
+    pub fn load_pack_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let path = path.as_ref().to_path_buf();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let pack = crate::rule_pack::load_pack(&path)
+                .with_context(|| format!("Failed to load rule pack from: {}", path.display()))?;
+            self.load_pack(pack)
+        }));
+
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.mark_fail_open(&format!("rule pack failure: {error}"));
+                Ok(())
+            }
+            Err(_) => {
+                self.mark_fail_open("rule pack loading panicked");
+                Ok(())
+            }
+        }
+    }
+
     /// Load rule packs from a directory
     ///
     /// Reads all .json files from the directory and loads them as packs.
     pub fn load_packs_from_dir<P: AsRef<Path>>(&mut self, dir: P) -> Result<()> {
         let dir = dir.as_ref();
+        let result = catch_unwind(AssertUnwindSafe(|| self.load_packs_from_dir_inner(dir)));
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.mark_fail_open(&format!("rule pack directory failure: {error}"));
+                Ok(())
+            }
+            Err(_) => {
+                self.mark_fail_open("rule pack directory loading panicked");
+                Ok(())
+            }
+        }
+    }
+
+    fn load_packs_from_dir_inner(&mut self, dir: &Path) -> Result<()> {
         let entries = std::fs::read_dir(dir)
             .with_context(|| format!("Failed to read pack directory: {}", dir.display()))?;
 
@@ -551,6 +638,20 @@ impl Engine {
     /// 4. Then check guarded_patterns (return first match)
     /// 5. Return the most severe result (deny > rewrite > warning > allowed)
     pub fn evaluate_token(&self, token: &CommandToken) -> CheckResult {
+        match catch_unwind(AssertUnwindSafe(|| self.evaluate_token_inner(token))) {
+            Ok(result) => result,
+            Err(_) => {
+                report_fail_open("token evaluation panicked");
+                CheckResult::Allowed
+            }
+        }
+    }
+
+    fn evaluate_token_inner(&self, token: &CommandToken) -> CheckResult {
+        if self.should_fail_open() {
+            return CheckResult::Allowed;
+        }
+
         let executable = &token.executable;
 
         // Reconstruct the full command string for regex matching
@@ -585,11 +686,19 @@ impl Engine {
             };
 
             // Check safe_patterns first - if any match, skip this pack entirely
-            let safe_match = pack.safe_patterns.iter().find(|pattern| {
-                self.pattern_matches_command(pattern, &full_command)
+            let safe_match = pack.safe_patterns.iter().find_map(|pattern| {
+                match self.pattern_matches_command(pattern, &full_command) {
+                    Ok(true) => Some(Ok(true)),
+                    Ok(false) => None,
+                    Err(()) => Some(Err(())),
+                }
             });
 
-            if safe_match.is_some() {
+            if matches!(safe_match, Some(Err(()))) {
+                return CheckResult::Allowed;
+            }
+
+            if matches!(safe_match, Some(Ok(true))) {
                 // Safe pattern matched - this pack doesn't apply
                 continue;
             }
@@ -602,7 +711,12 @@ impl Engine {
                     check: guarded_pattern.check.clone(),
                 };
 
-                if self.pattern_matches_command(&pattern_wrapper, &full_command) {
+                let matches = match self.pattern_matches_command(&pattern_wrapper, &full_command) {
+                    Ok(matches) => matches,
+                    Err(()) => return CheckResult::Allowed,
+                };
+
+                if matches {
                     // Pattern matched - convert to CheckResult
                     let pattern_result = self.guarded_pattern_to_result(
                         guarded_pattern,
@@ -631,6 +745,20 @@ impl Engine {
     /// - Evaluates each token against loaded packs
     /// - Returns the most severe result across all tokens
     pub fn evaluate_command(&self, source: &CommandSource) -> CheckResult {
+        match catch_unwind(AssertUnwindSafe(|| self.evaluate_command_inner(source))) {
+            Ok(result) => result,
+            Err(_) => {
+                report_fail_open("command evaluation panicked");
+                CheckResult::Allowed
+            }
+        }
+    }
+
+    fn evaluate_command_inner(&self, source: &CommandSource) -> CheckResult {
+        if self.should_fail_open() {
+            return CheckResult::Allowed;
+        }
+
         let tokens = self.segment_command(source);
 
         if tokens.is_empty() {
@@ -640,7 +768,7 @@ impl Engine {
         let mut result = CheckResult::Allowed;
 
         for token in &tokens {
-            let token_result = self.evaluate_token(token);
+            let token_result = self.evaluate_token_inner(token);
             result = self.most_severe_result(result, token_result);
 
             // Early exit on deny
@@ -653,26 +781,34 @@ impl Engine {
     }
 
     /// Check if a pattern matches a command string
-    fn pattern_matches_command(&self, pattern: &crate::rule_pack::Pattern, command: &str) -> bool {
+    fn pattern_matches_command(
+        &self,
+        pattern: &crate::rule_pack::Pattern,
+        command: &str,
+    ) -> std::result::Result<bool, ()> {
         match &pattern.check {
             crate::rule_pack::Check::CommandRegex { regex } => {
                 // Compile and match the regex
                 match Regex::new(regex) {
-                    Ok(re) => re.is_match(command),
+                    Ok(re) => Ok(re.is_match(command)),
                     Err(_) => {
-                        // Invalid regex - fail open by not matching
-                        eprintln!("Warning: Invalid regex in pattern '{}': {}", pattern.id, regex);
-                        false
+                        // An invalid pattern invalidates the check, rather than
+                        // merely becoming a non-match that lets another pattern deny.
+                        report_fail_open(&format!(
+                            "invalid regex in pattern '{}'",
+                            pattern.id
+                        ));
+                        Err(())
                     }
                 }
             }
             crate::rule_pack::Check::ContentRegex { .. } => {
                 // Content regex doesn't apply to command-mode checks
-                false
+                Ok(false)
             }
             crate::rule_pack::Check::Predicate { .. } => {
                 // Predicate checks are not yet implemented for command-mode
-                false
+                Ok(false)
             }
         }
     }
@@ -737,15 +873,54 @@ impl Engine {
         source: &ContentSource,
         packs: &'a [Pack],
     ) -> Vec<&'a Pack> {
-        packs
-            .iter()
-            .filter(|pack| {
-                pack.applies_to
-                    .iter()
-                    .any(|glob| source.matches_glob(glob))
-            })
-            .collect()
+        match catch_unwind(AssertUnwindSafe(|| {
+            if self.should_fail_open() {
+                return Vec::new();
+            }
+            packs
+                .iter()
+                .filter(|pack| {
+                    pack.applies_to
+                        .iter()
+                        .any(|glob| source.matches_glob(glob))
+                })
+                .collect()
+        })) {
+            Ok(packs) => packs,
+            Err(_) => {
+                report_fail_open("content pack dispatch panicked");
+                Vec::new()
+            }
+        }
     }
+}
+
+fn validate_pack_regexes(pack: &Pack) -> Result<()> {
+    for pattern in &pack.safe_patterns {
+        validate_check_regex(&pattern.check)?;
+    }
+    for pattern in &pack.guarded_patterns {
+        validate_check_regex(&pattern.check)?;
+    }
+    Ok(())
+}
+
+fn validate_check_regex(check: &crate::rule_pack::Check) -> Result<()> {
+    let regex = match check {
+        crate::rule_pack::Check::CommandRegex { regex }
+        | crate::rule_pack::Check::ContentRegex { regex } => Some(regex),
+        crate::rule_pack::Check::Predicate { .. } => None,
+    };
+
+    if let Some(regex) = regex {
+        Regex::new(regex).context("invalid regex in rule pack")?;
+    }
+    Ok(())
+}
+
+fn report_fail_open(message: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "Engine: fail-open: {message}");
 }
 
 #[cfg(test)]
@@ -1098,6 +1273,39 @@ mod tests {
         assert_eq!(engine.packs.len(), 2);
         assert_eq!(engine.keyword_index.get("vault").unwrap().len(), 1);
         assert_eq!(engine.keyword_index.get("git").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_invalid_rule_regex_fails_open() {
+        let mut engine = default_engine();
+        let pack = crate::rule_pack::Pack {
+            id: "corrupt-regex".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "invalid".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "[".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Invalid regex must never deny".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "must not be returned".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+        let result = engine.evaluate_command(&CommandSource::Hook(
+            "vault kv destroy secret/foo".to_string(),
+        ));
+
+        assert_eq!(result, CheckResult::Allowed);
     }
 
     #[test]
