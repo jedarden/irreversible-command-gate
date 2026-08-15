@@ -1,5 +1,6 @@
 mod coverage;
 mod engine;
+mod overrides;
 mod regression;
 mod rule_pack;
 mod trust_pointer;
@@ -9,7 +10,8 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coverage::*;
-use engine::{ContentSource, Engine, InputSource};
+use engine::{Engine, InputSource};
+use overrides::*;
 use regression::{generate_regression_suite_from_manifest, write_regression_suite};
 use std::path::PathBuf;
 use trust_pointer::*;
@@ -34,6 +36,12 @@ enum Commands {
         /// Explicit rationale required when the diff reports a regression
         #[arg(short, long)]
         justification: Option<String>,
+        /// Previous release's per-repository override TOML, if present
+        #[arg(long)]
+        previous_override: Option<PathBuf>,
+        /// Current release's per-repository override TOML, if present
+        #[arg(long)]
+        current_override: Option<PathBuf>,
     },
     /// Generate and validate the fixed deny-regression suite for a rule pack
     RegressionSuite {
@@ -42,6 +50,15 @@ enum Commands {
         /// Optional path for the generated JSON suite (stdout by default)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Optional verified per-repository override to exercise at the gate
+        #[arg(long)]
+        override_file: Option<PathBuf>,
+        /// Repository scope from the override manifest
+        #[arg(long)]
+        repository: Option<String>,
+        /// Exact release reference trusted by Layer 4
+        #[arg(long)]
+        trusted_ref: Option<String>,
     },
     /// Trust pointer management (Layer 4 minimal form)
     #[command(subcommand)]
@@ -88,6 +105,15 @@ enum Commands {
         /// Optional rule-pack file (defaults to /etc/icg/rule-pack.json)
         #[arg(long)]
         rule_pack: Option<PathBuf>,
+        /// Release-bound per-repository override; requires repository and trusted-ref
+        #[arg(long)]
+        override_file: Option<PathBuf>,
+        /// Repository scope for the override
+        #[arg(long)]
+        repository: Option<String>,
+        /// Exact trusted release reference for the override
+        #[arg(long)]
+        trusted_ref: Option<String>,
     },
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
     #[command(hide = true)]
@@ -145,6 +171,10 @@ enum TrustSubcommand {
     },
 }
 
+fn load_rule_pack(path: PathBuf) -> Result<crate::rule_pack::Pack> {
+    crate::rule_pack::load_pack(&path)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -153,20 +183,42 @@ fn main() -> Result<()> {
             previous,
             current,
             justification,
+            previous_override,
+            current_override,
         } => {
-            let diff = run_coverage_diff(previous.clone(), current.clone())?;
-            let report = render_coverage_diff_report(
-                &previous,
-                &current,
-                &diff,
-                justification.as_deref(),
-            );
-            print!("{report}");
+            let has_override = previous_override.is_some() || current_override.is_some();
+            let has_regressions;
+            if has_override {
+                let diff = run_release_integrity_diff(
+                    previous.clone(),
+                    current.clone(),
+                    previous_override,
+                    current_override,
+                )?;
+                let report = render_release_integrity_report(
+                    &previous,
+                    &current,
+                    &diff,
+                    justification.as_deref(),
+                );
+                print!("{report}");
+                has_regressions = diff.has_regressions();
+            } else {
+                let diff = run_coverage_diff(previous.clone(), current.clone())?;
+                let report = render_coverage_diff_report(
+                    &previous,
+                    &current,
+                    &diff,
+                    justification.as_deref(),
+                );
+                print!("{report}");
+                has_regressions = diff.has_regressions();
+            }
 
             // A regression may be approved only when the report carries an
             // explicit, non-blank rationale. The report is printed first so
             // the missing field is still visible in CI output for Layer 2.
-            if diff.has_regressions()
+            if has_regressions
                 && !CoverageDiff::has_explicit_justification(justification.as_deref())
             {
                 eprintln!(
@@ -177,8 +229,35 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        Commands::RegressionSuite { manifest, output } => {
+        Commands::RegressionSuite {
+            manifest,
+            output,
+            override_file,
+            repository,
+            trusted_ref,
+        } => {
             let suite = generate_regression_suite_from_manifest(&manifest)?;
+            match (override_file, repository, trusted_ref) {
+                (None, None, None) => {}
+                (Some(path), Some(repository), Some(trusted_ref)) => {
+                    let pack = load_rule_pack(manifest.clone())?;
+                    verify_override_regression_gate(
+                        &pack,
+                        &suite,
+                        &load_verified_override(
+                            &path,
+                            &repository,
+                            &trusted_ref,
+                            std::slice::from_ref(&pack),
+                        )?,
+                        &repository,
+                        &trusted_ref,
+                    )?;
+                }
+                _ => anyhow::bail!(
+                    "--override-file, --repository, and --trusted-ref must be supplied together"
+                ),
+            }
             match output {
                 Some(path) => {
                     write_regression_suite(&suite, &path)?;
@@ -192,8 +271,13 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Hook { rule_pack } => {
-            // Hook mode: read PreToolUse JSON from stdin, segment commands, and evaluate
+        Commands::Hook {
+            rule_pack,
+            override_file,
+            repository,
+            trusted_ref,
+        } => {
+            // Hook mode: read PreToolUse JSON from stdin, route to appropriate engine, and return decision
             let mut engine = Engine::new();
 
             // Rule-pack failures are deliberately swallowed by the engine. A
@@ -202,6 +286,16 @@ fn main() -> Result<()> {
             if pack_path.exists() {
                 engine.load_pack_from_file(&pack_path)?;
             }
+            match (override_file, repository, trusted_ref) {
+                (None, None, None) => {}
+                (Some(path), Some(repository), Some(trusted_ref)) => {
+                    engine.load_verified_override_from_file(&path, &repository, &trusted_ref)?;
+                }
+                _ => anyhow::bail!(
+                    "--override-file, --repository, and --trusted-ref must be supplied together"
+                ),
+            }
+            // If no pack exists, we'll fail-open (allow everything)
 
             // Read input from stdin (either command-mode or content-mode)
             match engine.read_from_stdin()? {
