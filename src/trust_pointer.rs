@@ -73,21 +73,9 @@ impl TrustPointerStore {
 
     /// Get the default trust pointer file path
     pub fn default_path() -> Result<PathBuf> {
-        let config_dir = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|_| {
-                let home = std::env::var("HOME")
-                    .context("HOME environment variable not set")?;
-                Ok::<PathBuf, anyhow::Error>(PathBuf::from(home).join(".config"))
-            })?;
-
-        let dir = config_dir.join("icg");
-
-        // Ensure directory exists
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create config directory: {}", dir.display()))?;
-
-        Ok(dir.join("trust-pointer.json"))
+        // Use root-owned system location, not user-writable path
+        // See docs/plan/plan.md Architecture 'Deploy location'
+        Ok(PathBuf::from("/etc/icg/trust-pointer.json"))
     }
 
     /// Load the current trust pointer

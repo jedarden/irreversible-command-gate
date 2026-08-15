@@ -125,14 +125,27 @@ reads), not as logic hardcoded to `bf` specifically, so the eventual
 `bf`→`bead` cutover is a one-line data change, not a rule rewrite. See
 Phase 1 and `irrevers-692a56c3`.
 
-**Deploy location: rule source must not simply live under
-`~/.claude/hooks/` again**, and self-updating from GitHub Releases only
-counts as satisfying this if release-cutting itself is human-gated — see
-Phase 0 and `docs/notes/self-update-and-release-gating.md`. Per
-`docs/notes/runtime-config-vs-hardcoded.md`, the axis that matters is not
-hardcoded-vs-configurable, it's whether the rule source sits somewhere the
-guarded agent's own process can write to (or, for the self-update case,
-somewhere the guarded agent can cause to become trusted).
+**Deploy location: root-owned system directories, not user-writable
+paths.** The three artifacts must live where the guarded agent's own
+process (running as `coding`) cannot write them — deployment shape 2 from
+`docs/notes/runtime-config-vs-hardcoded.md`, not shape 1. Concretely:
+- **Binary:** `/usr/local/bin/icg` — owned by `root:root`, mode `0755`
+- **Rule pack artifact:** `/etc/icg/rule-pack.json` — owned by `root:root`,
+  mode `0644`
+- **Trust pointer:** `/etc/icg/trust-pointer.json` — owned by `root:root`,
+  mode `0644`
+
+This placement means the guarded agent can read but not write any of the
+three artifacts. Updates require privilege escalation (`sudo icg update`),
+which is intentional: self-updating is only safe because release-cutting
+is separately human-gated (per `docs/notes/self-update-and-release-gating.md`),
+so the update trigger can only adopt *already-vetted* releases, never cause
+untrusted content to load. Absent that separate content gate, a
+writable-by-the-agent deploy location would reproduce the exact hole
+`org-rule-guard.py` has today, just at fleet scale rather than per-host.
+The existing `~/.local/bin/cargo` precedent is user-owned because cargo test
+offloading is not a security boundary; this project's guard IS, so it gets
+the stricter deployment shape.
 
 **Integration point: resolved — both layers, both harnesses**, not a
 choice between them. Two independent, complementary front-ends sharing one
