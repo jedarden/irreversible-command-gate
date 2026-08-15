@@ -8,11 +8,74 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use crate::trust_pointer::*;
+
+/// State file for tracking last successful update check
+///
+/// Persists the timestamp and release information from the last successful
+/// update check so `icg status` can report it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheckState {
+    /// Timestamp of the last successful update check
+    pub last_successful_check: String,
+    /// The release tag that was checked
+    pub release_tag: String,
+    /// The trusted ref that was used
+    pub trusted_ref: String,
+}
+
+impl UpdateCheckState {
+    /// Create a new update check state record
+    pub fn new(release_tag: String, trusted_ref: String) -> Self {
+        Self {
+            last_successful_check: chrono::Utc::now().to_rfc3339(),
+            release_tag,
+            trusted_ref,
+        }
+    }
+
+    /// Save state to disk
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let content = serde_json::to_string_pretty(self)
+            .context("Failed to serialize update check state")?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+        }
+
+        // Write to temporary file first, then atomic rename
+        let temp_path = path.with_extension("tmp");
+        fs::write(&temp_path, content)
+            .with_context(|| format!("Failed to write update check state to {}", temp_path.display()))?;
+
+        fs::rename(&temp_path, path)
+            .with_context(|| format!("Failed to rename update check state from {} to {}", temp_path.display(), path.display()))?;
+
+        Ok(())
+    }
+
+    /// Load state from disk
+    pub fn load(path: &Path) -> Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read update check state from {}", path.display()))?;
+
+        let state: UpdateCheckState = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse update check state from {}", path.display()))?;
+
+        Ok(Some(state))
+    }
+}
 
 /// GitHub Release asset structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +104,8 @@ pub struct UpdateConfig {
     pub artifact_path: PathBuf,
     /// Trust pointer path
     pub trust_pointer_path: PathBuf,
+    /// Path to the update check state file
+    pub state_path: PathBuf,
 }
 
 impl Default for UpdateConfig {
@@ -54,6 +119,7 @@ impl Default for UpdateConfig {
             artifact_pattern: "rule-pack".to_string(),
             artifact_path,
             trust_pointer_path: PathBuf::from("/etc/icg/trust-pointer.json"),
+            state_path: PathBuf::from("/etc/icg/last-update-check.json"),
         }
     }
 }
@@ -144,6 +210,11 @@ async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
     atomic_replace(&temp_path, &config.artifact_path)?;
 
     println!("✅ Updated successfully: {}", config.artifact_path.display());
+
+    // Save the update check state
+    let state = UpdateCheckState::new(release.tag_name.clone(), trusted_ref.clone());
+    state.save(&config.state_path)
+        .context("Failed to save update check state")?;
 
     Ok(UpdateResult {
         updated: true,
@@ -313,5 +384,58 @@ mod tests {
         let config = UpdateConfig::default();
         assert_eq!(config.repository, "jedarden/irreversible-command-gate");
         assert_eq!(config.artifact_pattern, "rule-pack");
+        assert_eq!(config.state_path, PathBuf::from("/etc/icg/last-update-check.json"));
+    }
+
+    #[test]
+    fn test_update_check_state_save_and_load() -> Result<()> {
+        let dir = tempdir()?;
+        let state_path = dir.path().join("update-check-state.json");
+
+        // Create and save state
+        let state = UpdateCheckState::new(
+            "icg-v0.1.0".to_string(),
+            "v0.1.0".to_string(),
+        );
+        state.save(&state_path)?;
+
+        // Load it back
+        let loaded = UpdateCheckState::load(&state_path)?.unwrap();
+        assert_eq!(loaded.release_tag, "icg-v0.1.0");
+        assert_eq!(loaded.trusted_ref, "v0.1.0");
+        assert!(loaded.last_successful_check.len() > 0); // Should have a timestamp
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_check_state_load_nonexistent() -> Result<()> {
+        let dir = tempdir()?;
+        let state_path = dir.path().join("nonexistent.json");
+
+        // Loading nonexistent file should return Ok(None)
+        let loaded = UpdateCheckState::load(&state_path)?;
+        assert!(loaded.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_check_state_creates_parent_directory() -> Result<()> {
+        let dir = tempdir()?;
+        let nested_path = dir.path().join("nested").join("dir").join("state.json");
+
+        // Create and save state (should create nested directories)
+        let state = UpdateCheckState::new(
+            "icg-v0.1.0".to_string(),
+            "v0.1.0".to_string(),
+        );
+        state.save(&nested_path)?;
+
+        // Verify it exists and can be loaded
+        let loaded = UpdateCheckState::load(&nested_path)?.unwrap();
+        assert_eq!(loaded.release_tag, "icg-v0.1.0");
+
+        Ok(())
     }
 }

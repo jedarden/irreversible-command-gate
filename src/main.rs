@@ -320,33 +320,90 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Status { trust_pointer_path } => {
-            // TODO: Implement full status reporting (bead irrevers-1cad33d2)
             let store_path = trust_pointer_path
                 .or_else(|| TrustPointerStore::default_path().ok())
                 .context("Failed to determine trust pointer path")?;
             let store = TrustPointerStore::new(store_path);
 
-            println!("# icg Status");
-            println!();
+            println!("# icg Status\n");
 
+            // Trust Pointer section
+            println!("## Trust Pointer");
             match store.load()? {
                 Some(pointer) => {
-                    println!("**Trust Pointer:**");
-                    println!("  Reference: `{}`", pointer.trusted_ref);
-                    println!("  Last Updated: {}", pointer.updated_at);
+                    println!("  **Reference:** `{}`", pointer.trusted_ref);
+                    println!("  **Last Updated:** {}", pointer.updated_at);
                     if let Some(justification) = pointer.justification {
-                        println!("  Justification: {}", justification);
+                        println!("  **Justification:** {}", justification);
                     }
                 }
                 None => {
-                    println!("**Trust Pointer:** (not configured)");
-                    println!("Run `icg trust set <reference>` to configure.");
+                    println!("  (not configured)");
+                    println!("  Run `icg trust set <reference>` to configure.");
                 }
             }
-
             println!();
-            println!("**Full status reporting coming soon** (bead irrevers-1cad33d2)");
-            println!("This will include blind-spot self-report and detailed coverage status.");
+
+            // Rule Pack Version section
+            println!("## Rule Pack Version");
+            let artifact_path = PathBuf::from("/etc/icg/rule-pack.json");
+            if artifact_path.exists() {
+                match crate::rule_pack::load_pack(&artifact_path) {
+                    Ok(pack) => {
+                        println!("  **Pack ID:** `{}`", pack.id);
+                        println!("  **Path:** {}", artifact_path.display());
+                    }
+                    Err(e) => {
+                        println!("  (failed to load: {})", e);
+                    }
+                }
+            } else {
+                println!("  (no rule pack found at {})", artifact_path.display());
+                println!("  Run `icg update` to download the rule pack.");
+            }
+            println!();
+
+            // Last Successful Update Check section
+            println!("## Last Successful Update Check");
+            let state_path = PathBuf::from("/etc/icg/last-update-check.json");
+            match UpdateCheckState::load(&state_path)? {
+                Some(state) => {
+                    println!("  **Timestamp:** {}", state.last_successful_check);
+                    println!("  **Release Tag:** {}", state.release_tag);
+                    println!("  **Trusted Ref:** {}", state.trusted_ref);
+                }
+                None => {
+                    println!("  (no successful update checks recorded)");
+                    println!("  Run `icg update` to check for and download updates.");
+                }
+            }
+            println!();
+
+            // Known Limitations (blind-spot self-report)
+            println!("## Known Limitations");
+            println!();
+            println!("This tool has known blind spots and coverage gaps. These are documented");
+            println!("explicitly to avoid overselling protection capability:");
+            println!();
+
+            let limitations = vec![
+                ("Cloud-hosted Codex", "Checks run locally on the agent's host; cloud-hosted Claude Code/Claude.ai sessions bypass the wrapper entirely. Protection requires those environments to invoke their own PreToolUse hook integration."),
+                ("Absolute-path wrapper bypass", "If the user invokes a binary by its absolute path (e.g., `/usr/bin/git` instead of `git`), the shell resolves it directly and the wrapper is not triggered. PATH-order shadowing is not a security boundary."),
+                ("Content-mode coverage gaps", "Only YAML files are checked for storage-class violations. Other formats (JSON, manifests with explicit storageClassName references) are not yet covered. Image-tag enforcement similarly has format gaps."),
+                ("State-dependent checks (Tier 2)", "Patterns requiring cross-invocation state (e.g., \"did a git pull happen earlier in this session\") are not yet implemented. State-store infrastructure exists but no checks use it yet."),
+                ("Tier 3 context-dependent patterns", "Patterns that depend on invocation context (e.g., git worktree add, which is legitimate in some contexts and dangerous in others) are not reliably decidable from command syntax alone. These may never be fully covered; at most heuristic warnings."),
+                ("Race conditions on self-edit", "If a rule pack update narrows a safe_pattern, a concurrent agent that already loaded the old pack may still write through the widened gap. Mitigation: periodic process restart or explicit reload signal, not yet implemented."),
+                ("No coverage for aliased commands", "If a user creates a shell alias that shadows a guarded command (e.g., `alias k=kubectl`), the wrapper sees the alias name, not the resolved binary. Coverage depends on alias keywords matching, not the resolved executable."),
+            ];
+
+            for (i, (title, description)) in limitations.iter().enumerate() {
+                println!("{}. **{}**", i + 1, title);
+                println!("   {}", description);
+                println!();
+            }
+
+            println!("This list is kept current. If you discover a new gap, report it as");
+            println!("a coverage bug so the limitation can be documented or fixed.");
 
             Ok(())
         }
