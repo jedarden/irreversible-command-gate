@@ -13,7 +13,7 @@ be nerfed without anyone noticing.
 Two automated checks, both run by the `icg-ci` release pipeline, both
 **fail the build** (not just warn) on regression:
 
-- **Fixed regression suite.** Every `guarded_pattern` in every rule pack
+- **Fixed regression suite.** Every enabled `guarded_pattern` in every rule pack
   has a paired test case — a real example command that must come back
   `deny`. The release candidate runs the full suite; if anything
   previously caught is no longer caught, the release doesn't get built.
@@ -21,9 +21,9 @@ Two automated checks, both run by the `icg-ci` release pipeline, both
   diff, it's a pass/fail gate on actual behavior.
 - **Structured coverage-diff.** Diff the new rule-pack manifest against
   the last release's, mechanically, at the data level: which
-  `guarded_pattern` IDs were removed, which `guarded_pattern` regexes
-  got *narrower* (especially those where `destructive: true`), which `safe_pattern` regexes got *wider*. Any of these
-  three changes silently reduces coverage without necessarily failing the
+  `guarded_pattern` IDs were removed, which guarded patterns were newly
+  disabled, which `guarded_pattern` regexes got *narrower* (especially those where `destructive: true`), and which `safe_pattern` regexes got *wider*. Any of these
+  four changes silently reduce coverage without necessarily failing the
   regression suite (a narrowed regex can still pass every existing test
   case while missing new variants the tests don't happen to cover) — so
   this check exists specifically to catch what the behavioral suite can't.
@@ -36,11 +36,13 @@ Two automated checks, both run by the `icg-ci` release pipeline, both
 The coverage-diff command emits the versioned Markdown format
 `coverage-diff/v1` for the Layer 2 reviewer. The header contains the previous
 and current manifest paths, a `status` field, and a required `justification`
-field. Each of the three sections is always present, even when it contains
+field. Each of the four sections is always present, even when it contains
 `None`:
 
 - `Removed guarded_patterns` lists the pattern ID, its previous check value,
   and `current: <removed>`.
+- `Disabled guarded_patterns` lists each pattern whose `enabled` flag changed
+  from `true` to `false`, with `previous: true` and `current: false`.
 - `Widened safe_patterns` lists the pattern ID plus `previous` and `current`
   check values.
 - `Narrowed guarded_patterns (destructive: true)` lists the pattern ID plus
@@ -80,8 +82,8 @@ The reviewer performs these checks, in order:
    exact candidate commit, that `format: coverage-diff/v1` is present, and
    that the report's previous/current manifests are the releases being
    compared. A missing, stale, or unbound report is a review failure.
-2. **Read all three sections.** Check `Removed guarded_patterns`, `Widened
-   safe_patterns`, and `Narrowed guarded_patterns (destructive: true)`,
+2. **Read all four sections.** Check `Removed guarded_patterns`, `Disabled
+   guarded_patterns`, `Widened safe_patterns`, and `Narrowed guarded_patterns (destructive: true)`,
    including every `pattern_id` and its `previous`/`current` values. A clean
    report must say `status: no_regressions` and show `None` in each section.
 3. **Resolve every finding.** If the report says

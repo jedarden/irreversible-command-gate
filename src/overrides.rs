@@ -261,7 +261,7 @@ pub fn diff_overrides(
 
 /// Verify the ordinary fixed deny suite and ensure an override is not being
 /// used to skip any rule other than the IDs explicitly listed in the file.
-/// The suite is generated from the release pack, so every guarded rule still
+/// The suite is generated from the release pack, so every enabled guarded rule still
 /// has a test even when the release intentionally exempts one at runtime.
 pub fn verify_override_regression_gate(
     pack: &Pack,
@@ -690,6 +690,7 @@ mod tests {
             safe_patterns: Vec::new(),
             guarded_patterns: vec![GuardedPattern {
                 id: "git-force-push".to_string(),
+                enabled: true,
                 check: Check::CommandRegex {
                     regex: "git push.*--force".to_string(),
                 },

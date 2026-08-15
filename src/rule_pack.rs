@@ -70,6 +70,14 @@ pub struct GuardedPattern {
     /// Unique identifier for this pattern
     pub id: String,
 
+    /// Whether this rule participates in evaluation.
+    ///
+    /// This is part of the released rule-pack data.  It defaults to `true`
+    /// so manifests written before the flag was introduced retain their
+    /// existing behavior.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
     /// The check that determines if this pattern matches
     #[serde(flatten)]
     pub check: Check,
@@ -91,6 +99,10 @@ pub struct GuardedPattern {
     /// This field is used by Layer 1 CI gate to detect narrowing of destructive patterns.
     #[serde(default)]
     pub destructive: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 /// The type of check used to determine if a pattern matches
@@ -295,6 +307,7 @@ mod tests {
     fn test_serialize_guarded_pattern() {
         let pattern = GuardedPattern {
             id: "vault-kv-destroy".to_string(),
+            enabled: true,
             check: Check::CommandRegex {
                 regex: "vault kv destroy".to_string(),
             },
@@ -334,6 +347,7 @@ mod tests {
             }],
             guarded_patterns: vec![GuardedPattern {
                 id: "vault-kv-destroy".to_string(),
+                enabled: true,
                 check: Check::CommandRegex {
                     regex: "vault kv destroy".to_string(),
                 },

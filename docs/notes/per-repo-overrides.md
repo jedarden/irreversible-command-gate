@@ -38,8 +38,8 @@ the trusted release reference and rule set that authorized it.
 
 ## Release gates
 
-The existing fixed deny suite still contains a case for every guarded rule,
-including an exempted rule. The override-aware gate verifies that all
+The existing fixed deny suite still contains a case for every enabled guarded
+rule, including an exempted rule. The override-aware gate verifies that all
 non-exempted cases still deny and that an exempted case is no longer denied by
 that exact rule. This preserves Layer 1's behavioral coverage.
 

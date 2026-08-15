@@ -13,8 +13,8 @@ the following:
 1. The `icg-ci` run passed on that exact commit. The run must include all
    required Layer 1 gates:
    - the fixed deny-regression suite passed; and
-   - the `coverage-diff/v1` report was produced by that run. Any removed
-     guarded pattern, widened safe pattern, or narrowed destructive guarded
+   - the `coverage-diff/v1` report was produced by that run. Any removed or
+     newly disabled guarded pattern, widened safe pattern, or narrowed destructive guarded
      pattern has either been eliminated or has an explicit, reviewed
      justification. If the release contains `overrides/<repo>.toml`, the
      report must also include the override diff: every newly exempted rule ID

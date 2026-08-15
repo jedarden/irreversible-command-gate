@@ -23,7 +23,7 @@ pub enum ExpectedVerdict {
     Deny,
 }
 
-/// One fixed regression case, paired with exactly one guarded pattern.
+/// One fixed regression case, paired with exactly one enabled guarded pattern.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegressionTestCase {
     /// The pack containing the guarded pattern.
@@ -48,7 +48,7 @@ pub struct RegressionTestCase {
 pub struct RegressionSuite {
     /// Format version for generated suite artifacts.
     pub version: u32,
-    /// One case for every guarded pattern in the source pack.
+    /// One case for every enabled guarded pattern in the source pack.
     pub cases: Vec<RegressionTestCase>,
 }
 
@@ -75,7 +75,9 @@ impl RegressionSuite {
 /// keyword. Generation fails if a command cannot be produced, if the guarded
 /// pattern is not a deny rule, or if the command is not denied by that exact
 /// pattern. Those failures keep a rule from entering a release without its
-/// required regression case.
+/// required regression case. Disabled guarded patterns are intentionally
+/// omitted: their release-integrity transition is reviewed separately, and
+/// they are not expected to deny while disabled.
 pub fn generate_regression_suite(pack: &Pack) -> Result<RegressionSuite> {
     generate_regression_suite_with_examples(pack, &Default::default())
 }
@@ -114,7 +116,7 @@ pub fn generate_regression_suite_from_manifests<P: AsRef<Path>>(
 /// Verify a previously generated suite against a rule pack.
 ///
 /// This is the build-gate operation: it requires an exact one-to-one mapping
-/// between guarded patterns and cases, then checks that every recorded command
+/// between enabled guarded patterns and cases, then checks that every recorded command
 /// is still denied by its recorded pattern. It catches missing cases as well
 /// as a regex change which stops matching the fixed command.
 pub fn verify_regression_suite(pack: &Pack, suite: &RegressionSuite) -> Result<()> {
@@ -125,12 +127,17 @@ pub fn verify_regression_suite(pack: &Pack, suite: &RegressionSuite) -> Result<(
             SUITE_VERSION
         );
     }
-    if suite.cases.len() != pack.guarded_patterns.len() {
+    let enabled_pattern_count = pack
+        .guarded_patterns
+        .iter()
+        .filter(|pattern| pattern.enabled)
+        .count();
+    if suite.cases.len() != enabled_pattern_count {
         bail!(
-            "regression suite for pack '{}' has {} cases for {} guarded patterns",
+            "regression suite for pack '{}' has {} cases for {} enabled guarded patterns",
             pack.id,
             suite.cases.len(),
-            pack.guarded_patterns.len()
+            enabled_pattern_count
         );
     }
 
@@ -160,6 +167,12 @@ pub fn verify_regression_suite(pack: &Pack, suite: &RegressionSuite) -> Result<(
                     case.pattern_id
                 )
             })?;
+        if !pattern.enabled {
+            bail!(
+                "regression suite contains case for disabled guarded pattern '{}'",
+                case.pattern_id
+            );
+        }
         if case.expected != ExpectedVerdict::Deny {
             bail!("regression case '{}' does not expect deny", case.pattern_id);
         }
@@ -177,10 +190,14 @@ pub fn verify_regression_suite(pack: &Pack, suite: &RegressionSuite) -> Result<(
         validate_deny_input(pack, pattern, &input)?;
     }
 
-    for pattern in &pack.guarded_patterns {
+    for pattern in pack
+        .guarded_patterns
+        .iter()
+        .filter(|pattern| pattern.enabled)
+    {
         if !seen.contains(pattern.id.as_str()) {
             bail!(
-                "guarded pattern '{}' has no regression test case",
+                "enabled guarded pattern '{}' has no regression test case",
                 pattern.id
             );
         }
@@ -233,7 +250,12 @@ fn generate_regression_suite_with_inputs(
     }
 
     let mut ids = HashSet::new();
-    let mut cases = Vec::with_capacity(pack.guarded_patterns.len());
+    let enabled_pattern_count = pack
+        .guarded_patterns
+        .iter()
+        .filter(|pattern| pattern.enabled)
+        .count();
+    let mut cases = Vec::with_capacity(enabled_pattern_count);
 
     for pattern in &pack.guarded_patterns {
         if !ids.insert(pattern.id.as_str()) {
@@ -242,6 +264,9 @@ fn generate_regression_suite_with_inputs(
                 pack.id,
                 pattern.id
             );
+        }
+        if !pattern.enabled {
+            continue;
         }
 
         let input = match examples.get(&pattern.id) {
@@ -570,6 +595,9 @@ fn validate_deny_case(pack: &Pack, target: &GuardedPattern, command: &str) -> Re
         }
 
         for pattern in &pack.guarded_patterns {
+            if !pattern.enabled {
+                continue;
+            }
             let Check::CommandRegex { regex } = &pattern.check else {
                 continue;
             };
@@ -713,6 +741,7 @@ mod tests {
     fn guarded(id: &str, regex: &str) -> GuardedPattern {
         GuardedPattern {
             id: id.to_owned(),
+            enabled: true,
             check: Check::CommandRegex {
                 regex: regex.to_owned(),
             },

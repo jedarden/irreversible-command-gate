@@ -750,7 +750,9 @@ impl Engine {
 
             // Check guarded_patterns
             for guarded_pattern in &pack.guarded_patterns {
-                if self.exempted_rule_ids.contains(&guarded_pattern.id) {
+                if !guarded_pattern.enabled
+                    || self.exempted_rule_ids.contains(&guarded_pattern.id)
+                {
                     continue;
                 }
                 // Create a temporary Pattern wrapper for the guarded pattern's check
@@ -1000,7 +1002,9 @@ impl Engine {
 
             // Check guarded_patterns
             for guarded_pattern in &pack.guarded_patterns {
-                if self.exempted_rule_ids.contains(&guarded_pattern.id) {
+                if !guarded_pattern.enabled
+                    || self.exempted_rule_ids.contains(&guarded_pattern.id)
+                {
                     continue;
                 }
                 // Create a temporary Pattern wrapper for the guarded pattern's check
@@ -1499,6 +1503,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "invalid".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     regex: "[".to_string(),
                 },
@@ -1573,6 +1578,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "vault-kv-destroy".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     regex: "vault kv destroy".to_string(),
                 },
@@ -1618,6 +1624,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "git-force-push".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     regex: "git push.*--force".to_string(),
                 },
@@ -1664,6 +1671,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "git-worktree-add".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     regex: "git worktree add".to_string(),
                 },
@@ -1709,6 +1717,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "vault-kv-destroy".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     regex: "vault kv destroy".to_string(),
                 },
@@ -1783,6 +1792,7 @@ mod tests {
             }],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "vault-kv-any".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     // This broader pattern would match "vault kv get" if safe_pattern didn't skip it
                     regex: "vault kv".to_string(),
@@ -1823,6 +1833,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "vault-kv-destroy".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::CommandRegex {
                     regex: "vault kv destroy".to_string(),
                 },
@@ -1941,6 +1952,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "ssd-storage-class".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "storageClassName: ssd".to_string(),
                 },
@@ -1986,6 +1998,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "latest-image-tag".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "image: .*:latest".to_string(),
                 },
@@ -2032,6 +2045,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "ssd-storage".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "storageClassName: ssd".to_string(),
                 },
@@ -2054,6 +2068,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "todo-in-doc".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "TODO:".to_string(),
                 },
@@ -2102,6 +2117,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "ssd-storage".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "storageClassName: ssd".to_string(),
                 },
@@ -2124,6 +2140,7 @@ mod tests {
             safe_patterns: vec![],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "latest-tag".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "image: .*:latest".to_string(),
                 },
@@ -2168,6 +2185,7 @@ mod tests {
             }],
             guarded_patterns: vec![crate::rule_pack::GuardedPattern {
                 id: "any-storage-class".to_string(),
+                enabled: true,
                 check: crate::rule_pack::Check::ContentRegex {
                     regex: "storageClassName:".to_string(),
                 },

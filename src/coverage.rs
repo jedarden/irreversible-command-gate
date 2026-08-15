@@ -30,6 +30,10 @@ pub struct CoverageDiff {
     /// Removed entries include their previous value so the report can show the
     /// exact coverage that disappeared.
     pub removed_guarded_pattern_changes: Vec<PatternChange>,
+    /// IDs of guarded patterns newly disabled by the current release.
+    pub disabled_guarded_patterns: Vec<String>,
+    /// Newly disabled entries include the flag transition for the report.
+    pub disabled_guarded_pattern_changes: Vec<PatternChange>,
     pub widened_safe_patterns: Vec<PatternChange>,
     /// These are guarded_patterns whose `destructive` flag is true in both
     /// manifests and whose check became narrower.
@@ -46,6 +50,7 @@ pub struct PatternChange {
 impl CoverageDiff {
     pub fn has_regressions(&self) -> bool {
         !self.removed_guarded_patterns.is_empty()
+            || !self.disabled_guarded_patterns.is_empty()
             || !self.widened_safe_patterns.is_empty()
             || !self.narrowed_guarded_patterns.is_empty()
     }
@@ -97,6 +102,16 @@ pub fn render_coverage_diff_report(
         writeln!(report, "None.").unwrap();
     } else {
         for change in &diff.removed_guarded_pattern_changes {
+            write_change(&mut report, change);
+        }
+    }
+    writeln!(report).unwrap();
+
+    writeln!(report, "## Disabled guarded_patterns").unwrap();
+    if diff.disabled_guarded_pattern_changes.is_empty() {
+        writeln!(report, "None.").unwrap();
+    } else {
+        for change in &diff.disabled_guarded_pattern_changes {
             write_change(&mut report, change);
         }
     }
@@ -206,6 +221,22 @@ pub fn run_coverage_diff(
         .collect();
     removed_changes.sort_by(|left, right| left.pattern_id.cmp(&right.pattern_id));
 
+    // Disabling a guarded pattern reduces active coverage just like removing
+    // it, so Layer 1/2 must surface the true -> false transition explicitly.
+    let mut disabled_guarded = Vec::new();
+    for (id, previous_pattern) in &previous_guarded {
+        if let Some(current_pattern) = current_guarded.get(id) {
+            if previous_pattern.enabled && !current_pattern.enabled {
+                disabled_guarded.push(PatternChange {
+                    pattern_id: id.to_string(),
+                    previous: "true".to_string(),
+                    current: "false".to_string(),
+                });
+            }
+        }
+    }
+    disabled_guarded.sort_by(|left, right| left.pattern_id.cmp(&right.pattern_id));
+
     // Detect widened safe patterns
     let mut widened_safe = Vec::new();
     for (id, prev_pattern) in &previous_safe {
@@ -246,6 +277,11 @@ pub fn run_coverage_diff(
     Ok(CoverageDiff {
         removed_guarded_patterns: removed,
         removed_guarded_pattern_changes: removed_changes,
+        disabled_guarded_patterns: disabled_guarded
+            .iter()
+            .map(|change| change.pattern_id.clone())
+            .collect(),
+        disabled_guarded_pattern_changes: disabled_guarded,
         widened_safe_patterns: widened_safe,
         narrowed_guarded_patterns: narrowed_guarded,
     })

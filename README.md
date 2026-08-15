@@ -51,8 +51,11 @@ Stated plainly, because it's easy to assume more than is actually true:
 
 ## Fixed deny-regression suite
 
-Generate one validated deny case for every `guarded_pattern` in a JSON rule
-pack. The command derives a concrete command from command-regex rules, or uses
+Generate one validated deny case for every enabled `guarded_pattern` in a JSON
+rule pack. Disabled patterns are intentionally omitted from the fixed suite;
+their `enabled: true` → `false` transition is a release-integrity regression
+that still requires the normal Layer 1/2 release review. The command derives a
+concrete command from command-regex rules, or uses
 an optional `example_command` on a guarded-pattern entry:
 
 ```bash

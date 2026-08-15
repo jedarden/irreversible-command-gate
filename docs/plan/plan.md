@@ -338,6 +338,8 @@ Pattern:                         # lighter than GuardedPattern -- no tier/severi
 
 GuardedPattern:
   id: string
+  enabled: true | false           # whether this rule participates in evaluation;
+                                  # omitted in older manifests means true
   check: CommandRegex | ContentRegex | Predicate
                                   # CommandRegex: matched against shell tokens (vault/git/misc/tmux
                                   # packs, both front-ends; secrets pack also uses CommandRegex but
@@ -369,7 +371,7 @@ GuardedPattern:
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
-    report (removed patterns, widened `safe_patterns`, narrowed
+    report (removed or disabled patterns, widened `safe_patterns`, narrowed
     `guarded_patterns` (especially those where `destructive: true`), with
     previous/current values and an explicit justification field) as required,
     build-failing `icg-ci` gates (Layer 1); human review informed by that
