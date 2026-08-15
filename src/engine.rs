@@ -893,6 +893,169 @@ impl Engine {
             }
         }
     }
+
+    /// Evaluate content (Write/Edit operations) against loaded rule packs
+    ///
+    /// This is the main entry point for content-mode checking:
+    /// - Dispatches to packs whose applies_to globs match the file path
+    /// - Checks safe_patterns first (skip pack if any match)
+    /// - Then checks guarded_patterns (return first match)
+    /// - Returns the most severe result across all matching packs
+    pub fn evaluate_content(&self, source: &ContentSource) -> CheckResult {
+        match catch_unwind(AssertUnwindSafe(|| self.evaluate_content_inner(source))) {
+            Ok(result) => result,
+            Err(_) => {
+                report_fail_open("content evaluation panicked");
+                CheckResult::Allowed
+            }
+        }
+    }
+
+    fn evaluate_content_inner(&self, source: &ContentSource) -> CheckResult {
+        if self.should_fail_open() {
+            return CheckResult::Allowed;
+        }
+
+        // Collect all loaded packs for dispatch
+        let packs: Vec<&Pack> = self.packs.values().collect();
+        let packs_slice: &[Pack] = &self.packs.values().cloned().collect::<Vec<_>>();
+
+        // Find packs whose applies_to selectors match this file
+        let matching_packs = self.dispatch_content_packs(source, packs_slice);
+
+        if matching_packs.is_empty() {
+            // No packs match this file type - allow by default (fail-open)
+            return CheckResult::Allowed;
+        }
+
+        // Check each matching pack
+        let mut result = CheckResult::Allowed;
+
+        for pack in matching_packs {
+            // Check safe_patterns first - if any match, skip this pack entirely
+            let safe_match = pack.safe_patterns.iter().find_map(|pattern| {
+                match self.pattern_matches_content(pattern, source) {
+                    Ok(true) => Some(Ok(true)),
+                    Ok(false) => None,
+                    Err(()) => Some(Err(())),
+                }
+            });
+
+            if matches!(safe_match, Some(Err(()))) {
+                return CheckResult::Allowed;
+            }
+
+            if matches!(safe_match, Some(Ok(true))) {
+                // Safe pattern matched - this pack doesn't apply
+                continue;
+            }
+
+            // Check guarded_patterns
+            for guarded_pattern in &pack.guarded_patterns {
+                // Create a temporary Pattern wrapper for the guarded pattern's check
+                let pattern_wrapper = crate::rule_pack::Pattern {
+                    id: guarded_pattern.id.clone(),
+                    check: guarded_pattern.check.clone(),
+                };
+
+                let matches = match self.pattern_matches_content(&pattern_wrapper, source) {
+                    Ok(matches) => matches,
+                    Err(()) => return CheckResult::Allowed,
+                };
+
+                if matches {
+                    // Pattern matched - convert to CheckResult
+                    let pattern_result = self.guarded_pattern_to_result_content(
+                        guarded_pattern,
+                        &pack.id,
+                        source.file_path(),
+                    );
+
+                    // Return immediately if this is a deny (most severe)
+                    if matches!(pattern_result, CheckResult::Denied { .. }) {
+                        return pattern_result;
+                    }
+
+                    // Otherwise, track the most severe result so far
+                    result = self.most_severe_result(result, pattern_result);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Check if a pattern matches content (for Write/Edit operations)
+    fn pattern_matches_content(
+        &self,
+        pattern: &crate::rule_pack::Pattern,
+        source: &ContentSource,
+    ) -> std::result::Result<bool, ()> {
+        match &pattern.check {
+            crate::rule_pack::Check::ContentRegex { regex } => {
+                // Compile and match the regex against the new content
+                match Regex::new(regex) {
+                    Ok(re) => {
+                        let content_to_check = source.new_content();
+                        Ok(re.is_match(content_to_check))
+                    }
+                    Err(_) => {
+                        // An invalid pattern invalidates the check
+                        report_fail_open(&format!(
+                            "invalid regex in pattern '{}'",
+                            pattern.id
+                        ));
+                        Err(())
+                    }
+                }
+            }
+            crate::rule_pack::Check::CommandRegex { .. } => {
+                // Command regex doesn't apply to content-mode checks
+                Ok(false)
+            }
+            crate::rule_pack::Check::Predicate { .. } => {
+                // Predicate checks are not yet implemented for content-mode
+                // (e.g., beads pack filesystem check)
+                Ok(false)
+            }
+        }
+    }
+
+    /// Convert a GuardedPattern to a CheckResult for content-mode
+    fn guarded_pattern_to_result_content(
+        &self,
+        pattern: &crate::rule_pack::GuardedPattern,
+        pack_id: &str,
+        file_path: &str,
+    ) -> CheckResult {
+        match pattern.redirect.channel {
+            crate::rule_pack::Channel::Deny => CheckResult::Denied {
+                reason: pattern.redirect.reason_template.clone(),
+                pack_id: pack_id.to_string(),
+                pattern_id: pattern.id.clone(),
+            },
+            crate::rule_pack::Channel::UpdatedInput => {
+                // For content-mode, updatedInput would provide corrected content
+                // This is not yet implemented - would require rewrite_template to
+                // specify the replacement content
+                let reason = format!(
+                    "{} (content-mode updatedInput not yet implemented)",
+                    pattern.redirect.reason_template
+                );
+                CheckResult::Rewrite {
+                    reason,
+                    rewrite: format!("<corrected content for {}>", file_path),
+                    pack_id: pack_id.to_string(),
+                    pattern_id: pattern.id.clone(),
+                }
+            }
+            crate::rule_pack::Channel::AdditionalContext => CheckResult::Warning {
+                reason: pattern.redirect.reason_template.clone(),
+                pack_id: pack_id.to_string(),
+                pattern_id: pattern.id.clone(),
+            },
+        }
+    }
 }
 
 fn validate_pack_regexes(pack: &Pack) -> Result<()> {
@@ -1553,6 +1716,52 @@ mod tests {
     }
 
     #[test]
+    fn test_evaluate_token_safe_pattern_skips_guarded_patterns() {
+        // Test that a safe_pattern hit suppresses a guarded_pattern hit that would otherwise fire
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "vault".to_string(),
+            tool_keywords: vec!["vault".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![crate::rule_pack::Pattern {
+                id: "safe-read".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    regex: "vault kv get".to_string(),
+                },
+            }],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "vault-kv-any".to_string(),
+                check: crate::rule_pack::Check::CommandRegex {
+                    // This broader pattern would match "vault kv get" if safe_pattern didn't skip it
+                    regex: "vault kv".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Would block all vault kv commands".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "All vault kv commands are denied".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        // This command matches BOTH the safe_pattern (vault kv get) and the guarded_pattern (vault kv)
+        // The safe_pattern should take precedence, allowing the command
+        let token = CommandToken {
+            executable: "vault".to_string(),
+            args: vec!["kv".to_string(), "get".to_string(), "secret/foo".to_string()],
+        };
+
+        let result = engine.evaluate_token(&token);
+        assert_eq!(result, CheckResult::Allowed, "safe_pattern should suppress guarded_pattern");
+    }
+
+    #[test]
     fn test_basename_matching_with_absolute_path() {
         let mut engine = default_engine();
 
@@ -1626,5 +1835,312 @@ mod tests {
 
         // Same severity returns first
         assert!(matches!(engine.most_severe_result(allowed.clone(), allowed.clone()), CheckResult::Allowed));
+    }
+
+    // Content-mode evaluation tests
+
+    #[test]
+    fn test_evaluate_content_no_packs_loaded() {
+        let engine = default_engine();
+        let source = ContentSource::Write {
+            file_path: "/path/to/file.yaml".to_string(),
+            content: "some content".to_string(),
+        };
+
+        let result = engine.evaluate_content(&source);
+        assert_eq!(result, CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_evaluate_content_safe_pattern_matches() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "storage-class".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![crate::rule_pack::Pattern {
+                id: "safe-sata".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "storageClassName: sata".to_string(),
+                },
+            }],
+            guarded_patterns: vec![],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        let source = ContentSource::Write {
+            file_path: "/path/to/file.yaml".to_string(),
+            content: "storageClassName: sata".to_string(),
+        };
+
+        let result = engine.evaluate_content(&source);
+        assert_eq!(result, CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_evaluate_content_guarded_pattern_deny() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "storage-class".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "ssd-storage-class".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "storageClassName: ssd".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "SSD storage is prohibited".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "Never use ssd storage class".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        let source = ContentSource::Write {
+            file_path: "/path/to/file.yaml".to_string(),
+            content: "storageClassName: ssd".to_string(),
+        };
+
+        let result = engine.evaluate_content(&source);
+
+        match result {
+            CheckResult::Denied { reason, pack_id, pattern_id } => {
+                assert_eq!(pack_id, "storage-class");
+                assert_eq!(pattern_id, "ssd-storage-class");
+                assert!(reason.contains("ssd storage"));
+            }
+            _ => panic!("Expected Denied result, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_content_edit_operation() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "image-tag".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "latest-image-tag".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "image: .*:latest".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Latest tag is ambiguous".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "Never use :latest image tags".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        // Test Edit operation - should check new_content
+        let source = ContentSource::Edit {
+            file_path: "/path/to/deployment.yaml".to_string(),
+            old_content: "image: nginx:1.19".to_string(),
+            new_content: "image: nginx:latest".to_string(),
+        };
+
+        let result = engine.evaluate_content(&source);
+
+        match result {
+            CheckResult::Denied { pack_id, pattern_id, .. } => {
+                assert_eq!(pack_id, "image-tag");
+                assert_eq!(pattern_id, "latest-image-tag");
+            }
+            _ => panic!("Expected Denied result for edit with :latest, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_content_applies_to_filters_by_file_extension() {
+        let mut engine = default_engine();
+
+        let yaml_pack = crate::rule_pack::Pack {
+            id: "storage-class".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "ssd-storage".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "storageClassName: ssd".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "SSD prohibited".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "No SSD".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        let markdown_pack = crate::rule_pack::Pack {
+            id: "markdown".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.md".to_string()],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "todo-in-doc".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "TODO:".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Medium,
+                explanation: "TODOs should be tracked elsewhere".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "No TODOs in docs".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: false,
+            }],
+        };
+
+        engine.load_pack(yaml_pack).unwrap();
+        engine.load_pack(markdown_pack).unwrap();
+
+        // YAML file should match storage-class pack
+        let yaml_source = ContentSource::Write {
+            file_path: "/path/to/config.yaml".to_string(),
+            content: "storageClassName: ssd".to_string(),
+        };
+
+        let yaml_result = engine.evaluate_content(&yaml_source);
+        assert!(matches!(yaml_result, CheckResult::Denied { pack_id, .. } if pack_id == "storage-class"));
+
+        // Markdown file should match markdown pack
+        let md_source = ContentSource::Write {
+            file_path: "/path/to/doc.md".to_string(),
+            content: "# TODO: implement this".to_string(),
+        };
+
+        let md_result = engine.evaluate_content(&md_source);
+        assert!(matches!(md_result, CheckResult::Denied { pack_id, .. } if pack_id == "markdown"));
+    }
+
+    #[test]
+    fn test_evaluate_content_multiple_packs_match_same_file() {
+        let mut engine = default_engine();
+
+        let storage_class_pack = crate::rule_pack::Pack {
+            id: "storage-class".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "ssd-storage".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "storageClassName: ssd".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "SSD prohibited".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "No SSD".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        let image_tag_pack = crate::rule_pack::Pack {
+            id: "image-tag".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "latest-tag".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "image: .*:latest".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Latest tag prohibited".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "No :latest".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(storage_class_pack).unwrap();
+        engine.load_pack(image_tag_pack).unwrap();
+
+        // Content that triggers both packs - should return the first deny
+        let source = ContentSource::Write {
+            file_path: "/path/to/deployment.yaml".to_string(),
+            content: "storageClassName: ssd\nimage: nginx:latest".to_string(),
+        };
+
+        let result = engine.evaluate_content(&source);
+        assert!(matches!(result, CheckResult::Denied { .. }));
+    }
+
+    #[test]
+    fn test_evaluate_content_safe_pattern_skips_guarded_patterns() {
+        let mut engine = default_engine();
+
+        let pack = crate::rule_pack::Pack {
+            id: "storage-class".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec!["*.yaml".to_string()],
+            safe_patterns: vec![crate::rule_pack::Pattern {
+                id: "sata-is-safe".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "storageClassName: sata".to_string(),
+                },
+            }],
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "any-storage-class".to_string(),
+                check: crate::rule_pack::Check::ContentRegex {
+                    regex: "storageClassName:".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Should deny all storage classes".to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "No storage classes allowed".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        };
+
+        engine.load_pack(pack).unwrap();
+
+        // Content matches safe pattern - should skip guarded patterns
+        let source = ContentSource::Write {
+            file_path: "/path/to/config.yaml".to_string(),
+            content: "storageClassName: sata".to_string(),
+        };
+
+        let result = engine.evaluate_content(&source);
+        assert_eq!(result, CheckResult::Allowed);
     }
 }

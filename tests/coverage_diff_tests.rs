@@ -33,7 +33,11 @@ fn test_detects_removed_guarded_patterns() {
     assert!(diff
         .removed_guarded_patterns
         .contains(&"vault-secrets-disable".to_string()));
-    assert_eq!(diff.removed_guarded_patterns.len(), 2);
+    // image-tag-bare-sha was removed
+    assert!(diff
+        .removed_guarded_patterns
+        .contains(&"image-tag-bare-sha".to_string()));
+    assert_eq!(diff.removed_guarded_patterns.len(), 3);
 
     let removed: Vec<&str> = diff
         .removed_guarded_pattern_changes
@@ -42,7 +46,7 @@ fn test_detects_removed_guarded_patterns() {
         .collect();
     assert_eq!(
         removed,
-        vec!["vault-policy-delete", "vault-secrets-disable"]
+        vec!["image-tag-bare-sha", "vault-policy-delete", "vault-secrets-disable"]
     );
     assert!(diff
         .removed_guarded_pattern_changes
@@ -59,16 +63,36 @@ fn test_detects_widened_safe_patterns() {
 
     assert!(diff.has_regressions());
 
-    // safe-list was widened from "vault.*list" to ".*" (catch-all)
+    // safe-vault-list was widened from "vault.*list" to ".*" (catch-all)
     let widened_list: Vec<&str> = diff
         .widened_safe_patterns
         .iter()
         .map(|p| p.pattern_id.as_str())
         .collect();
     assert!(
-        widened_list.contains(&"safe-list"),
-        "Should detect widened safe-list pattern"
+        widened_list.contains(&"safe-vault-read"),
+        "Should detect widened safe-vault-read pattern"
     );
+
+    // safe-vault-list was widened from "vault.*list" to ".*" (catch-all)
+    assert!(
+        widened_list.contains(&"safe-vault-list"),
+        "Should detect widened safe-vault-list pattern"
+    );
+
+    // safe-storage-class was widened from specific to catch-all
+    assert!(
+        widened_list.contains(&"safe-storage-class"),
+        "Should detect widened safe-storage-class pattern"
+    );
+
+    // safe-image-tag was widened from semver-only to catch-all
+    assert!(
+        widened_list.contains(&"safe-image-tag"),
+        "Should detect widened safe-image-tag pattern"
+    );
+
+    assert_eq!(diff.widened_safe_patterns.len(), 4);
 }
 
 #[test]
@@ -182,8 +206,8 @@ fn test_load_rule_pack() {
     let pack = icg::coverage::load_rule_pack(path).unwrap();
 
     assert_eq!(pack.id, "test-pack-previous");
-    assert_eq!(pack.safe_patterns.len(), 3);
-    assert_eq!(pack.guarded_patterns.len(), 4);
+    assert_eq!(pack.safe_patterns.len(), 5);
+    assert_eq!(pack.guarded_patterns.len(), 8);
 
     // Verify a specific pattern
     let vault_destroy = pack
