@@ -1,4 +1,6 @@
+use chrono::{Duration, Utc};
 use std::path::PathBuf;
+use tempfile::tempdir;
 
 #[test]
 fn test_no_regressions_clean_release() {
@@ -46,7 +48,11 @@ fn test_detects_removed_guarded_patterns() {
         .collect();
     assert_eq!(
         removed,
-        vec!["image-tag-bare-sha", "vault-policy-delete", "vault-secrets-disable"]
+        vec![
+            "image-tag-bare-sha",
+            "vault-policy-delete",
+            "vault-secrets-disable"
+        ]
     );
     assert!(diff
         .removed_guarded_pattern_changes
@@ -225,4 +231,49 @@ fn test_load_rule_pack() {
     }
 
     assert!(vault_destroy.destructive);
+}
+
+#[test]
+fn test_release_integrity_diff_flags_new_override_exemptions() {
+    let directory = tempdir().unwrap();
+    let previous_override_path = directory.path().join("previous.toml");
+    let current_override_path = directory.path().join("current.toml");
+    let today = Utc::now().date_naive();
+    let mut previous = icg::overrides::RepoOverride::new(
+        "jedarden/example",
+        "v1.2.2",
+        vec!["vault-kv-destroy".to_string()],
+        (today + Duration::days(30)).to_string(),
+        "Reviewed migration exception.",
+    );
+    previous.last_justified_at = today.to_string();
+    let mut current = previous.clone();
+    current.release_ref = "v1.2.3".to_string();
+    current.exempted_rule_ids.push("git-force-push".to_string());
+    icg::overrides::save_override(&previous, &previous_override_path).unwrap();
+    icg::overrides::save_override(&current, &current_override_path).unwrap();
+
+    let diff = icg::coverage::run_release_integrity_diff(
+        PathBuf::from("tests/fixtures/previous-release.json"),
+        PathBuf::from("tests/fixtures/current-release-clean.json"),
+        Some(previous_override_path),
+        Some(current_override_path),
+    )
+    .unwrap();
+    assert_eq!(
+        diff.overrides.newly_exempted_rule_ids,
+        vec!["git-force-push"]
+    );
+    assert!(diff.has_regressions());
+
+    let report = icg::coverage::render_release_integrity_report(
+        PathBuf::from("tests/fixtures/previous-release.json").as_path(),
+        PathBuf::from("tests/fixtures/current-release-clean.json").as_path(),
+        &diff,
+        None,
+    );
+    assert!(report.contains("status: regressions_detected"));
+    assert!(report.contains("## Newly exempted rule IDs"));
+    assert!(report.contains("- rule_id: git-force-push"));
+    assert!(report.contains("justification: REQUIRED"));
 }

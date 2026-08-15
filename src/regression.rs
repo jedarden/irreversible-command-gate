@@ -7,7 +7,7 @@
 //! for an in-process test runner.
 
 use crate::rule_pack::{Channel, Check, GuardedPattern, Pack};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -31,7 +31,14 @@ pub struct RegressionTestCase {
     /// The guarded pattern exercised by this command.
     pub pattern_id: String,
     /// A concrete command-shaped input. It is never executed by generation.
+    /// This is empty for a content-mode case, which uses `content` below.
     pub command: String,
+    /// Write/Edit target used by content-mode guarded patterns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// Concrete content-shaped input for content-mode guarded patterns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     /// The verdict that must be returned when the command is evaluated.
     pub expected: ExpectedVerdict,
 }
@@ -82,9 +89,9 @@ pub fn generate_regression_suite_from_manifest<P: AsRef<Path>>(path: P) -> Resul
         .with_context(|| format!("failed to parse JSON from {}", path.display()))?;
     let pack: Pack = serde_json::from_value(value.clone())
         .with_context(|| format!("failed to parse rule pack from {}", path.display()))?;
-    let examples = example_commands_from_manifest(&value)?;
+    let examples = example_inputs_from_manifest(&value)?;
 
-    generate_regression_suite_with_examples(&pack, &examples)
+    generate_regression_suite_with_inputs(&pack, &examples)
         .with_context(|| format!("failed to generate suite for {}", path.display()))
 }
 
@@ -156,7 +163,18 @@ pub fn verify_regression_suite(pack: &Pack, suite: &RegressionSuite) -> Result<(
         if case.expected != ExpectedVerdict::Deny {
             bail!("regression case '{}' does not expect deny", case.pattern_id);
         }
-        validate_deny_case(pack, pattern, &case.command)?;
+        let input = match (&case.file_path, &case.content) {
+            (Some(file_path), Some(content)) => RegressionInput::Content {
+                file_path: file_path.clone(),
+                content: content.clone(),
+            },
+            (None, None) => RegressionInput::Command(case.command.clone()),
+            _ => bail!(
+                "regression case '{}' must provide both file_path and content for content-mode",
+                case.pattern_id
+            ),
+        };
+        validate_deny_input(pack, pattern, &input)?;
     }
 
     for pattern in &pack.guarded_patterns {
@@ -190,6 +208,23 @@ fn generate_regression_suite_with_examples(
     pack: &Pack,
     examples: &std::collections::HashMap<String, String>,
 ) -> Result<RegressionSuite> {
+    let inputs = examples
+        .iter()
+        .map(|(id, command)| (id.clone(), RegressionInput::Command(command.clone())))
+        .collect();
+    generate_regression_suite_with_inputs(pack, &inputs)
+}
+
+#[derive(Debug, Clone)]
+enum RegressionInput {
+    Command(String),
+    Content { file_path: String, content: String },
+}
+
+fn generate_regression_suite_with_inputs(
+    pack: &Pack,
+    examples: &std::collections::HashMap<String, RegressionInput>,
+) -> Result<RegressionSuite> {
     if pack.guarded_patterns.is_empty() {
         return Ok(RegressionSuite {
             version: SUITE_VERSION,
@@ -209,21 +244,42 @@ fn generate_regression_suite_with_examples(
             );
         }
 
-        let command = match examples.get(&pattern.id) {
-            Some(command) if !command.trim().is_empty() => command.trim().to_owned(),
+        let input = match examples.get(&pattern.id) {
+            Some(RegressionInput::Command(command)) if !command.trim().is_empty() => {
+                RegressionInput::Command(command.trim().to_owned())
+            }
+            Some(RegressionInput::Content { file_path, content })
+                if !file_path.trim().is_empty() && !content.trim().is_empty() =>
+            {
+                RegressionInput::Content {
+                    file_path: file_path.trim().to_owned(),
+                    content: content.trim().to_owned(),
+                }
+            }
             Some(_) => bail!(
-                "guarded pattern '{}' in pack '{}' has an empty example command",
+                "guarded pattern '{}' in pack '{}' has an empty regression example",
                 pattern.id,
                 pack.id
             ),
-            None => representative_command(pack, pattern)?,
+            None => representative_input(pack, pattern)?,
         };
 
-        validate_deny_case(pack, pattern, &command)?;
+        validate_deny_input(pack, pattern, &input)?;
         cases.push(RegressionTestCase {
             pack_id: pack.id.clone(),
             pattern_id: pattern.id.clone(),
-            command,
+            command: match &input {
+                RegressionInput::Command(command) => command.clone(),
+                RegressionInput::Content { .. } => String::new(),
+            },
+            file_path: match &input {
+                RegressionInput::Content { file_path, .. } => Some(file_path.clone()),
+                RegressionInput::Command(_) => None,
+            },
+            content: match &input {
+                RegressionInput::Content { content, .. } => Some(content.clone()),
+                RegressionInput::Command(_) => None,
+            },
             expected: ExpectedVerdict::Deny,
         });
     }
@@ -234,9 +290,9 @@ fn generate_regression_suite_with_examples(
     })
 }
 
-fn example_commands_from_manifest(
+fn example_inputs_from_manifest(
     value: &serde_json::Value,
-) -> Result<std::collections::HashMap<String, String>> {
+) -> Result<std::collections::HashMap<String, RegressionInput>> {
     let mut examples = std::collections::HashMap::new();
     let Some(patterns) = value
         .get("guarded_patterns")
@@ -250,17 +306,40 @@ fn example_commands_from_manifest(
             bail!("guarded pattern is missing a string id");
         };
 
-        // `example_command` is the canonical name. The aliases make the
-        // generator friendly to early manifests without changing Pack's
-        // runtime schema or losing unknown fields during normal loading.
+        // `example_command` is the canonical command example. The aliases
+        // keep the generator friendly to early manifests without changing
+        // Pack's runtime schema or losing unknown fields during normal loading.
         for key in ["example_command", "test_command", "example"] {
             if let Some(command) = pattern.get(key) {
                 let command = command.as_str().ok_or_else(|| {
                     anyhow::anyhow!("guarded pattern '{}' field '{}' must be a string", id, key)
                 })?;
-                examples.insert(id.to_owned(), command.to_owned());
+                examples.insert(id.to_owned(), RegressionInput::Command(command.to_owned()));
                 break;
             }
+        }
+        if examples.contains_key(id) {
+            continue;
+        }
+        if let Some(content) = pattern
+            .get("example_content")
+            .or_else(|| pattern.get("test_content"))
+        {
+            let content = content.as_str().ok_or_else(|| {
+                anyhow::anyhow!("guarded pattern '{}' content example must be a string", id)
+            })?;
+            let file_path = pattern
+                .get("example_file_path")
+                .or_else(|| pattern.get("file_path"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("regression.yaml");
+            examples.insert(
+                id.to_owned(),
+                RegressionInput::Content {
+                    file_path: file_path.to_owned(),
+                    content: content.to_owned(),
+                },
+            );
         }
     }
 
@@ -311,6 +390,56 @@ fn representative_command(pack: &Pack, pattern: &GuardedPattern) -> Result<Strin
         );
     }
     Ok(command)
+}
+
+fn representative_input(pack: &Pack, pattern: &GuardedPattern) -> Result<RegressionInput> {
+    match &pattern.check {
+        Check::CommandRegex { .. } => Ok(RegressionInput::Command(representative_command(
+            pack, pattern,
+        )?)),
+        Check::ContentRegex { regex } => {
+            Regex::new(regex).with_context(|| {
+                format!(
+                    "invalid regex for guarded pattern '{}': {}",
+                    pattern.id, regex
+                )
+            })?;
+            let file_path = pack
+                .applies_to
+                .first()
+                .map(|glob| {
+                    if glob.ends_with(".yml") {
+                        "regression.yml"
+                    } else {
+                        "regression.yaml"
+                    }
+                })
+                .unwrap_or("regression.yaml")
+                .to_string();
+            Ok(RegressionInput::Content {
+                file_path,
+                content: content_regex_example(regex),
+            })
+        }
+        Check::Predicate { .. } => bail!(
+            "guarded pattern '{}' in pack '{}' is a predicate; provide a regression example",
+            pattern.id,
+            pack.id
+        ),
+    }
+}
+
+fn content_regex_example(regex: &str) -> String {
+    if regex.contains("storageClassName") {
+        return "storageClassName: ssd".to_string();
+    }
+    if regex.contains(":latest") {
+        return "image: example:latest".to_string();
+    }
+    if regex.contains("[0-9a-f]") {
+        return "image: ronaldraygun/example:deadbeef".to_string();
+    }
+    regex_example(regex)
 }
 
 /// Turn the useful literal shape of a command regex into a safe, concrete
@@ -473,6 +602,66 @@ fn validate_deny_case(pack: &Pack, target: &GuardedPattern, command: &str) -> Re
     )
 }
 
+fn validate_deny_input(
+    pack: &Pack,
+    target: &GuardedPattern,
+    input: &RegressionInput,
+) -> Result<()> {
+    match (&target.check, input) {
+        (Check::CommandRegex { .. }, RegressionInput::Command(command)) => {
+            validate_deny_case(pack, target, command)
+        }
+        (Check::ContentRegex { regex }, RegressionInput::Content { content, .. }) => {
+            if target.redirect.channel != Channel::Deny {
+                bail!(
+                    "guarded pattern '{}' in pack '{}' uses {:?}; fixed regression cases require a deny redirect",
+                    target.id,
+                    pack.id,
+                    target.redirect.channel
+                );
+            }
+            let target_regex = Regex::new(regex).with_context(|| {
+                format!("invalid regex for guarded pattern '{}': {regex}", target.id)
+            })?;
+            if !target_regex.is_match(content) {
+                bail!(
+                    "example content for guarded pattern '{}' in pack '{}' does not match its regex: {}",
+                    target.id,
+                    pack.id,
+                    content
+                );
+            }
+            for pattern in &pack.safe_patterns {
+                if let Check::ContentRegex { regex } = &pattern.check {
+                    let safe_regex = Regex::new(regex).with_context(|| {
+                        format!("invalid regex for safe pattern '{}': {regex}", pattern.id)
+                    })?;
+                    if safe_regex.is_match(content) {
+                        bail!(
+                            "example content for guarded pattern '{}' in pack '{}' matches safe pattern '{}' first: {}",
+                            target.id,
+                            pack.id,
+                            pattern.id,
+                            content
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        (Check::CommandRegex { .. }, RegressionInput::Content { .. })
+        | (Check::ContentRegex { .. }, RegressionInput::Command(_)) => bail!(
+            "regression example for guarded pattern '{}' uses the wrong input mode",
+            target.id
+        ),
+        (Check::Predicate { .. }, _) => bail!(
+            "guarded pattern '{}' in pack '{}' is a predicate; provide a supported regression example",
+            target.id,
+            pack.id
+        ),
+    }
+}
+
 /// Normalize the command in the same limited way as command-mode dispatch:
 /// split shell segments and remove transparent wrapper prefixes and leading
 /// environment assignments. The generated commands do not need this, but it
@@ -583,11 +772,9 @@ mod tests {
         let mut pattern = guarded("warning", "git worktree add");
         pattern.redirect.channel = Channel::AdditionalContext;
         let error = generate_regression_suite(&pack(vec![pattern])).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("fixed regression cases require a deny redirect")
-        );
+        assert!(error
+            .to_string()
+            .contains("fixed regression cases require a deny redirect"));
     }
 
     #[test]

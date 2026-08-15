@@ -16,7 +16,10 @@ the following:
    - the `coverage-diff/v1` report was produced by that run. Any removed
      guarded pattern, widened safe pattern, or narrowed destructive guarded
      pattern has either been eliminated or has an explicit, reviewed
-     justification.
+     justification. If the release contains `overrides/<repo>.toml`, the
+     report must also include the override diff: every newly exempted rule ID
+     has an explicit, reviewed justification, and each override passes its
+     expiry and 90-day re-justification checks.
 2. Layer 2 review is complete against that same `coverage-diff/v1` report.
    The review record includes the candidate SHA, CI run or report artifact,
    reviewer identity and time, decision, and a disposition for every finding.

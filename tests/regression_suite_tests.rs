@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use icg::engine::{CheckResult, CommandSource, Engine};
+use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::regression::{
-    ExpectedVerdict, generate_regression_suite, generate_regression_suite_from_manifest,
-    verify_regression_suite,
+    generate_regression_suite, generate_regression_suite_from_manifest, verify_regression_suite,
+    ExpectedVerdict,
 };
 use icg::rule_pack::load_pack;
 
@@ -25,18 +25,22 @@ fn fixture_generates_a_case_for_every_guarded_pattern() {
             .map(|pattern| pattern.id.as_str())
             .collect::<Vec<_>>()
     );
-    assert!(
-        suite
-            .cases
-            .iter()
-            .all(|case| case.expected == ExpectedVerdict::Deny)
-    );
+    assert!(suite
+        .cases
+        .iter()
+        .all(|case| case.expected == ExpectedVerdict::Deny));
     verify_regression_suite(&pack, &suite).unwrap();
 
     let mut engine = Engine::new();
     engine.load_pack(pack).unwrap();
     for case in suite.cases {
-        let result = engine.evaluate_command(&CommandSource::Hook(case.command));
+        let result = match (case.file_path, case.content) {
+            (Some(file_path), Some(content)) => {
+                engine.evaluate_content(&ContentSource::Write { file_path, content })
+            }
+            (None, None) => engine.evaluate_command(&CommandSource::Hook(case.command)),
+            _ => panic!("regression case has incomplete content input"),
+        };
         assert!(
             matches!(
                 result,

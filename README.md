@@ -43,8 +43,8 @@ Stated plainly, because it's easy to assume more than is actually true:
 ## Structure
 
 - `docs/notes/` — features, constraints, design decisions, including the
-  existing-infrastructure gap analysis and the runtime-config-vs-hardcoded
-  exploration
+  existing-infrastructure gap analysis, runtime-config-vs-hardcoded
+  exploration, and the release-bound per-repository override contract
 - `docs/research/` — external reference material and prior art
   (`destructive_command_guard`, `agent-guard`, `vault-mcp-server`, etc.)
 - `docs/plan/plan.md` — complete application plan

@@ -1,11 +1,26 @@
+use crate::overrides::{diff_overrides, load_override, validate_override, OverrideCoverageDiff};
 use crate::rule_pack::{Check, GuardedPattern, Pack, Pattern as RulePattern};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The stable, human-readable coverage-diff report format.
 pub const COVERAGE_DIFF_REPORT_FORMAT: &str = "coverage-diff/v1";
+
+/// The complete Layer 1/2 release-integrity result.  Rule-pack coverage and
+/// per-repository overrides share one report and one justification gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseIntegrityDiff {
+    pub rule_pack: CoverageDiff,
+    pub overrides: OverrideCoverageDiff,
+}
+
+impl ReleaseIntegrityDiff {
+    pub fn has_regressions(&self) -> bool {
+        self.rule_pack.has_regressions() || self.overrides.has_regressions()
+    }
+}
 
 /// Coverage diff result
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +249,126 @@ pub fn run_coverage_diff(
         widened_safe_patterns: widened_safe,
         narrowed_guarded_patterns: narrowed_guarded,
     })
+}
+
+/// Run the same coverage gate with an optional per-repository override file.
+/// Adding an exemption is a coverage regression; removing one is an
+/// informational strengthening.  `None` represents a release without an
+/// override file.
+pub fn run_release_integrity_diff(
+    previous_path: PathBuf,
+    current_path: PathBuf,
+    previous_override_path: Option<PathBuf>,
+    current_override_path: Option<PathBuf>,
+) -> Result<ReleaseIntegrityDiff> {
+    let rule_pack = run_coverage_diff(previous_path.clone(), current_path.clone())?;
+    let previous_pack = load_rule_pack(previous_path)?;
+    let current_pack = load_rule_pack(current_path)?;
+    let previous_override = previous_override_path
+        .as_deref()
+        .map(load_override)
+        .transpose()?;
+    let current_override = current_override_path
+        .as_deref()
+        .map(load_override)
+        .transpose()?;
+
+    // Layer 1 validates override structure and rule references as part of the
+    // same invocation that computes the coverage diff.  The host performs the
+    // second, deploy-side binding against its trusted reference when it loads
+    // the artifact.
+    if let Some(manifest) = previous_override.as_ref() {
+        validate_override(
+            manifest,
+            &manifest.repository,
+            &manifest.release_ref,
+            std::slice::from_ref(&previous_pack),
+        )?;
+    }
+    if let Some(manifest) = current_override.as_ref() {
+        validate_override(
+            manifest,
+            &manifest.repository,
+            &manifest.release_ref,
+            std::slice::from_ref(&current_pack),
+        )?;
+    }
+
+    Ok(ReleaseIntegrityDiff {
+        rule_pack,
+        overrides: diff_overrides(previous_override.as_ref(), current_override.as_ref()),
+    })
+}
+
+/// Render the combined `coverage-diff/v1` report used by Layer 2 review.
+/// The regular rule-pack sections remain unchanged, with override changes
+/// added as a first-class coverage section.
+pub fn render_release_integrity_report(
+    previous_path: &Path,
+    current_path: &Path,
+    diff: &ReleaseIntegrityDiff,
+    justification: Option<&str>,
+) -> String {
+    let mut report =
+        render_coverage_diff_report(previous_path, current_path, &diff.rule_pack, justification);
+    if diff.overrides.has_regressions() && !diff.rule_pack.has_regressions() {
+        report = report.replace("status: no_regressions", "status: regressions_detected");
+        let replacement = match justification.map(str::trim) {
+            Some(value) if !value.is_empty() => format!("justification: {value}"),
+            _ => "justification: REQUIRED: provide --justification with the release approval rationale".to_string(),
+        };
+        report = replace_line_starting_with(&report, "justification: ", &replacement);
+    }
+
+    let section = render_override_section(&diff.overrides);
+    if let Some(index) = report.find("Review action:") {
+        report.insert_str(index, &section);
+    } else {
+        report.push_str(&section);
+    }
+    if diff.has_regressions() {
+        report = report.replace(
+            "Review action: no coverage regression was detected.",
+            "Review action: explicit justification is required before approval.",
+        );
+    }
+    report
+}
+
+fn render_override_section(diff: &OverrideCoverageDiff) -> String {
+    let mut section = String::from("## Newly exempted rule IDs\n");
+    if diff.newly_exempted_rule_ids.is_empty() {
+        section.push_str("None.\n");
+    } else {
+        for rule_id in &diff.newly_exempted_rule_ids {
+            section.push_str(&format!("- rule_id: {rule_id}\n"));
+        }
+    }
+    section.push_str("\n## Removed exemptions (coverage strengthened)\n");
+    if diff.removed_exempted_rule_ids.is_empty() {
+        section.push_str("None.\n\n");
+    } else {
+        for rule_id in &diff.removed_exempted_rule_ids {
+            section.push_str(&format!("- rule_id: {rule_id}\n"));
+        }
+        section.push('\n');
+    }
+    section
+}
+
+fn replace_line_starting_with(report: &str, prefix: &str, replacement: &str) -> String {
+    report
+        .lines()
+        .map(|line| {
+            if line.starts_with(prefix) {
+                replacement
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 /// Extract the regex string from a Check enum
