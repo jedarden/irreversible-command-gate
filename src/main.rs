@@ -1,5 +1,6 @@
 mod coverage;
 mod engine;
+mod regression;
 mod rule_pack;
 mod trust_pointer;
 mod update;
@@ -9,6 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coverage::*;
 use engine::{ContentSource, Engine, InputSource};
+use regression::{generate_regression_suite_from_manifest, write_regression_suite};
 use std::path::PathBuf;
 use trust_pointer::*;
 use update::*;
@@ -29,6 +31,14 @@ enum Commands {
         previous: PathBuf,
         /// Path to current release's rule pack manifest
         current: PathBuf,
+    },
+    /// Generate and validate the fixed deny-regression suite for a rule pack
+    RegressionSuite {
+        /// Path to the rule-pack JSON manifest
+        manifest: PathBuf,
+        /// Optional path for the generated JSON suite (stdout by default)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Trust pointer management (Layer 4 minimal form)
     #[command(subcommand)]
@@ -184,6 +194,21 @@ fn main() -> Result<()> {
                 println!("✅ No coverage regressions detected.");
             }
 
+            Ok(())
+        }
+        Commands::RegressionSuite { manifest, output } => {
+            let suite = generate_regression_suite_from_manifest(&manifest)?;
+            match output {
+                Some(path) => {
+                    write_regression_suite(&suite, &path)?;
+                    eprintln!(
+                        "Generated {} regression test cases at {}",
+                        suite.cases.len(),
+                        path.display()
+                    );
+                }
+                None => println!("{}", suite.to_json()?),
+            }
             Ok(())
         }
         Commands::Hook => {

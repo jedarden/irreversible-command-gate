@@ -48,3 +48,17 @@ Stated plainly, because it's easy to assume more than is actually true:
 - `docs/research/` — external reference material and prior art
   (`destructive_command_guard`, `agent-guard`, `vault-mcp-server`, etc.)
 - `docs/plan/plan.md` — complete application plan
+
+## Fixed deny-regression suite
+
+Generate one validated deny case for every `guarded_pattern` in a JSON rule
+pack. The command derives a concrete command from command-regex rules, or uses
+an optional `example_command` on a guarded-pattern entry:
+
+```bash
+icg regression-suite path/to/rule-pack.json --output regression-suite.json
+```
+
+The generated JSON records each pack ID, guarded-pattern ID, command, and
+expected `deny` verdict. Generation fails if a case is missing, is not a deny
+rule, is shadowed by a safe rule, or no longer matches its intended pattern.

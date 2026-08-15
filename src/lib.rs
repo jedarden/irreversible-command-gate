@@ -4,6 +4,7 @@
 
 pub mod coverage;
 pub mod engine;
+pub mod regression;
 pub mod rule_pack;
 pub mod state_store;
 pub mod trust_pointer;
