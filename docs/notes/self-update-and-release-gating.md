@@ -60,6 +60,12 @@ constraint (shape 3: "pull-based, agent doesn't control the reload") and
 merely looking like it does while leaving the exact same hole open at
 fleet scale.
 
+The operator steps for this gate are in the [release-cutting
+runbook](../runbooks/release-cutting.md). That procedure binds the release
+command to the reviewed commit, requires the Layer 1 and Layer 2 evidence,
+and then advances the Layer 4 trust pointer only after publication is
+verified.
+
 ## Hot-reload — resolved 2026-08-13: user-triggered, not polling
 
 Not an automatic background poll on an interval. An operator explicitly
