@@ -67,6 +67,57 @@ already uses elsewhere for code review — since even a careful single pass,
 human or agent, tends to miss what a second pass looking specifically for
 problems catches.
 
+### Layer 2 review procedure
+
+Layer 2 is a release-candidate review, not another regex-diff implementation.
+The reviewer must receive the `coverage-diff/v1` report produced by the same
+Layer 1 CI run that tested the candidate. The report is the review input; the
+raw rule-pack diff is not a substitute for it.
+
+The reviewer performs these checks, in order:
+
+1. **Bind the report to the candidate.** Confirm that the CI run passed on the
+   exact candidate commit, that `format: coverage-diff/v1` is present, and
+   that the report's previous/current manifests are the releases being
+   compared. A missing, stale, or unbound report is a review failure.
+2. **Read all three sections.** Check `Removed guarded_patterns`, `Widened
+   safe_patterns`, and `Narrowed guarded_patterns (destructive: true)`,
+   including every `pattern_id` and its `previous`/`current` values. A clean
+   report must say `status: no_regressions` and show `None` in each section.
+3. **Resolve every finding.** If the report says
+   `status: regressions_detected`, the reviewer must decide separately for
+   each finding whether it is an intentional, documented change or an
+   unexplained loss of coverage. The report must contain a non-blank
+   `justification:`; its presence makes the finding reviewable, but does not
+   make the change approved. Unexplained findings require changes before
+   release.
+4. **Use a second pass for adversarial review.** A reviewer other than the
+   author, or a fresh review session, should try to show that each accepted
+   removal, widening, or narrowing weakens protection. The second pass reads
+   the same report and findings rather than starting over from raw regex.
+
+The reviewer records the decision with the candidate commit, the report
+artifact or CI-run URL, reviewer identity, review time, decision, and the
+disposition of every finding. A minimal record is:
+
+```text
+candidate_commit: <full commit SHA>
+coverage_report: <artifact or CI-run URL>
+report_format: coverage-diff/v1
+reviewer: <human or review-session identity>
+decision: approve | request_changes
+findings: <none, or one disposition per pattern_id>
+justification_verified: yes | no | not_required
+reviewed_at: <UTC timestamp>
+```
+
+Approval is valid only when the report is bound to the candidate, Layer 1 has
+passed, and every reported regression is either absent or explicitly accepted
+with a recorded disposition. The `--justification` value is evidence for the
+review, not evidence that the reviewer approved it. The human may inspect the
+raw rule-pack expressions to understand a finding, but a raw regex diff alone
+cannot replace the generated coverage-diff report or the review record.
+
 ## Layer 3 — build provenance/signing (later hardening, not Phase 0)
 
 Addresses a *different* threat than Layers 1-2: not "the reviewed content
