@@ -79,7 +79,7 @@ an all-or-nothing flip. This also means there's no network I/O on the
 guarded-check hot path at all under normal operation — the only time the
 guard talks to GitHub is the moment a human explicitly asks it to.
 
-Worth noting the asymmetry this creates with `irrevers-0f49129d`'s poison-pill
+Worth noting the asymmetry this creates with `irrevers-ff4f17da`'s poison-pill
 auto-rollback: adopting a new release forward is deliberate and manual,
 but *reverting* an already-adopted bad one stays fully automatic. That's
 intentional, not an inconsistency — the two directions carry different

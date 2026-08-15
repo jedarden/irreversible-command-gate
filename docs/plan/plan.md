@@ -20,7 +20,7 @@ scheduled** by any phase (see
 claim is "shrinks to at least a kubectl-only rump, plus whichever of the
 workflows/Job-CronJob rules remain unscheduled" — not "kubectl-only,"
 until a future phase actually picks up (2). "Deprecated" means
-"superseded for everything a phase has scheduled," not "deleted." `irrevers-2e1c5a48`
+"superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is
 framed accordingly. Covers both **Claude Code and Codex CLI** as guarded
 harnesses.
@@ -123,7 +123,7 @@ CLI," which outlives any single tool's canonical status — the pack stores
 "currently canonical" and "deprecated" as data (a small list this rule
 reads), not as logic hardcoded to `bf` specifically, so the eventual
 `bf`→`bead` cutover is a one-line data change, not a rule rewrite. See
-Phase 1 and `irrevers-480aa9c5`.
+Phase 1 and `irrevers-692a56c3`.
 
 **Deploy location: rule source must not simply live under
 `~/.claude/hooks/` again**, and self-updating from GitHub Releases only
@@ -169,8 +169,13 @@ for Codex is still maturing). Full reasoning in
   against `tool_keywords`** (strips directory components before
   comparing, so `/usr/local/bin/vault kv destroy` matches the `vault` pack
   the same as a bare `vault kv destroy` would), and matches the resulting
-  tokens against loaded rule packs — what `vault`, `git`, `secrets`,
-  `misc`, and `tmux` packs use. This basename-match only helps the *hook*
+  tokens against loaded rule packs — what `vault`, `git`, `misc`, and
+  `tmux` packs use. **`secrets` is the one command-mode pack that does NOT
+  dispatch this way**: per Architecture above it scans the entire raw Bash
+  command string regardless of which executable is invoked (`echo
+  "ghp_..." >> file` has no guarded executable to basename-match), so it
+  needs an unconditional whole-command path rather than a `tool_keywords`
+  match. This basename-match only helps the *hook*
   front-end (`icg hook`), which sees the full command string regardless of
   how it would resolve — the PATH-wrapper front-end can't be reached at
   all by an absolute-path invocation, since it never goes through `$PATH`
@@ -298,9 +303,11 @@ chosen, this is the field set regardless of format:
 ```
 Pack:
   id: string                     # "vault", "git", "storage-class", "beads", ...
-  tool_keywords: [string]        # command-mode packs (vault/git/secrets/misc/tmux):
+  tool_keywords: [string]        # command-mode packs (vault/git/misc/tmux):
                                   # executables this pack inspects, e.g. ["vault", "bao"].
-                                  # Unused by content-mode packs and by beads.
+                                  # Unused by content-mode packs, by beads, and by
+                                  # secrets -- secrets scans the whole command string
+                                  # unconditionally, with no tool_keywords match.
   applies_to: [FileGlob]         # content-mode packs (storage-class/image-tag): which
                                   # Write/Edit targets this pack scans, e.g. ["*.yaml", "*.yml"]
                                   # -- mirrors org-rule-guard.py's own .yaml/.yml scoping.
@@ -329,7 +336,7 @@ GuardedPattern:
                                   # Predicate: a general custom-check-function umbrella, NOT
                                   # filesystem-only -- covers beads' filesystem stat (combined
                                   # with a .beads/ path match via applies_to, not the predicate
-                                  # alone), icg-2m8's synchronous network lookup (the Tier 1
+                                  # alone), irrevers-8cff8cf4's synchronous network lookup (the Tier 1
                                   # exception), and Phase 2's state-store-backed checks alike.
   tier: 1 | 2 | 3                # deterministic-difficulty tier, see Implementation Phases
   severity: Critical | High | Medium
@@ -374,7 +381,7 @@ GuardedPattern:
     synchronization point — triggering one host doesn't require pausing
     or waiting on any other host, consistent with the already-adopted
     canary-rollout design (`irrevers-6de781f4`). This is asymmetric with
-    `irrevers-0f49129d`'s poison-pill auto-rollback by design: adopting a new
+    `irrevers-ff4f17da`'s poison-pill auto-rollback by design: adopting a new
     release forward is deliberate/manual, but reverting an already-
     adopted bad one stays automatic — different risk profiles, not a
     contradiction.
@@ -433,8 +440,10 @@ GuardedPattern:
       (path-under-`.beads/` **and**
       `.git` file-vs-directory check — see Components, both conditions
       required),
-      deprecated-bead-CLI usage (data-driven, `irrevers-480aa9c5` — currently `br`;
-      ready to retarget at `bf` once it's deprecated), `needle cleanup`,
+      deprecated-bead-CLI usage (data-driven, `irrevers-692a56c3` — the
+      cutover has since happened: as of 2026-08-14 `bead` (bead-rs) is
+      canonical and both `br` and `bf` are deprecated, so the pack's data
+      should list both as deprecated rather than blessing `bf`), `needle cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
       reason for all of these — skip `updatedInput`/`additionalContext`
       complexity for v1.
@@ -454,7 +463,7 @@ GuardedPattern:
       Author against whichever bead CLI is canonical at implementation
       time (`bf`'s `sync --flush-only` flag today; `bead-rs`'s `sync
       flush-only` subcommand has different syntax entirely if the cutover
-      happens first — see `irrevers-480aa9c5`, don't assume the two are
+      happens first — see `irrevers-692a56c3`, don't assume the two are
       interchangeable here).
 - [ ] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
       for confirmed intent-preserving cases (force-push flag stripping is
@@ -483,20 +492,20 @@ GuardedPattern:
       `beads` pack now depends on). If ever pursued, it would be a
       heuristic, non-blocking `additionalContext` warning, not a `deny`.
 - [ ] **Phase 4 — from ideation (2026-08-13 `/plan-idea-gen` run).** Nine
-      finalists adopted, tracked as beads (`bf` prefix `icg`), full
+      finalists adopted, tracked as beads, full
       dossiers and kill-pass objections in `docs/notes/ideas-ledger.md`.
       Deepens Phase 0's release-integrity/self-update work and Phase 1's
       rule coverage rather than opening new phases of its own:
-      - `irrevers-ce059aaa` — auto-denial-becomes-test (strengthens Layer 1; needs a
+      - `irrevers-aa1b828d` — auto-denial-becomes-test (strengthens Layer 1; needs a
         curation step so the suite doesn't grow unbounded)
       - `irrevers-54b33e0c` — `icg new-pack` scaffolding tool
-      - `irrevers-0f49129d` — poison-pill auto-rollback (extends Phase 0's Layer 4)
+      - `irrevers-ff4f17da` — poison-pill auto-rollback (extends Phase 0's Layer 4)
       - `irrevers-6de781f4` — canary rollout via NEEDLE `--identifier` (concrete
         Layer 4 staged-rollout implementation)
       - `irrevers-1cad33d2` — `icg status` with blind-spot self-report
       - `irrevers-8b5faeb9` — Codex hook-version compatibility matrix in `icg-ci`
       - `irrevers-e354aca2` — per-repo signed override (routed through Layer 1/2)
-      - `irrevers-47e53543` — practice/dry-run mode (ships only with the mandatory
+      - `irrevers-195d05cc` — practice/dry-run mode (ships only with the mandatory
         persistent active-indicator the kill pass required). Near-miss
         feedback deliberately does **not** rely on `additionalContext` —
         given that channel isn't honored on Codex yet (see Phase 3), a
@@ -526,7 +535,8 @@ GuardedPattern:
         network operation)
       - `irrevers-cd3f4c44` — graduated fail-open→fail-closed policy for guard
         crashes: fails open until the guard's reliability is validated
-        (tied to `irrevers-0f49129d`'s poison-pill health signal), then shifts to
+        (tied to `irrevers-b6579270`'s deny-rate telemetry, the signal
+        `irrevers-ff4f17da`'s poison pill also consumes), then shifts to
         fail-closed
       - `irrevers-b8343704` — ReDoS check on submitted rule packs in `icg-ci`
       - `irrevers-012be0c8` — per-rule enable/disable feature flag, revised from a
@@ -534,7 +544,7 @@ GuardedPattern:
         release pipeline (tradeoff: no longer sub-release-cycle-fast —
         flagged as a real, unresolved gap if true emergency speed is ever
         needed)
-      - `irrevers-2e1c5a48` — install-time smoke test vs. `org-rule-guard.py`,
+      - `irrevers-62c6f748` — install-time smoke test vs. `org-rule-guard.py`,
         framed as an interim check pending that hook's eventual
         deprecation (see Overview). **Success criterion, precise**: during
         coexistence, icg's `image-tag` pack and `org-rule-guard.py`'s rule
@@ -576,7 +586,7 @@ GuardedPattern:
   makes the manual-authoring cost of doing it earlier concrete.
 - ~~`beads`-in-`bf` question~~ — **resolved 2026-08-13: stays in this
   project.** With `bf` itself now confirmed heading toward deprecation
-  (see the Architecture section and `irrevers-480aa9c5`), embedding the `.beads/`
+  (see the Architecture section and `irrevers-692a56c3`), embedding the `.beads/`
   protection check inside a tool that's about to be superseded would just
   mean redoing this work again at the next cutover. Phase 1 already
   unconditionally depends on this answer, so leaving it formally open any

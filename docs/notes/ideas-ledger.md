@@ -172,7 +172,7 @@ mitigation for Codex's confirmed-still-churning hook API specifically.
 
 ### Finalist dossiers
 
-1. **Auto-denial-becomes-test** (Lens 1, #8) — bead `irrevers-ce059aaa`
+1. **Auto-denial-becomes-test** (Lens 1, #8) — bead `irrevers-aa1b828d`
    - **Pitch:** Every denial the guard fires automatically becomes a permanent regression-test case, so coverage can only grow, never silently regress.
    - **Why it won:** Paired with poison-pill auto-rollback (#60) as hybrid H1 ("self-healing coverage"), but the kill pass's dependency objection required the two ship as independently-shippable finalists rather than one coupled deliverable — #8 stands on its own because, unlike killed lens-mates #1 (allowlist-first, would flood benign commands with denials), #7 (capability-grant, "SEAM's shape"), and #26 (LLM-assisted triage, non-deterministic and unregression-testable), it stays fully deterministic and needs zero harness cooperation.
    - **Complexity:** M
@@ -186,12 +186,12 @@ mitigation for Codex's confirmed-still-churning hook API specifically.
    - **First step:** Build the CLI subcommand to emit a pre-filled Pack/GuardedPattern skeleton modeled on an existing pack (e.g. `vault`) as the template.
    - **Strongest surviving objection:** No specific kill-pass caveat was recorded for this idea, but it inherits the project's standing constraint that rule source is "not agent-writable or agent-triggerable-trusted" — the scaffold must still route new packs through Layer 1/2 review, not let authorship itself become a trust shortcut.
 
-3. **Poison-pill auto-rollback** (Lens 6, #60) — bead `irrevers-0f49129d`
+3. **Poison-pill auto-rollback** (Lens 6, #60) — bead `irrevers-ff4f17da`
    - **Pitch:** A bad release automatically reverts itself rather than waiting for a human to notice.
    - **Why it won:** The other half of hybrid H1 with #8 — the kill pass's dependency objection meant the two ship independently rather than as one coupled feature, so #60 had to stand alone as a real, self-contained extension of Phase 0's Layer 4 self-updater rather than assuming #8's test-generation exists first.
    - **Complexity:** M
    - **First step:** Define the poison-pill health signal (what makes a release "bad") and wire the self-updater's trust pointer to automatically fall back to the last-known-good release when it fires.
-   - **Strongest surviving objection:** Must work standalone, without depending on #8/`irrevers-ce059aaa`'s auto-generated tests existing yet — the kill pass explicitly rejected coupling the two into one deliverable.
+   - **Strongest surviving objection:** Must work standalone, without depending on #8/`irrevers-aa1b828d`'s auto-generated tests existing yet — the kill pass explicitly rejected coupling the two into one deliverable.
 
 4. **Canary rollout via NEEDLE `--identifier`** (Lens 5, #56) — bead `irrevers-6de781f4`
    - **Pitch:** Roll a new release out to a named subset of hosts before it goes fleet-wide.
@@ -221,7 +221,7 @@ mitigation for Codex's confirmed-still-churning hook API specifically.
    - **First step:** Define the per-repo override file format (signed, Layer 1/2-reviewed) and the verification check the engine runs before honoring it.
    - **Strongest surviving objection:** If override scope is ever extended from per-repo to per-identity, it hits the exact missing-tsnet-identity wall that killed H3 — the design has to resist that scope creep.
 
-8. **Practice/dry-run mode** (Lens 7, #84) — bead `irrevers-47e53543`
+8. **Practice/dry-run mode** (Lens 7, #84) — bead `irrevers-195d05cc`
    - **Pitch:** A mode that runs the full check path and reports what would have been blocked, without ever actually blocking.
    - **Why it won:** Its hybrid pairing, H4 (`#84 × #53`, "shadow mode against live traffic"), was cut by cluster cap; #84 alone carried forward as the standalone finalist.
    - **Complexity:** S
@@ -443,7 +443,7 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
    - **Pitch:** Force an explicit, tested decision for what happens when the guard itself is OOM-killed mid-check, rather than leaving it to the engine's general fails-open default.
    - **Why it won:** The Architecture's fails-open design ("a missed violation is recoverable, a stuck fleet is not") was written for parse failures and exceptions; this finalist closes the gap for the specific mid-check-death case, which isn't automatically the same failure mode.
    - **Complexity:** M
-   - **First step:** Verify whether Claude Code's/Codex's own hook-timeout/hook-error configuration can substitute for detecting a dead guard process — if either harness supports "deny on hook failure," the fail-closed transition may just mean flipping that harness setting once `irrevers-0f49129d`'s poison-pill signal confirms reliability, with no new icg-side process needed. Only build a dedicated supervisor/watchdog if neither harness supports it — see `docs/plan/plan.md` Architecture, which flags this as unresolved and explicitly notes a watchdog is the same "standing daemon" shape ideation killed elsewhere (Lens 1 idea #69).
+   - **First step:** Verify whether Claude Code's/Codex's own hook-timeout/hook-error configuration can substitute for detecting a dead guard process — if either harness supports "deny on hook failure," the fail-closed transition may just mean flipping that harness setting once `irrevers-ff4f17da`'s poison-pill signal confirms reliability, with no new icg-side process needed. Only build a dedicated supervisor/watchdog if neither harness supports it — see `docs/plan/plan.md` Architecture, which flags this as unresolved and explicitly notes a watchdog is the same "standing daemon" shape ideation killed elsewhere (Lens 1 idea #69).
    - **Strongest surviving objection:** Per plan.md, it "fails open until the guard's reliability is validated" — during that interim window, an OOM-killed check silently lets a command through with no denial, the same accepted-but-real risk the Architecture's fails-open default already carries, now made an explicit, tracked instance of it.
 
 7. **CI check for catastrophic-backtracking (ReDoS) regexes** (Lens 6, #38) — bead `irrevers-b8343704`
@@ -467,9 +467,9 @@ single-rule (as opposed to per-repo) kill-switch for a misbehaving rule.
    - **First step:** Already done — see `README.md`'s "What this does not do" section (per plan.md Phase 5).
    - **Strongest surviving objection:** None recorded — the lowest-risk finalist of the second run, consistent with it being shipped directly rather than tracked as a bead.
 
-10. **Install-time smoke test vs. `org-rule-guard.py`** (Lens 7, #82) — bead `irrevers-2e1c5a48`
+10. **Install-time smoke test vs. `org-rule-guard.py`** (Lens 7, #82) — bead `irrevers-62c6f748`
     - **Pitch:** An install-time check that confirms the new guard doesn't conflict with or duplicate `org-rule-guard.py`'s existing denials.
     - **Why it won:** Its hybrid pairing, H4 (`#92` migration guide `×` `#82` smoke test), was cut by cluster cap; #82 was selected standalone, with #92 noted as "stronger combined with it at implementation time" rather than required now.
     - **Complexity:** S
-    - **First step:** Write an install-time check that runs both `org-rule-guard.py` and icg's hook adapter against the same known-bad test command, confirming they agree (both deny, or both allow) — expected redundant double-deny is a pass, not a failure; only a *divergent* verdict (one denies, the other doesn't) fails the check. See `docs/plan/plan.md`'s Phase 5 entry for `irrevers-2e1c5a48`.
+    - **First step:** Write an install-time check that runs both `org-rule-guard.py` and icg's hook adapter against the same known-bad test command, confirming they agree (both deny, or both allow) — expected redundant double-deny is a pass, not a failure; only a *divergent* verdict (one denies, the other doesn't) fails the check. See `docs/plan/plan.md`'s Phase 5 entry for `irrevers-62c6f748`.
     - **Strongest surviving objection:** Per the Overview, coexistence with `org-rule-guard.py` is "an interim state, not the intended end state" — this smoke test's relevance is temporary by design, valuable only until that hook is actually deprecated.
