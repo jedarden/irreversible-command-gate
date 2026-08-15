@@ -41,6 +41,20 @@ enum Commands {
         #[arg(short, long)]
         artifact_path: Option<PathBuf>,
     },
+    /// Show current status and blind-spot self-report
+    Status {
+        /// Path to trust pointer file (defaults to XDG_CONFIG_HOME/icg/trust-pointer.json)
+        #[arg(short, long)]
+        trust_pointer_path: Option<PathBuf>,
+    },
+    /// Scaffold a new rule pack
+    NewPack {
+        /// Name for the new rule pack
+        pack_name: String,
+        /// Target output directory
+        #[arg(short, long)]
+        output_dir: Option<PathBuf>,
+    },
     /// Hook mode: invoked by Claude Code/Codex's PreToolUse hook system
     Hook,
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
@@ -301,6 +315,53 @@ fn main() -> Result<()> {
             } else {
                 println!("**Previous Version:** (none)");
             }
+
+            Ok(())
+        }
+        Commands::Status { trust_pointer_path } => {
+            // TODO: Implement full status reporting (bead irrevers-1cad33d2)
+            let store_path = trust_pointer_path
+                .or_else(|| TrustPointerStore::default_path().ok())
+                .context("Failed to determine trust pointer path")?;
+            let store = TrustPointerStore::new(store_path);
+
+            println!("# icg Status");
+            println!();
+
+            match store.load()? {
+                Some(pointer) => {
+                    println!("**Trust Pointer:**");
+                    println!("  Reference: `{}`", pointer.trusted_ref);
+                    println!("  Last Updated: {}", pointer.updated_at);
+                    if let Some(justification) = pointer.justification {
+                        println!("  Justification: {}", justification);
+                    }
+                }
+                None => {
+                    println!("**Trust Pointer:** (not configured)");
+                    println!("Run `icg trust set <reference>` to configure.");
+                }
+            }
+
+            println!();
+            println!("**Full status reporting coming soon** (bead irrevers-1cad33d2)");
+            println!("This will include blind-spot self-report and detailed coverage status.");
+
+            Ok(())
+        }
+        Commands::NewPack { pack_name, output_dir } => {
+            // TODO: Implement pack scaffolding tool (bead irrevers-54b33e0c)
+            println!("# icg new-pack");
+            println!();
+            println!("Pack name: `{}`", pack_name);
+
+            let dest = output_dir.unwrap_or_else(|| PathBuf::from("."));
+            println!("Output directory: {}", dest.display());
+            println!();
+            println!("**Pack scaffolding coming soon** (bead irrevers-54b33e0c)");
+            println!("This will generate a new rule pack template with examples.");
+            println!();
+            println!("For now, create packs manually following the pattern in existing packs.");
 
             Ok(())
         }
