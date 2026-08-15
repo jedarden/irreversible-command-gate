@@ -5,8 +5,8 @@
 //! - Command-mode: shell line segmentation (splits on ;/&&/||/, skips sudo/env-assignment/wrapper prefixes)
 //!   Basename-matching tokens against tool_keywords for pack dispatch
 //! - Pack dispatch: routes tokens to matching packs and evaluates guarded_patterns
-//! - Content-mode: file path + content reading from Write/Edit PreToolUse JSON
-//!   Used for content regex checks (storage-class, image-tag packs)
+//! - Content-mode: file path + content reading from Write/Edit or normalized
+//!   Codex apply_patch PreToolUse JSON (storage-class, image-tag packs)
 
 use anyhow::{Context, Result};
 use crate::rule_pack::Pack;
@@ -16,22 +16,99 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
-/// PreToolUse hook JSON structure (partial, for input parsing)
-#[derive(Debug, Deserialize)]
+/// PreToolUse hook JSON structure for Claude Code/Codex.
+///
+/// Claude Code and Codex use snake_case on the hook wire, while the original
+/// ICG parser accepted the camelCase spelling used by its early fixtures.
+/// Keep both spellings as aliases so one adapter can serve either harness and
+/// old callers remain source-compatible.
+///
+/// This represents the input format from the PreToolUse hook system,
+/// which provides tool invocation context for validation before execution.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreToolUseInput {
-    tool_name: Option<String>,
-    tool_input: Option<ToolInput>,
+    /// The name of the tool being invoked (e.g., "Bash", "Write", "Edit", "apply_patch")
+    #[serde(rename = "toolName", alias = "tool_name")]
+    pub tool_name: String,
+
+    /// The input parameters for the tool
+    #[serde(rename = "toolInput", alias = "tool_input")]
+    pub tool_input: ToolInput,
+
+    /// Optional unique identifier for this tool invocation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "id", alias = "toolUseId", alias = "tool_use_id")]
+    pub id: Option<String>,
+
+    /// Optional timestamp of the tool invocation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+
+    /// Optional session identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "session_id")]
+    pub session_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Tool input parameters vary by tool type
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ToolInput {
-    command: Option<String>,
-    file_path: Option<String>,
-    content: Option<String>,
-    new_string: Option<String>,
+pub struct ToolInput {
+    /// Bash command string (for Bash tool)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+
+    /// File path for Write/Edit operations
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "filePath", alias = "file_path")]
+    pub file_path: Option<String>,
+
+    /// Full file content (for Write tool)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+
+    /// Old string being replaced (for Edit tool)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "oldString", alias = "old_string")]
+    pub old_string: Option<String>,
+
+    /// New string to replace with (for Edit tool)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "newString", alias = "new_string")]
+    pub new_string: Option<String>,
+
+    /// Encoding for file operations (e.g., "base64")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+
+    /// MIME type for file operations
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "mimeType", alias = "mime_type")]
+    pub mime_type: Option<String>,
 }
+
+/// Validation error for PreToolUse input
+#[derive(Debug, thiserror::Error)]
+pub enum PreToolUseError {
+    #[error("Invalid JSON format: {0}")]
+    InvalidJson(String),
+
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+
+    #[error("Invalid tool name: {0}")]
+    InvalidToolName(String),
+
+    #[error("Invalid tool input for {tool}: {reason}")]
+    InvalidInput { tool: String, reason: String },
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Result type for PreToolUse parsing
+pub type PreToolUseResult<T> = std::result::Result<T, PreToolUseError>;
 
 /// Command input source
 #[derive(Debug, Clone, PartialEq)]
@@ -42,14 +119,11 @@ pub enum CommandSource {
     Argv(Vec<String>),
 }
 
-/// Content input source (for Write/Edit operations)
+/// Content input source (for Write/Edit or normalized apply_patch operations)
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentSource {
     /// Write operation: full file content
-    Write {
-        file_path: String,
-        content: String,
-    },
+    Write { file_path: String, content: String },
     /// Edit operation: old and new content
     Edit {
         file_path: String,
@@ -89,6 +163,137 @@ impl ContentSource {
     /// Check if this content applies to a specific file glob
     pub fn matches_glob(&self, glob: &str) -> bool {
         path_matches_glob(self.file_path(), glob)
+    }
+}
+
+/// Normalize the file edits carried by a Codex `apply_patch` command into the
+/// content-mode shape used by the rest of the engine.
+///
+/// Codex sends the patch text in `tool_input.command`, rather than sending a
+/// Claude Code-style `filePath` and `content`. Content rules only need the
+/// target path and the text that the patch adds (plus context lines), so a
+/// patch can be checked without applying it or mutating the workspace. A
+/// single patch may contain multiple file headers; callers should evaluate
+/// every returned source.
+pub fn normalize_apply_patch(command: &str) -> PreToolUseResult<Vec<ContentSource>> {
+    let mut saw_begin = false;
+    let mut saw_end = false;
+    let mut files = Vec::new();
+    let mut current: Option<(String, String)> = None;
+
+    for raw_line in command.lines() {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let trimmed = line.trim();
+
+        if trimmed == "*** Begin Patch" {
+            if saw_begin {
+                return Err(PreToolUseError::InvalidInput {
+                    tool: "apply_patch".to_string(),
+                    reason: "patch contains more than one begin marker".to_string(),
+                });
+            }
+            saw_begin = true;
+            continue;
+        }
+
+        if trimmed == "*** End Patch" {
+            flush_patch_file(&mut current, &mut files);
+            saw_end = true;
+            break;
+        }
+
+        if !saw_begin {
+            // Some wrappers include a shell preamble before the canonical
+            // marker. Ignore it, but still require an actual patch below.
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            flush_patch_file(&mut current, &mut files);
+            current = Some((path.trim().to_string(), String::new()));
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            flush_patch_file(&mut current, &mut files);
+            current = Some((path.trim().to_string(), String::new()));
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            flush_patch_file(&mut current, &mut files);
+            current = Some((path.trim().to_string(), String::new()));
+            continue;
+        }
+
+        // A move header follows an update header. The destination is the
+        // file that Codex will write, so use it for applies_to dispatch.
+        if let Some(path) = line.strip_prefix("*** Move to: ") {
+            if let Some((current_path, _)) = current.as_mut() {
+                *current_path = path.trim().to_string();
+            }
+            continue;
+        }
+
+        // Hunk and patch metadata are not file content. In particular, do
+        // not treat a git-style +++ header as an added line.
+        if trimmed.starts_with("@@")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("*** ")
+        {
+            continue;
+        }
+
+        if let Some((_, content)) = current.as_mut() {
+            if let Some(added) = line.strip_prefix('+') {
+                content.push_str(added);
+                content.push('\n');
+            } else if let Some(context) = line.strip_prefix(' ') {
+                content.push_str(context);
+                content.push('\n');
+            }
+            // Removed lines are deliberately omitted. They are not part of
+            // the content that will exist after the patch is applied.
+        }
+    }
+
+    if !saw_begin || !saw_end {
+        return Err(PreToolUseError::InvalidInput {
+            tool: "apply_patch".to_string(),
+            reason: "patch must contain *** Begin Patch and *** End Patch".to_string(),
+        });
+    }
+
+    if files.is_empty() {
+        return Err(PreToolUseError::InvalidInput {
+            tool: "apply_patch".to_string(),
+            reason: "patch does not contain a file header".to_string(),
+        });
+    }
+
+    Ok(files
+        .into_iter()
+        .map(|(file_path, content)| ContentSource::Write { file_path, content })
+        .collect())
+}
+
+/// Convenience form for callers that know an `apply_patch` contains exactly
+/// one file.
+pub fn normalize_single_apply_patch(command: &str) -> PreToolUseResult<ContentSource> {
+    let mut sources = normalize_apply_patch(command)?;
+    if sources.len() != 1 {
+        return Err(PreToolUseError::InvalidInput {
+            tool: "apply_patch".to_string(),
+            reason: "patch contains more than one file".to_string(),
+        });
+    }
+    Ok(sources.remove(0))
+}
+
+fn flush_patch_file(current: &mut Option<(String, String)>, files: &mut Vec<(String, String)>) {
+    if let Some(file) = current.take() {
+        files.push(file);
     }
 }
 
@@ -218,6 +423,8 @@ pub enum InputSource {
     Command(CommandSource),
     /// File content (for content-mode packs: storage-class, image-tag)
     Content(ContentSource),
+    /// Multiple file contents normalized from one Codex `apply_patch` call.
+    ContentBatch(Vec<ContentSource>),
 }
 
 /// Normalized command token ready for pack matching
@@ -350,71 +557,11 @@ impl Engine {
             .read_to_string(&mut input)
             .context("Failed to read stdin")?;
 
-        let parsed: serde_json::Value = serde_json::from_str(&input)
-            .context("Failed to parse PreToolUse JSON")?;
+        // Parse and validate the JSON input
+        let parsed: PreToolUseInput = Self::parse_and_validate_pre_tool_use(&input)?;
 
-        // Extract tool name and input
-        let tool_name = parsed.get("toolName")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let tool_input = parsed.get("toolInput");
-
-        // Process Bash commands (command-mode)
-        if tool_name.as_deref() == Some("Bash") {
-            let command = tool_input
-                .and_then(|ti| ti.get("command"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            return Ok(Some(InputSource::Command(CommandSource::Hook(command.to_string()))));
-        }
-
-        // Process Write operations (content-mode)
-        if tool_name.as_deref() == Some("Write") {
-            let file_path = tool_input
-                .and_then(|ti| ti.get("filePath"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let content = tool_input
-                .and_then(|ti| ti.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            return Ok(Some(InputSource::Content(ContentSource::Write {
-                file_path: file_path.to_string(),
-                content: content.to_string(),
-            })));
-        }
-
-        // Process Edit operations (content-mode)
-        if tool_name.as_deref() == Some("Edit") {
-            let file_path = tool_input
-                .and_then(|ti| ti.get("filePath"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            // For Edit, we need both old_string and new_string
-            let old_string = tool_input
-                .and_then(|ti| ti.get("oldString"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let new_string = tool_input
-                .and_then(|ti| ti.get("newString"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            return Ok(Some(InputSource::Content(ContentSource::Edit {
-                file_path: file_path.to_string(),
-                old_content: old_string.to_string(),
-                new_content: new_string.to_string(),
-            })));
-        }
-
-        // Unrecognized tool - allow by default (fail-open)
-        Ok(None)
+        // Convert to InputSource based on tool type
+        Ok(Self::input_source_from_pre_tool_use(parsed)?)
     }
 
     /// Read command from PreToolUse JSON on stdin (legacy method for backward compatibility)
@@ -424,8 +571,215 @@ impl Engine {
     pub fn read_command_from_stdin(&self) -> Result<Option<CommandSource>> {
         match self.read_from_stdin()? {
             Some(InputSource::Command(cmd)) => Ok(Some(cmd)),
-            Some(InputSource::Content(_)) => Ok(None),
+            Some(InputSource::Content(_)) | Some(InputSource::ContentBatch(_)) => Ok(None),
             None => Ok(None),
+        }
+    }
+
+    /// Parse and validate PreToolUse JSON input
+    ///
+    /// This function performs comprehensive validation of the JSON input
+    /// and returns a strongly-typed PreToolUseInput struct.
+    pub fn parse_and_validate_pre_tool_use(input: &str) -> PreToolUseResult<PreToolUseInput> {
+        // Step 1: Parse JSON
+        let parsed: PreToolUseInput = serde_json::from_str(input)
+            .map_err(|e| PreToolUseError::InvalidJson(format!("JSON parse error: {}", e)))?;
+
+        // Step 2: Validate tool name
+        let tool_name = &parsed.tool_name;
+        if tool_name.is_empty() {
+            return Err(PreToolUseError::MissingField("toolName".to_string()));
+        }
+
+        // Validate known tool names
+        match tool_name.as_str() {
+            "Bash" | "Write" | "Edit" | "apply_patch" => {
+                // Known tools - continue validation
+            }
+            _ => {
+                // Unknown tool - this is not necessarily an error, but we should log it
+                // For now, we'll allow it through (fail-open for unknown tools)
+            }
+        }
+
+        // Step 3: Validate tool input based on tool type
+        Self::validate_tool_input(tool_name, &parsed.tool_input)?;
+
+        Ok(parsed)
+    }
+
+    /// Validate tool input based on tool type
+    fn validate_tool_input(tool_name: &str, input: &ToolInput) -> PreToolUseResult<()> {
+        match tool_name {
+            "Bash" => {
+                if input.command.is_none() {
+                    return Err(PreToolUseError::InvalidInput {
+                        tool: tool_name.to_string(),
+                        reason: "missing 'command' field".to_string(),
+                    });
+                }
+                // Additional validation for command
+                if let Some(ref cmd) = input.command {
+                    if cmd.trim().is_empty() {
+                        return Err(PreToolUseError::InvalidInput {
+                            tool: tool_name.to_string(),
+                            reason: "command cannot be empty".to_string(),
+                        });
+                    }
+                }
+            }
+            "Write" => {
+                if input.file_path.is_none() {
+                    return Err(PreToolUseError::InvalidInput {
+                        tool: tool_name.to_string(),
+                        reason: "missing 'filePath' field".to_string(),
+                    });
+                }
+                if input.content.is_none() {
+                    return Err(PreToolUseError::InvalidInput {
+                        tool: tool_name.to_string(),
+                        reason: "missing 'content' field".to_string(),
+                    });
+                }
+            }
+            "Edit" => {
+                if input.file_path.is_none() {
+                    return Err(PreToolUseError::InvalidInput {
+                        tool: tool_name.to_string(),
+                        reason: "missing 'filePath' field".to_string(),
+                    });
+                }
+                if input.old_string.is_none() || input.new_string.is_none() {
+                    return Err(PreToolUseError::InvalidInput {
+                        tool: tool_name.to_string(),
+                        reason: "Edit requires both 'oldString' and 'newString' fields".to_string(),
+                    });
+                }
+            }
+            "apply_patch" => {
+                if input.command.is_none() {
+                    return Err(PreToolUseError::InvalidInput {
+                        tool: tool_name.to_string(),
+                        reason: "missing 'command' field".to_string(),
+                    });
+                }
+                if let Some(command) = input.command.as_deref() {
+                    if command.trim().is_empty() {
+                        return Err(PreToolUseError::InvalidInput {
+                            tool: tool_name.to_string(),
+                            reason: "command cannot be empty".to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {
+                // Unknown tool - no specific validation
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Convert PreToolUseInput to InputSource
+    ///
+    /// Maps the validated PreToolUse input to the appropriate InputSource
+    /// for engine evaluation.
+    pub fn input_source_from_pre_tool_use(
+        input: PreToolUseInput,
+    ) -> PreToolUseResult<Option<InputSource>> {
+        match input.tool_name.as_str() {
+            "Bash" => {
+                let command =
+                    input
+                        .tool_input
+                        .command
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "Bash".to_string(),
+                            reason: "missing command".to_string(),
+                        })?;
+
+                Ok(Some(InputSource::Command(CommandSource::Hook(command))))
+            }
+            "Write" => {
+                let file_path =
+                    input
+                        .tool_input
+                        .file_path
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "Write".to_string(),
+                            reason: "missing file_path".to_string(),
+                        })?;
+
+                let content =
+                    input
+                        .tool_input
+                        .content
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "Write".to_string(),
+                            reason: "missing content".to_string(),
+                        })?;
+
+                Ok(Some(InputSource::Content(ContentSource::Write {
+                    file_path,
+                    content,
+                })))
+            }
+            "Edit" => {
+                let file_path =
+                    input
+                        .tool_input
+                        .file_path
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "Edit".to_string(),
+                            reason: "missing file_path".to_string(),
+                        })?;
+
+                let old_content =
+                    input
+                        .tool_input
+                        .old_string
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "Edit".to_string(),
+                            reason: "missing old_string".to_string(),
+                        })?;
+
+                let new_content =
+                    input
+                        .tool_input
+                        .new_string
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "Edit".to_string(),
+                            reason: "missing new_string".to_string(),
+                        })?;
+
+                Ok(Some(InputSource::Content(ContentSource::Edit {
+                    file_path,
+                    old_content,
+                    new_content,
+                })))
+            }
+            "apply_patch" => {
+                let command =
+                    input
+                        .tool_input
+                        .command
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: "apply_patch".to_string(),
+                            reason: "missing command".to_string(),
+                        })?;
+                let sources = normalize_apply_patch(&command)?;
+                if sources.len() == 1 {
+                    Ok(Some(InputSource::Content(
+                        sources.into_iter().next().expect("one source"),
+                    )))
+                } else {
+                    Ok(Some(InputSource::ContentBatch(sources)))
+                }
+            }
+            _ => {
+                // Unknown tool - return None (fail-open)
+                Ok(None)
+            }
         }
     }
 
@@ -959,6 +1313,21 @@ impl Engine {
                 CheckResult::Allowed
             }
         }
+    }
+
+    /// Evaluate every file normalized from one multi-file Codex patch and
+    /// return the most severe result across the complete patch.
+    ///
+    pub fn evaluate_content_batch(&self, sources: &[ContentSource]) -> CheckResult {
+        let mut result = CheckResult::Allowed;
+        for source in sources {
+            result = self.most_severe_result(result, self.evaluate_content(source));
+            if matches!(result, CheckResult::Denied { .. }) {
+                break;
+            }
+        }
+
+        result
     }
 
     fn evaluate_content_inner(&self, source: &ContentSource) -> CheckResult {

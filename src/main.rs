@@ -175,6 +175,87 @@ fn load_rule_pack(path: PathBuf) -> Result<crate::rule_pack::Pack> {
     crate::rule_pack::load_pack(&path)
 }
 
+/// Render the native Codex/Claude PreToolUse response envelope. Both hook
+/// protocols consume the hook-specific decision under `hookSpecificOutput`;
+/// Codex additionally requires `hookEventName` to identify the event.
+fn render_hook_response(
+    result: engine::CheckResult,
+    updated_input_key: &str,
+    context: Option<&str>,
+) -> serde_json::Value {
+    let details = |reason: &str, pack_id: &str, pattern_id: &str| {
+        let suffix = context
+            .map(|value| format!(", file={value}"))
+            .unwrap_or_default();
+        format!("{reason} [pack={pack_id}, pattern={pattern_id}{suffix}]")
+    };
+
+    let mut hook_output = serde_json::Map::new();
+    hook_output.insert(
+        "hookEventName".to_string(),
+        serde_json::Value::String("PreToolUse".to_string()),
+    );
+
+    match result {
+        engine::CheckResult::Allowed => serde_json::json!({}),
+        engine::CheckResult::Denied {
+            reason,
+            pack_id,
+            pattern_id,
+        } => {
+            hook_output.insert(
+                "permissionDecision".to_string(),
+                serde_json::Value::String("deny".to_string()),
+            );
+            hook_output.insert(
+                "permissionDecisionReason".to_string(),
+                serde_json::Value::String(details(&reason, &pack_id, &pattern_id)),
+            );
+            serde_json::json!({"hookSpecificOutput": hook_output})
+        }
+        engine::CheckResult::Rewrite {
+            reason,
+            rewrite,
+            pack_id,
+            pattern_id,
+        } => {
+            hook_output.insert(
+                "permissionDecision".to_string(),
+                serde_json::Value::String("allow".to_string()),
+            );
+            let mut updated_input = serde_json::Map::new();
+            updated_input.insert(
+                updated_input_key.to_string(),
+                serde_json::Value::String(rewrite),
+            );
+            hook_output.insert(
+                "updatedInput".to_string(),
+                serde_json::Value::Object(updated_input),
+            );
+            hook_output.insert(
+                "additionalContext".to_string(),
+                serde_json::Value::String(details(&reason, &pack_id, &pattern_id)),
+            );
+            serde_json::json!({"hookSpecificOutput": hook_output})
+        }
+        engine::CheckResult::Warning {
+            reason,
+            pack_id,
+            pattern_id,
+        } => {
+            hook_output.insert(
+                "permissionDecision".to_string(),
+                serde_json::Value::String("allow".to_string()),
+            );
+            hook_output.insert(
+                "additionalContext".to_string(),
+                serde_json::Value::String(details(&reason, &pack_id, &pattern_id)),
+            );
+            serde_json::json!({"hookSpecificOutput": hook_output})
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -301,34 +382,42 @@ fn main() -> Result<()> {
             match engine.read_from_stdin()? {
                 Some(InputSource::Command(source)) => {
                     // Command-mode: Bash command
-                    let tokens = engine.segment_command(&source);
+                    let result = engine.evaluate_command(&source);
+                    println!(
+                        "{}",
+                        render_hook_response(result, "command", None)
+                    );
 
-                    // For now, just print what we found
-                    // TODO: Dispatch to rule packs (bead irrevers-XXXX)
-                    eprintln!("Engine: Hook mode (command-mode) - {} segments found", tokens.len());
-                    for (i, token) in tokens.iter().enumerate() {
-                        eprintln!("  Segment {}: executable='{}', args={:?}",
-                                 i, token.executable, token.args);
-                    }
-
-                    // Allow by default until rule packs are implemented
                     Ok(())
                 }
                 Some(InputSource::Content(content)) => {
                     // Content-mode: Write/Edit operation
-                    eprintln!("Engine: Hook mode (content-mode)");
-                    eprintln!("  File path: {}", content.file_path());
-                    eprintln!("  New content length: {} bytes", content.new_content().len());
+                    // Evaluate against content-mode packs (storage-class, image-tag, beads)
+                    let result = engine.evaluate_content(&content);
+                    println!(
+                        "{}",
+                        render_hook_response(result, "content", Some(content.file_path()))
+                    );
 
-                    // For now, just print what we found
-                    // TODO: Implement content-mode checks for storage-class/image-tag packs
-                    // TODO: Dispatch to rule packs (separate bead)
+                    Ok(())
+                }
+                Some(InputSource::ContentBatch(contents)) => {
+                    let result = engine.evaluate_content_batch(&contents);
+                    let files = contents
+                        .iter()
+                        .map(|content| content.file_path())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!(
+                        "{}",
+                        render_hook_response(result, "content", Some(&files))
+                    );
 
-                    // Allow by default until content-mode packs are implemented
                     Ok(())
                 }
                 None => {
                     // Unrecognized tool - allow by default (fail-open)
+                    println!("{}", serde_json::json!({}));
                     Ok(())
                 }
             }
