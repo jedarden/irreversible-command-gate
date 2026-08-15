@@ -8,6 +8,7 @@
 //!   Used for content regex checks (storage-class, image-tag packs)
 
 use anyhow::{Context, Result};
+use crate::rule_pack::Pack;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -84,17 +85,127 @@ impl ContentSource {
 
     /// Check if this content applies to a specific file glob
     pub fn matches_glob(&self, glob: &str) -> bool {
-        let path = self.file_path();
-        // Simple glob matching: ends-with for now (e.g., "*.yaml")
-        // A proper glob implementation can be added later
-        if glob.starts_with("*.") {
-            let ext = &glob[2..];
-            path.ends_with(&format!(".{}", ext))
-        } else {
-            // For non-extension globs, just do a simple contains check
-            path.contains(glob)
+        path_matches_glob(self.file_path(), glob)
+    }
+}
+
+/// Match a write target against a file-path glob from a pack's `applies_to` list.
+///
+/// Globs without a path separator (for example, `*.yaml`) are matched against
+/// the target's basename. Globs with a separator are matched against the full
+/// path and each path suffix, so a relative selector such as `.beads/**` also
+/// works when the hook reports an absolute path. `*` matches within one path
+/// component; `**` may also cross path separators.
+fn path_matches_glob(path: &str, glob: &str) -> bool {
+    let path = normalize_path(path);
+    let mut glob = normalize_path(glob);
+
+    if glob.is_empty() {
+        return false;
+    }
+
+    // A trailing slash denotes a directory and everything below it. This is
+    // useful for the beads selector whether it is written as `.beads/` or the
+    // more explicit `.beads/**`.
+    if glob.ends_with('/') {
+        glob.push_str("**");
+    }
+
+    let has_separator = glob.contains('/');
+    if !has_separator {
+        let basename = path.rsplit('/').next().unwrap_or(path.as_str());
+        return wildcard_match(basename, &glob);
+    }
+
+    path_candidates(&path)
+        .iter()
+        .any(|candidate| wildcard_match(candidate, &glob))
+}
+
+fn normalize_path(value: &str) -> String {
+    value.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+/// Return the full path and relative suffixes for matching relative selectors
+/// against absolute hook paths.
+fn path_candidates(path: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let without_leading_slash = path.trim_start_matches('/');
+
+    candidates.push(path.to_string());
+    if without_leading_slash != path {
+        candidates.push(without_leading_slash.to_string());
+    }
+
+    for (index, character) in without_leading_slash.char_indices() {
+        if character == '/' && index + 1 < without_leading_slash.len() {
+            candidates.push(without_leading_slash[index + 1..].to_string());
         }
     }
+
+    candidates
+}
+
+/// Match a glob against one normalized path. This deliberately stays local to
+/// the engine so pack dispatch does not need filesystem I/O or another runtime
+/// dependency.
+fn wildcard_match(value: &str, pattern: &str) -> bool {
+    let value: Vec<char> = value.chars().collect();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let mut memo = vec![vec![None; value.len() + 1]; pattern.len() + 1];
+
+    fn visit(
+        value: &[char],
+        pattern: &[char],
+        value_index: usize,
+        pattern_index: usize,
+        memo: &mut [Vec<Option<bool>>],
+    ) -> bool {
+        if let Some(result) = memo[pattern_index][value_index] {
+            return result;
+        }
+
+        let result = if pattern_index == pattern.len() {
+            value_index == value.len()
+        } else if pattern[pattern_index] == '*' {
+            let is_double_star = pattern_index + 1 < pattern.len()
+                && pattern[pattern_index + 1] == '*';
+
+            if is_double_star {
+                // `**/` may consume zero directories, or any number of path
+                // characters before the next slash.
+                let after_stars = pattern_index + 2;
+                let skip_double_star = if after_stars < pattern.len()
+                    && pattern[after_stars] == '/'
+                {
+                    visit(value, pattern, value_index, after_stars + 1, memo)
+                } else {
+                    visit(value, pattern, value_index, after_stars, memo)
+                };
+                skip_double_star
+                    || (value_index < value.len()
+                        && visit(value, pattern, value_index + 1, pattern_index, memo))
+            } else {
+                // A single star is confined to one path component.
+                visit(value, pattern, value_index, pattern_index + 1, memo)
+                    || (value_index < value.len()
+                        && value[value_index] != '/'
+                        && visit(value, pattern, value_index + 1, pattern_index, memo))
+            }
+        } else if value_index < value.len()
+            && (pattern[pattern_index] == '?'
+                || pattern[pattern_index] == value[value_index])
+        {
+            visit(value, pattern, value_index + 1, pattern_index + 1, memo)
+        } else {
+            false
+        };
+
+        memo[pattern_index][value_index] = Some(result);
+        result
+    }
+
+    visit(&value, &pattern, 0, 0, &mut memo)
 }
 
 /// Input source from PreToolUse hook
@@ -352,6 +463,28 @@ impl Engine {
             .map(|token| token.executable)
             .collect()
     }
+
+    /// Return packs whose `applies_to` selectors match a Write/Edit target.
+    ///
+    /// The returned references preserve the input pack order and include every
+    /// matching pack: a YAML write may be relevant to both the storage-class
+    /// and image-tag packs. The same selector dispatch is intentionally used by
+    /// the beads pack, whose actual check is a filesystem predicate rather than
+    /// a content regex.
+    pub fn dispatch_content_packs<'a>(
+        &self,
+        source: &ContentSource,
+        packs: &'a [Pack],
+    ) -> Vec<&'a Pack> {
+        packs
+            .iter()
+            .filter(|pack| {
+                pack.applies_to
+                    .iter()
+                    .any(|glob| source.matches_glob(glob))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -447,6 +580,86 @@ mod tests {
         };
         assert!(source.matches_glob("*.yml"));
         assert!(!source.matches_glob("*.yaml"));
+    }
+
+    #[test]
+    fn test_matches_glob_is_basename_aware() {
+        let source = ContentSource::Write {
+            file_path: "/repo/manifests/service.yaml".to_string(),
+            content: "content".to_string(),
+        };
+
+        assert!(source.matches_glob("*.yaml"));
+        assert!(source.matches_glob("manifests/*.yaml"));
+        assert!(source.matches_glob("**/*.yaml"));
+        assert!(!source.matches_glob("manifests/*.yml"));
+    }
+
+    #[test]
+    fn test_matches_glob_scopes_beads_to_a_path_component() {
+        let source = ContentSource::Write {
+            file_path: "/repo/.beads/checkpoint/current.json".to_string(),
+            content: "content".to_string(),
+        };
+        let unrelated = ContentSource::Write {
+            file_path: "/repo/.beads-old/checkpoint/current.json".to_string(),
+            content: "content".to_string(),
+        };
+
+        assert!(source.matches_glob(".beads/**"));
+        assert!(source.matches_glob(".beads/"));
+        assert!(!unrelated.matches_glob(".beads/**"));
+    }
+
+    fn test_pack(id: &str, applies_to: &[&str]) -> Pack {
+        Pack {
+            id: id.to_string(),
+            tool_keywords: Vec::new(),
+            applies_to: applies_to.iter().map(|glob| (*glob).to_string()).collect(),
+            safe_patterns: Vec::new(),
+            guarded_patterns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_dispatch_content_packs_returns_all_matching_packs_in_order() {
+        let engine = default_engine();
+        let source = ContentSource::Write {
+            file_path: "/repo/manifests/service.yaml".to_string(),
+            content: "content".to_string(),
+        };
+        let packs = vec![
+            test_pack("storage-class", &["*.yaml", "*.yml"]),
+            test_pack("image-tag", &["*.yaml", "*.yml"]),
+            test_pack("markdown", &["*.md"]),
+            test_pack("command-only", &[]),
+        ];
+
+        let matching = engine.dispatch_content_packs(&source, &packs);
+
+        assert_eq!(
+            matching.iter().map(|pack| pack.id.as_str()).collect::<Vec<_>>(),
+            vec!["storage-class", "image-tag"]
+        );
+    }
+
+    #[test]
+    fn test_dispatch_content_packs_also_routes_beads_selector() {
+        let engine = default_engine();
+        let source = ContentSource::Edit {
+            file_path: "/repo/.beads/events.jsonl".to_string(),
+            old_content: "old".to_string(),
+            new_content: "new".to_string(),
+        };
+        let packs = vec![
+            test_pack("storage-class", &["*.yaml", "*.yml"]),
+            test_pack("beads", &[".beads/**"]),
+        ];
+
+        let matching = engine.dispatch_content_packs(&source, &packs);
+
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].id, "beads");
     }
 
     // Command-mode tests (existing)
