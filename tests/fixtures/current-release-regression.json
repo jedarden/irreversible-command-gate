@@ -1,0 +1,31 @@
+{
+  "id": "test-pack-current-with-regressions",
+  "safe_patterns": [
+    {
+      "id": "safe-read-operations",
+      "check": "vault.*get"
+    },
+    {
+      "id": "safe-list",
+      "check": ".*"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "vault-kv-destroy",
+      "check": "vault kv destroy",
+      "tier": 1,
+      "severity": "Critical",
+      "explanation": "Permanently destroys vault data versions",
+      "destructive": true
+    },
+    {
+      "id": "git-force-push",
+      "check": "git push --force",
+      "tier": 1,
+      "severity": "Critical",
+      "explanation": "Force-push rewrites git history",
+      "destructive": true
+    }
+  ]
+}

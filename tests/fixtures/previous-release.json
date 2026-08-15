@@ -1,0 +1,51 @@
+{
+  "id": "test-pack-previous",
+  "safe_patterns": [
+    {
+      "id": "safe-read-operations",
+      "check": "vault kv get"
+    },
+    {
+      "id": "safe-list",
+      "check": "vault.*list"
+    },
+    {
+      "id": "safe-git-status",
+      "check": "^git status"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "vault-kv-destroy",
+      "check": "vault kv destroy",
+      "tier": 1,
+      "severity": "Critical",
+      "explanation": "Permanently destroys vault data versions",
+      "destructive": true
+    },
+    {
+      "id": "vault-policy-delete",
+      "check": "vault policy delete",
+      "tier": 1,
+      "severity": "High",
+      "explanation": "Deletes an ACL policy",
+      "destructive": true
+    },
+    {
+      "id": "git-force-push",
+      "check": "git push.*--force",
+      "tier": 1,
+      "severity": "Critical",
+      "explanation": "Force-push rewrites git history",
+      "destructive": true
+    },
+    {
+      "id": "vault-secrets-disable",
+      "check": "vault secrets disable",
+      "tier": 1,
+      "severity": "High",
+      "explanation": "Disables an entire secrets engine",
+      "destructive": true
+    }
+  ]
+}
