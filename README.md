@@ -32,13 +32,11 @@ Stated plainly, because it's easy to assume more than is actually true:
   repository trying to trick an otherwise-honest agent.** That's a
   different threat class, explicitly out of scope (see the ideas ledger's
   second run for why that idea was killed rather than adopted).
-- **The PATH-wrapper front-end specifically can't see anything that
-  doesn't go through `$PATH` resolution** — an absolute-path invocation
-  never reaches it. The native-hook front-end doesn't have this gap: it
-  basename-matches, so it still catches an absolute-path command the same
-  as a bare one. Only a command that bypasses *both* front-ends entirely
-  (neither harness's hook fires, and the binary was never PATH-resolved)
-  goes fully unguarded.
+- **The native hook is the supported front-end in the current tree.** The
+  `icg wrapper` subcommand is still a parser scaffold: it does not execute a
+  real shadowed binary or enforce a rule pack, so PATH symlinks must not be
+  deployed from this build. Even a completed PATH wrapper would not cover
+  absolute-path invocations or direct library calls.
 
 ## Structure
 
@@ -47,6 +45,8 @@ Stated plainly, because it's easy to assume more than is actually true:
   exploration, and the release-bound per-repository override contract
 - `docs/research/` — external reference material and prior art
   (`destructive_command_guard`, `agent-guard`, `vault-mcp-server`, etc.)
+- `docs/operators/` — installation, deployment, upgrade, and troubleshooting
+  procedures for the current CLI
 - `docs/plan/plan.md` — complete application plan
 
 ## Fixed deny-regression suite

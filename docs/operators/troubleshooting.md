@@ -1,681 +1,342 @@
-# Irreversible Command Gate (icg) - Troubleshooting Guide
+# Troubleshooting `icg`
 
-## Overview
+This page is a quick diagnostic reference for the current implementation. For
+the complete installation procedure, see the
+[installation and deployment guide](deployment-guide.md).
 
-This guide helps operators diagnose and resolve common issues with icg, including false positives, rule conflicts, installation problems, and debugging procedures.
+## First-response checklist
 
-## Quick Reference: Common Issues
-
-| Symptom | Likely Cause | Quick Fix |
-|---------|--------------|-----------|
-| Operations denied unexpectedly | False positive or outdated rule pack | Check `icg status --denials`, update rule pack |
-| Hook not triggering | Misconfigured hook path | Verify `~/.claude/settings.json` or `~/.codex/hooks.json` |
-| "Command not found" after install | PATH-wrapper symlinks missing | Recreate symlinks in `/usr/local/libexec/icg-wrappers/` |
-| All operations denied | Fail-closed mode + guard crash | Check `ICG_FAIL_CLOSED`, verify rule pack integrity |
-| Agent can't update icg | Permission denied | Use `sudo icg update` or fix `/etc/icg/` ownership |
-
-## Diagnosis Procedures
-
-### Step 1: Check Guard Health
+Run these read-only checks before changing policy or replacing artifacts:
 
 ```bash
-# Basic health check
-icg health
-
-# Detailed diagnostics
-icg health --verbose
-
-# Check specific components
-icg health --component engine
-icg health --component rule-pack
-icg health --component state-store
+command -v icg
+icg --version
+icg status
+icg trust show
+stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg /etc/icg/rule-pack.json
 ```
 
-### Step 2: Review Recent Denials
+Capture stderr from the failing hook and record the exact binary commit,
+rule-pack file, trust pointer, harness version, and hook input shape. Never
+include tokens, credentials, or secret values in a support bundle.
+
+## Symptom lookup
+
+| Symptom | Likely cause | First check |
+| --- | --- | --- |
+| `icg` is not found | Binary is not installed or PATH is different inside the harness | `ls -l /usr/local/bin/icg`; use its absolute path in the hook |
+| Every call is allowed | Pack is missing, unreadable, invalid, or the hook is not firing | Run the direct stdin test with `--rule-pack` |
+| Expected call is not denied | Rule does not match the command/content or the wrong pack is loaded | `icg status`; inspect the exact test payload |
+| Harness never invokes `icg` | Wrong event, matcher, configuration scope, or unsupported harness version | Use harness hook diagnostics and check `PreToolUse` |
+| `permission denied` under `/etc/icg` | Operator command lacks privilege or path ownership is wrong | `namei -l /etc/icg/rule-pack.json` |
+| `icg update` fails | Missing pointer, unavailable exact release, missing `rule-pack` asset, or no network | `icg trust show` and the updater checks below |
+| Telemetry warning mentions `/var/cache/icg` | Hook identity cannot write auxiliary telemetry | Fix only cache permissions; do not loosen `/etc/icg` |
+| PATH symlink does not block | The current `wrapper` subcommand is not implemented | Remove the symlink; use the native hook |
+
+## Test the hook without executing a command
+
+The direct test sends one JSON object to one `icg hook` process. It does not
+run Vault, Git, or any other command:
 
 ```bash
-# View recent denials
-icg status --denials --since 1h
-
-# View denials by rule pack
-icg status --denials --group-by pack
-
-# View denial patterns
-icg status --denials --pattern-summary
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault kv destroy secret/test"}}' \
+  | /usr/local/bin/icg hook --rule-pack /etc/icg/rule-pack.json
 ```
 
-### Step 3: Check Configuration
+For a rule pack that contains this pattern, the output should contain:
 
-```bash
-# View active configuration
-icg config --show
-
-# Verify rule pack is loaded
-icg config --rule-pack
-
-# Verify trust pointer
-cat /etc/icg/trust-pointer.json | jq .
+```text
+"permissionDecision": "deny"
 ```
 
-### Step 4: Test Individual Components
+Test an allowed command too:
 
 ```bash
-# Test engine directly
-icg check --command "vault kv destroy secret/test"
-
-# Test hook integration
-echo '{"name":"bash","input":{"command":"vault kv destroy secret/test"}}' | icg hook
-
-# Test PATH-wrapper
-/usr/local/libexec/icg-wrappers/vault version
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault status"}}' \
+  | /usr/local/bin/icg hook --rule-pack /etc/icg/rule-pack.json
 ```
 
-## Common Issues and Solutions
+An empty JSON object is an allowed/no-op result. It does not prove that a
+particular rule pack is installed; use a command known to be covered by the
+approved pack.
 
-### Issue: False Positive - Operation Wrongly Denied
+## Installation and build failures
 
-#### Symptom
+### `cargo build` cannot compile OpenSSL or `native-tls`
 
-A legitimate operation is denied with a generic reason like "Pattern matched: vault-destructive".
-
-#### Diagnosis
+Install the system build dependencies and retry with the locked dependency
+set:
 
 ```bash
-# View the exact denial details
-icg status --denials --last 1
+# Debian/Ubuntu
+sudo apt-get install --yes build-essential pkg-config libssl-dev
 
-# Check which pattern matched
-icg status --denials --verbose
+# Fedora/RHEL-like systems
+sudo dnf install gcc gcc-c++ make pkgconf-pkg-config openssl-devel
+
+cargo build --release --locked
 ```
 
-#### Solutions
+The current project does not vendor OpenSSL. A package builder must provide
+the matching development and runtime libraries for its target distribution.
 
-**1. Update Rule Pack**
+### `icg` is not found or the hook gets a different binary
 
-False positives are often fixed in newer rule pack versions:
+The interactive shell's PATH may not be the harness's PATH. Check both the
+file and its identity:
 
 ```bash
-# Check for updates
-icg update --check-only
-
-# Apply update if available
-icg update
+ls -l /usr/local/bin/icg
+command -v icg || true
+sha256sum /usr/local/bin/icg
 ```
 
-**2. Check for Pattern Refinement**
+Configure the hook with `/usr/local/bin/icg hook`, not just `icg hook`.
 
-The pattern may be too broad. Check the rule pack:
+### `/etc/icg` or the rule pack is not readable
+
+Check every path component and ownership:
 
 ```bash
-# View the pattern that matched
-cat /etc/icg/rule-pack.json | jq '.packs[] | select(.id=="vault") | .guarded_patterns[] | select(.id=="vault-destructive")'
+namei -l /etc/icg/rule-pack.json
+stat -c '%U:%G %a %n' /etc/icg /etc/icg/rule-pack.json /etc/icg/trust-pointer.json
 ```
 
-**3. Create Repository Override (If Legitimate Use Case)**
+The hook needs read access. Installation and updates need administrator
+privilege. Keep `/etc/icg` root-owned and not world-writable; do not fix this
+by granting the agent write access.
 
-If this is a legitimate, repo-specific exception:
+### Rule-pack parse or validation failure
+
+The default hook path is `/etc/icg/rule-pack.json`. Confirm the file is the
+approved JSON artifact and not a release HTML page, a partial transfer, or a
+test fixture:
 
 ```bash
-# Create override file (requires Layer 1/2 approval)
-icg override create --repo /path/to/repo \
-  --pattern-id "vault-destructive" \
-  --justification "Approved vault migration for legacy system"
+file /etc/icg/rule-pack.json
+head -c 120 /etc/icg/rule-pack.json; printf '\n'
 ```
 
-**4. Report the Issue**
+A malformed or unreadable pack causes the current engine to fail open and
+reports the problem on stderr. Keep the previous known-good artifact and
+restore it rather than editing the live pack in place.
 
-If it's a genuine false positive:
+## Hook registration failures
 
-```bash
-# Export denial details for bug report
-icg status --denials --format json > false-positive-report.json
+### Claude Code
 
-# File issue with the export
-```
+The handler belongs under the `PreToolUse` event in the settings scope that
+Claude Code loads. A minimal shape is:
 
-### Issue: Rule Conflicts - Multiple Patterns Match
-
-#### Symptom
-
-Unclear which rule caused denial, or conflicting reasons given.
-
-#### Diagnosis
-
-```bash
-# View all matched patterns
-icg status --denials --verbose --show-all-matches
-
-# Check pattern precedence
-icg config --show-precedence
-```
-
-#### Solutions
-
-**1. Understand Precedence**
-
-Precedence order (highest to lowest):
-1. Safe patterns (explicitly allowed)
-2. Guarded patterns (enabled, ordered by pack then by pattern ID)
-3. Disabled patterns (ignored)
-
-**2. Check for Overlapping Patterns**
-
-```bash
-# View pattern overlaps in rule pack
-icg audit --pattern-overlaps
-```
-
-**3. Refine Patterns (If Rule Pack Author)**
-
-Edit the rule pack to narrow pattern scopes or add safe patterns.
-
-### Issue: Hook Not Triggering
-
-#### Symptom
-
-Commands execute without guard evaluation in Claude Code or Codex CLI.
-
-#### Diagnosis
-
-```bash
-# Check hook configuration
-cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
-cat ~/.codex/hooks.json
-
-# Test hook directly
-echo '{"name":"bash","input":{"command":"vault kv destroy secret/test"}}' | icg hook
-
-# Check binary permissions
-ls -la /usr/local/bin/icg
-```
-
-#### Solutions
-
-**1. Fix Hook Configuration**
-
-```bash
-# For Claude Code
-cat > ~/.claude/settings.json <<EOF
+```json
 {
   "hooks": {
-    "PreToolUse": {
-      "bash": "/usr/local/bin/icg hook",
-      "apply_patch": "/usr/local/bin/icg hook"
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {"type": "command", "command": "/usr/local/bin/icg hook", "timeout": 10}
+        ]
+      }
+    ]
   }
 }
-EOF
+```
 
-# For Codex CLI
-cat > ~/.codex/hooks.json <<EOF
+Check that the matcher is case-sensitive and that the file was merged with,
+not substituted for, the existing settings. Use Claude Code's hook inspection
+or debug facilities to confirm that the handler is registered.
+
+### Codex CLI
+
+The installed Codex CLI must support native `PreToolUse` command hooks. Verify
+the current version's supported hook file and schema, then use an absolute
+command path. The adapter expects `Bash` and `apply_patch` inputs with JSON on
+stdin. Cloud-hosted Codex jobs cannot call this host's binary.
+
+### Hook output is rejected
+
+`icg` must own stdout for the response JSON. Do not wrap the configured command
+in a shell script that prints banners or diagnostics to stdout. Diagnostics
+belong on stderr. A valid deny response has the shape:
+
+```json
 {
-  "PreToolUse": {
-    "bash": "/usr/local/bin/icg hook",
-    "apply_patch": "/usr/local/bin/icg hook"
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "..."
   }
 }
-EOF
 ```
 
-**2. Restart Claude Code/Codex CLI**
+### Invalid input fields
 
-Hook configuration is read at startup. Restart your session.
+The minimal accepted payloads are:
 
-**3. Check File Permissions**
+```json
+{"tool_name":"Bash","tool_input":{"command":"git status"}}
+{"tool_name":"Write","tool_input":{"filePath":"deploy/app.yaml","content":"image: app:1.2.3\n"}}
+{"tool_name":"Edit","tool_input":{"filePath":"deploy/app.yaml","oldString":"old","newString":"new"}}
+{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: example.txt\n+x\n*** End Patch"}}
+```
+
+`apply_patch` also needs at least one file header to produce a content input.
+Do not send multiple JSON objects to a single process. The parser accepts both
+snake_case and the older camelCase field aliases, but the harness must still
+send a valid tool envelope.
+
+## Policy and verdict problems
+
+### A known dangerous command is allowed
+
+Work through these checks without running the dangerous command:
+
+1. Confirm the hook fired by checking harness diagnostics.
+2. Run the direct pipe test with `--rule-pack /etc/icg/rule-pack.json`.
+3. Confirm the command spelling and shell segmentation match the rule.
+4. Confirm the rule is enabled in the approved release pack.
+5. Confirm no repository override is exempting the rule.
+
+If the direct test denies but the harness allows, the harness registration or
+its output handling is wrong. If both allow, stop the rollout and report a
+rule-pack coverage defect; do not add an unreviewed local regex.
+
+### A safe command is denied
+
+Record the denial reason, pack ID, and pattern ID from the hook response. Do
+not bypass it by editing `/etc/icg/rule-pack.json`. Check whether the command
+matches an intended safe pattern or whether an approved release has narrowed
+the false positive. The correction path is a reviewed rule-pack release.
+
+For a temporary, repository-specific exception, use the release-bound override
+contract in [`per-repo-overrides.md`](../notes/per-repo-overrides.md). A local
+TOML file without a matching trusted release, current expiry, and recent
+justification is rejected.
+
+### The hook seems to allow after an internal error
+
+The current default is fail-open. That is intentional while the fail-closed
+transition is being validated. `ICG_FAIL_CLOSED=true` is not, by itself, a
+complete harness-level fail-closed deployment; follow the
+[transition design](../design/fail-closed-transition.md) before enabling it.
+
+## Trust pointer and updater failures
+
+### No trust pointer exists
+
+The updater requires an exact trusted reference:
 
 ```bash
-# Ensure hook is executable
-sudo chmod 0755 /usr/local/bin/icg
-
-# Ensure user can read hook
-ls -la /usr/local/bin/icg
+sudo /usr/local/bin/icg trust set vX.Y.Z \
+  --justification "Approved release record: <reference>"
+sudo /usr/local/bin/icg trust show
 ```
 
-### Issue: PATH-Wrapper Not Working
+Do not use `latest`. The pointer is an administrator-controlled release
+decision, not an update check result.
 
-#### Symptom
+### `icg update` cannot find the release
 
-Real binary executes instead of wrapper (e.g., real `vault` runs instead of icg).
-
-#### Diagnosis
+The default updater uses the GitHub repository
+`jedarden/irreversible-command-gate`, requests the exact pointer reference,
+and looks for a release asset whose name contains `rule-pack`.
 
 ```bash
-# Check if symlinks exist
-ls -la /usr/local/libexec/icg-wrappers/
-
-# Check PATH order
-echo $PATH | tr ':' '\n' | grep -n icg-wrappers
-
-# Test wrapper directly
-/usr/local/libexec/icg-wrappers/vault version
+icg trust show
+curl --fail --silent --show-error \
+  https://api.github.com/repos/jedarden/irreversible-command-gate/releases/tags/vX.Y.Z \
+  >/dev/null
 ```
 
-#### Solutions
+If the host is offline or the release is intentionally not on GitHub, copy the
+approved artifact manually and record the artifact checksum and release
+reference. Do not weaken the pointer to make the updater choose a different
+release.
 
-**1. Recreate Symlinks**
+### A channel deployment changed the wrong pack
+
+`--channel NAME` selects `/etc/icg/trust-pointer-NAME.json`, but the default
+artifact path remains `/etc/icg/rule-pack.json`. Use `--artifact-path` for a
+separate canary pack and pass the same path to `icg hook --rule-pack`.
 
 ```bash
-# Ensure wrapper directory exists
-sudo mkdir -p /usr/local/libexec/icg-wrappers
-
-# Recreate symlinks
-sudo ln -sf /usr/local/bin/icg /usr/local/libexec/icg-wrappers/vault
-sudo ln -sf /usr/local/bin/icg /usr/local/libexec/icg-wrappers/git
-sudo ln -sf /usr/local/bin/icg /usr/local/libexec/icg-wrappers/bao
+sudo icg update --channel canary \
+  --artifact-path /etc/icg/rule-pack-canary.json
+sudo icg hook --help
 ```
 
-**2. Fix PATH Order**
+`icg status --channel` does not accept an artifact path and reports the default
+artifact location; inspect a custom canary file directly.
+
+## Telemetry and health state
+
+Telemetry and health data are auxiliary operational state. They do not replace
+the root-owned rule pack or trust pointer.
 
 ```bash
-# Add to beginning of PATH in ~/.bashrc
-echo 'export PATH="/usr/local/libexec/icg-wrappers:$PATH"' >> ~/.bashrc
-
-# Reload shell
-source ~/.bashrc
+icg telemetry status
+icg health status
 ```
 
-**3. Verify Symlinks**
+The hook initializes telemetry before evaluating input, so a missing or
+unwritable `/var/cache/icg` directory can make the hook fail before it returns
+a decision. Grant the hook identity narrowly scoped access to that cache
+directory; do not loosen `/etc/icg`. If health state is corrupt, first use
+`icg health status` to identify the active path, then preserve a copy for
+diagnosis before resetting it. For a deployment that explicitly configured
+`/var/cache/icg/health-state.json`, the commands are:
 
 ```bash
-# Should point to /usr/local/bin/icg
-ls -la /usr/local/libexec/icg-wrappers/vault
+sudo cp --preserve=mode,ownership \
+  /var/cache/icg/health-state.json /var/cache/icg/health-state.json.failed
+sudo icg health reset --force
 ```
 
-### Issue: All Operations Denied
+Do not delete the rule pack, trust pointer, or release evidence as a health
+cleanup step.
 
-#### Symptom
+## PATH wrapper and absolute paths
 
-Every operation is denied, including safe ones.
+The current `icg wrapper` command is not a complete enforcement front-end. It
+prints parsed segments and allows by default, so a symlink such as
+`/usr/local/libexec/icg-wrappers/git` must not be treated as protection. The
+native hook sees the harness's intended tool call and is the supported path.
 
-#### Diagnosis
+Even a completed PATH wrapper would not be a complete security boundary for
+absolute-path invocations or direct library calls. Keep the native hook and
+the harness's own controls in place.
+
+## Rollback
+
+There is no `icg update --rollback-to` flag. Keep a known-good pack and binary,
+then restore both deliberately:
 
 ```bash
-# Check if fail-closed mode is enabled
-echo $ICG_FAIL_CLOSED
-
-# Check for guard crashes
-icg health --component engine
-
-# Check rule pack integrity
-sha256sum /etc/icg/rule-pack.json
+sudo install -o root -g root -m 0644 \
+  /etc/icg/rule-pack.previous.json /etc/icg/rule-pack.json
+sudo install -o root -g root -m 0755 \
+  /usr/local/bin/icg.previous /usr/local/bin/icg
+sudo icg trust set vPREVIOUS --justification "Incident rollback"
+sudo icg trust check vPREVIOUS
 ```
 
-#### Solutions
+Repeat the direct deny/allow tests and one harness-level test. Preserve the
+failed artifact, stderr, trust pointer, and exact deployment commit for the
+incident record.
 
-**1. Check for Guard Crash**
+## Escalation bundle
 
-If `ICG_FAIL_CLOSED=true` and the guard crashed:
+Collect the following, after redacting sensitive values:
 
 ```bash
-# View crash logs
-journalctl -u icg --since 1h | grep -i crash
-
-# Restart guard (clears fail-open state)
-sudo systemctl restart icg  # if running as service
-# Or just start a new session (per-invocation model)
+icg --version > icg-version.txt 2>&1
+icg status > icg-status.txt 2>&1
+icg trust show > icg-trust.txt 2>&1
+stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg /etc/icg/rule-pack.json \
+  > icg-permissions.txt 2>&1
 ```
 
-**2. Disable Fail-Closed (Emergency Only)**
-
-```bash
-# Emergency rollback to fail-open
-unset ICG_FAIL_CLOSED
-# Or
-export ICG_FAIL_CLOSED=false
-```
-
-**3. Restore Rule Pack**
-
-If rule pack is corrupted:
-
-```bash
-# Restore from backup
-sudo cp /backups/icg-config-$(date +%F).tar.gz /etc/icg/rule-pack.json
-
-# Or download known-good version
-sudo wget -O /etc/icg/rule-pack.json \
-  https://github.com/jedarden/irreversible-command-gate/releases/download/v0.0.9/rule-pack.json
-```
-
-### Issue: Rule Pack Update Fails
-
-#### Symptom
-
-`icg update` fails with network or permission errors.
-
-#### Diagnosis
-
-```bash
-# Check network connectivity
-curl -I https://github.com
-
-# Check permissions
-ls -la /etc/icg/
-
-# Check disk space
-df -h /etc/
-```
-
-#### Solutions
-
-**1. Fix Permissions**
-
-```bash
-# Ensure root ownership
-sudo chown root:root /etc/icg/
-sudo chmod 0755 /etc/icg/
-
-# Ensure files are root-owned
-sudo chown root:root /etc/icg/*.json
-sudo chmod 0644 /etc/icg/*.json
-```
-
-**2. Fix Network Issues**
-
-```bash
-# Test GitHub connectivity
-curl -I https://github.com
-
-# Use proxy if needed
-export HTTPS_PROXY=http://your-proxy:port
-icg update
-```
-
-**3. Free Disk Space**
-
-```bash
-# Clean up old rule pack backups
-sudo rm /etc/icg/rule-pack.json.old.*
-
-# Check disk space
-df -h /etc/
-```
-
-### Issue: State Store Corruption
-
-#### Symptom
-
-Tier 2 rules (cross-invocation state) behave incorrectly or fail.
-
-#### Diagnosis
-
-```bash
-# Check state store
-icg health --component state-store
-
-# View state file
-sudo cat /var/lib/icg/state.json | jq .
-```
-
-#### Solutions
-
-**1. Restore from Backup**
-
-```bash
-# Stop any active sessions
-# Restore state
-sudo cp /backups/icg-state-$(date +%F).json /var/lib/icg/state.json
-
-# Verify
-icg health --component state-store
-```
-
-**2. Clear State (Last Resort)**
-
-```bash
-# WARNING: This loses all Tier 2 rule state
-sudo rm /var/lib/icg/state.json
-icg health --component state-store  # Will recreate empty state
-```
-
-### Issue: Coexistence with org-rule-guard.py
-
-#### Symptom
-
-Double denials (both icg and org-rule-guard.py deny same operation).
-
-#### Diagnosis
-
-```bash
-# Check if both hooks are registered
-cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
-
-# Test with icg disabled temporarily
-ICG_DISABLED=1 vault kv destroy secret/test
-```
-
-#### Solutions
-
-**1. This is Expected During Migration**
-
-Per `migration-from-org-rule-guard.md`, double denials are expected and harmless during coexistence.
-
-**2. Verify Consistent Verdicts**
-
-Both should deny or both should allow. Divergent verdicts indicate a problem:
-
-```bash
-# Run smoke test
-icg smoke-test-vs-org-rule-guard
-```
-
-**3. Remove org-rule-guard.py After Migration**
-
-Once migration is complete:
-
-```bash
-# Remove old hook
-rm ~/.claude/hooks/org-rule-guard.py
-
-# Update settings to remove reference
-# Edit ~/.claude/settings.json to remove org-rule-guard.py
-```
-
-## Debugging Procedures
-
-### Enable Debug Logging
-
-```bash
-# Set debug level
-export ICG_LOG_LEVEL=debug
-
-# Run command with debug output
-icg check --command "vault kv destroy secret/test" 2>&1 | tee /tmp/icg-debug.log
-```
-
-### Test Pattern Matching
-
-```bash
-# Test if a specific pattern matches
-icg test-pattern --pack vault --pattern-id vault-destructive \
-  --command "vault kv destroy secret/test"
-
-# Test all patterns in a pack
-icg test-pattern --pack vault --all \
-  --command "vault kv destroy secret/test"
-```
-
-### Export Rule Pack for Analysis
-
-```bash
-# Export entire rule pack
-cat /etc/icg/rule-pack.json | jq . > /tmp/rule-pack-export.json
-
-# Export specific pack
-cat /etc/icg/rule-pack.json | jq '.packs[] | select(.id=="vault")' > /tmp/vault-pack.json
-```
-
-### Trace Evaluation Path
-
-```bash
-# Enable trace logging
-export ICG_LOG_LEVEL=trace
-
-# Run command and trace evaluation
-icg check --command "vault kv destroy secret/test" 2>&1 | grep -i trace
-```
-
-## Performance Issues
-
-### Issue: Slow Command Evaluation
-
-#### Symptom
-
-Noticeable delay before command executes or is denied.
-
-#### Diagnosis
-
-```bash
-# Measure evaluation time
-time icg check --command "vault status"
-
-# Check rule pack size
-cat /etc/icg/rule-pack.json | jq '.packs | length'
-
-# Check for complex regexes
-cat /etc/icg/rule-pack.json | jq '.packs[].guarded_patterns[].check' | grep -c '.*.*'
-```
-
-#### Solutions
-
-**1. Reduce Rule Pack Size**
-
-Disable unused rule packs (if rule pack author supports it):
-
-```bash
-# Request smaller pack or create custom pack
-```
-
-**2. Simplify Regex Patterns**
-
-Work with rule pack author to simplify overly complex patterns.
-
-**3. Use PATH-Wrapper for Frequently-Used Commands**
-
-PATH-wrapper has lower overhead than hook for raw command execution.
-
-### Issue: High Memory Usage
-
-#### Symptom
-
-icg process uses more memory than expected (>50MB).
-
-#### Diagnosis
-
-```bash
-# Check memory usage
-ps aux | grep icg
-
-# Check rule pack size
-ls -la /etc/icg/rule-pack.json
-
-# Check state store size
-ls -la /var/lib/icg/state.json
-```
-
-#### Solutions
-
-**1. Rotate State Store**
-
-```bash
-# Backup and clear old state
-sudo cp /var/lib/icg/state.json /backups/icg-state-old.json
-sudo tee /var/lib/icg/state.json > /dev/null <<EOF
-{"schema_version":1,"state":{}}
-EOF
-```
-
-**2. Reduce Rule Pack Size**
-
-Work with rule pack author to split large packs.
-
-## Emergency Procedures
-
-### Emergency Rollback
-
-```bash
-# Immediate rollback to previous release
-icg update --rollback
-
-# Rollback to specific version
-icg update --rollback-to v0.0.9
-
-# Emergency disable (last resort)
-ICG_DISABLED=1 vault kv destroy secret/test
-```
-
-### Emergency Rollback from Fail-Closed
-
-```bash
-# 1. Immediately disable fail-closed
-unset ICG_FAIL_CLOSED
-
-# 2. Investigate crash
-icg health --component engine
-
-# 3. Fix issue (update rule pack, fix regex, etc.)
-
-# 4. Re-qualify before re-enabling fail-closed
-# (See fail-closed-transition.md)
-```
-
-### Fleet-Wide Emergency
-
-```bash
-# On orchestration host
-for host in workstation-001 workstation-002 workstation-003; do
-  ssh $host "unset ICG_FAIL_CLOSED && icg update --rollback"
-done
-```
-
-## Getting Help
-
-### Before Requesting Help
-
-1. Run health check: `icg health --verbose`
-2. Export denial history: `icg status --denials --format json > denial-report.json`
-3. Export configuration: `icg config --show > config-report.txt`
-4. Export logs: `journalctl -u icg --since 1h > icg-journal.log`
-
-### Information to Include
-
-- icg version: `icg --version`
-- Rule pack version: `cat /etc/icg/trust-pointer.json | jq .trusted_release`
-- OS and kernel version: `uname -a`
-- Exact command that was denied
-- Full denial message
-- Relevant logs from the time of the issue
-
-### Resources
-
-- **Issues**: https://github.com/jedarden/irreversible-command-gate/issues
-- **Documentation**: `docs/` directory in repository
-- **Architecture**: See `docs/plan/plan.md` for detailed design
-- **Design Notes**: See `docs/notes/` for individual design decisions
-
-## Prevention
-
-### Regular Maintenance
-
-```bash
-# Weekly update check
-icg update --check-only
-
-# Monthly rule pack review
-icg audit --pattern-overlaps
-icg status --denials --since 30d
-
-# Quarterly health review
-icg health --verbose
-icg compliance-report --period 90d
-```
-
-### Monitoring Setup
-
-Set up monitoring for:
-- Guard uptime and crash rate
-- Denial rate (alert if >1%)
-- Rule pack version drift across fleet
-- State store corruption
-
-See `deployment-guide.md` for monitoring configuration.
+Attach the harness version and a sanitized failing hook payload. Do not attach
+the rule pack if it contains secrets or private operational data; provide its
+checksum and release reference instead.

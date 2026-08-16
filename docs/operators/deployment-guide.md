@@ -1,484 +1,686 @@
-# Irreversible Command Gate (icg) - Operator Guide
+# Installation and deployment guide
 
-## Overview
+This guide describes how to install the current `icg` command, load a
+released rule pack, connect the native hook adapter, and operate upgrades.
+It is intentionally written against the command and file paths implemented in
+this repository.
 
-The Irreversible Command Gate (icg) is a safety system that intercepts commands before they execute and blocks operations that could cause irreversible or hard-to-reverse damage. This guide is for operators who will deploy, maintain, and troubleshoot icg in production environments.
+## Before you begin
 
-## What icg Protects Against
+`icg` is a per-invocation guard. A hook process reads one PreToolUse JSON
+object from standard input, evaluates it, writes a JSON decision, and exits.
+It does not run as a daemon and there is no service to start or restart.
 
-icg guards against operations that can cause irreversible damage, including:
+The supported production path in the current tree is the native hook adapter:
 
-- **Vault/OpenBao destructive operations**: `vault kv destroy`, `vault policy delete`, token revocation
-- **Git force-pushes**: Accidental repository history destruction
-- **Unsafe image tags**: Using `:latest` or bare git SHAs for container images
-- **Improper storage classes**: Using `ssd`/`ssd-large` on Rackspace Spot
-- **Bead state corruption**: Hand-editing `.beads/` directories in shared checkouts
-- **Deprecated tool usage**: Invoking deprecated bead CLIs (`br`, `bf`)
-- **Credential leakage**: Writing credential values to commits or files
-
-## Architecture
-
-### Front-Ends
-
-icg provides two independent, complementary front-ends:
-
-1. **PATH-Wrapper Binary**: Shadows guarded binaries (`vault`, `git`, etc.) via symlinks earlier in `$PATH` than the real binaries
-2. **Native PreToolUse Hooks**: Integrates directly with Claude Code and Codex CLI hook systems
-
-### Components
-
-- **Engine**: Evaluation logic that runs rule packs against commands
-- **Rule Packs**: Modular, per-tool domain rules (`vault`, `git`, `image-tag`, etc.)
-- **State Store**: Minimal persistent state for cross-invocation rules
-- **Trust Pointer**: Tracks the current trusted rule pack release
-- **Self-Updater**: User-triggered update mechanism (no automatic polling)
-
-## System Requirements
-
-### Supported Platforms
-
-- Linux (kernel 2.6.32+)
-- x86_64 and ARM64 architectures
-
-### Dependencies
-
-- **Runtime**: None (static binary)
-- **Hook Integration**: Claude Code 1.0+ or Codex CLI with hook support
-- **Network**: GitHub Releases API access (for updates only, not for command evaluation)
-
-### Permissions
-
-- Binary installation: `root` access for `/usr/local/bin/icg`
-- Rule pack installation: `root` access for `/etc/icg/`
-- Hook configuration: User-level `~/.claude/settings.json` or `~/.codex/hooks.json` modification
-
-## Installation
-
-### Step 1: Download and Install Binary
-
-```bash
-# Download latest release from GitHub
-wget https://github.com/jedarden/irreversible-command-gate/releases/latest/download/icg-linux-x86_64.tar.gz
-
-# Extract and install
-tar -xzf icg-linux-x86_64.tar.gz
-sudo cp icg /usr/local/bin/icg
-sudo chmod 0755 /usr/local/bin/icg
-sudo chown root:root /usr/local/bin/icg
-
-# Verify installation
-icg --version
+```text
+Claude Code or local Codex CLI
+        │  PreToolUse JSON on stdin
+        ▼
+    icg hook
+        │  deny / updatedInput / additionalContext JSON
+        ▼
+     harness
 ```
 
-### Step 2: Install Rule Pack
+The `icg wrapper` subcommand is not a production wrapper yet. It currently
+parses and prints command segments and then allows the invocation; it does
+not locate or execute the real `git`, `vault`, or other binary. Do not create
+PATH-shadowing symlinks to this build. The native hook is the deployment
+mechanism to install.
+
+The guard is a backstop for honest mistakes, not a boundary against a
+malicious process. Local host hooks do not cover cloud-hosted agent jobs,
+direct library calls, or tools that bypass the configured hook. Keep the
+harness's own approval and sandbox controls enabled.
+
+## Choose an installation scenario
+
+| Scenario | Use this procedure | Network needed at runtime |
+| --- | --- | --- |
+| Build and test on one host | [Source installation](#source-installation) plus [direct smoke test](#7-verify-the-installation) | No |
+| Install for Claude Code | Source installation plus [Claude Code hook](#claude-code) | No |
+| Install for local Codex CLI | Source installation plus [Codex CLI hook](#codex-cli) | No |
+| Host has no release-network access | [Offline/manual rule-pack installation](#offline-or-manual-rule-pack-installation) | No, after artifacts are copied |
+| Roll out a canary release | [Channel-specific rollout](#channel-specific-rollout) | Only when running `icg update` |
+| Install an approved binary release | [Package and artifact distribution](#package-and-artifact-distribution) | Depends on the artifact source |
+
+## System requirements
+
+### Runtime host
+
+- A Unix-like host with the Linux layout used by the deployment (`/usr/local/bin`,
+  `/etc/icg`, and `/var/cache/icg`). Linux is the supported production target.
+- A user account that can read `/usr/local/bin/icg` and `/etc/icg/rule-pack.json`.
+- Root or an equivalent deployment identity to install the binary and
+  administrator-controlled artifacts.
+- Claude Code or a local Codex CLI version that supports a `PreToolUse`
+  command hook, if hook integration is wanted. Hook configuration is owned by
+  each harness and can change; verify the version's current hook schema before
+  applying it.
+- `curl` or another approved artifact-transfer tool is useful for manual
+  distribution. It is not required by `icg hook`.
+
+`icg hook` evaluates commands without network access. Only `icg update` talks
+to the GitHub Releases API, and it does so once when explicitly invoked.
+
+### Build host
+
+Building from this repository requires:
+
+- Rust and Cargo (stable is recommended; the crate uses Rust edition 2021).
+- A C compiler and linker.
+- `pkg-config` and OpenSSL development headers because the current `reqwest`
+  dependency uses the platform TLS backend.
+
+On Debian or Ubuntu, the usual prerequisites are:
 
 ```bash
-# Create rule pack directory
-sudo mkdir -p /etc/icg
-
-# Download latest rule pack
-sudo wget -O /etc/icg/rule-pack.json https://github.com/jedarden/irreversible-command-gate/releases/latest/download/rule-pack.json
-
-# Set permissions
-sudo chmod 0644 /etc/icg/rule-pack.json
-sudo chown root:root /etc/icg/rule-pack.json
+sudo apt-get update
+sudo apt-get install --yes build-essential pkg-config libssl-dev
 ```
 
-### Step 3: Initialize Trust Pointer
+On Fedora or RHEL-like systems, use the equivalent packages:
 
 ```bash
-# Create trust pointer pointing to current release
-sudo tee /etc/icg/trust-pointer.json > /dev/null <<EOF
-{
-  "schema_version": 1,
-  "trusted_release": "v0.1.0",
-  "last_updated": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "update_source": "github-releases"
-}
-EOF
-
-sudo chmod 0644 /etc/icg/trust-pointer.json
-sudo chown root:root /etc/icg/trust-pointer.json
+sudo dnf install gcc gcc-c++ make pkgconf-pkg-config openssl-devel
 ```
 
-### Step 4: Configure Hook Integration
+The repository does not currently declare an MSRV, provide a vendored OpenSSL
+build, or ship a Windows installer. Confirm the toolchain and OS used by the
+release process when producing a fleet artifact.
 
-#### For Claude Code
+### Resource and permission expectations
+
+The guard is not a long-running service. Each hook call starts a short-lived
+process and loads the rule pack, so plan for process-start and JSON parsing
+overhead rather than daemon memory.
+
+Production deployment should use this ownership model:
+
+| Path | Purpose | Suggested owner and mode |
+| --- | --- | --- |
+| `/usr/local/bin/icg` | Guard executable | `root:root`, `0755` |
+| `/etc/icg/` | Release-controlled configuration | `root:root`, not world-writable |
+| `/etc/icg/rule-pack.json` | Active rule pack | `root:root`, `0644` |
+| `/etc/icg/trust-pointer.json` | Trusted release reference | `root:root`, `0644` |
+| `/etc/icg/last-update-check.json` | Updater bookkeeping | `root:root`, `0644` |
+| `/var/cache/icg/telemetry.json` | Rolling evaluation telemetry | writable by the hook identity, if telemetry is wanted |
+
+The rule pack and trust pointer must not be writable by the agent process. The
+current hook initializes its telemetry store before evaluating input, so the
+hook identity must be able to create/read `/var/cache/icg/telemetry.json`.
+Later telemetry processing and persistence errors are reported as warnings,
+but a permission failure during initialization can prevent that invocation
+from returning a decision.
+
+## Source installation
+
+This is the reproducible installation path when a prebuilt, approved binary
+is not available.
+
+### 1. Obtain and inspect the source
+
+Use the repository commit that was approved for the deployment. Do not build
+from an unreviewed working tree.
 
 ```bash
-# Edit Claude Code settings
-cat >> ~/.claude/settings.json <<EOF
+git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+cd irreversible-command-gate
+git status --short
+git rev-parse HEAD
+```
 
+If the repository is private in your environment, authenticate to Forgejo by
+the organization's normal mechanism. Keep credentials out of command output
+and do not put them in a rule pack or hook configuration.
+
+### 2. Build and test
+
+```bash
+cargo test --locked
+cargo build --release --locked
+```
+
+Install only the resulting binary, not the repository's `target` directory:
+
+```bash
+sudo install -o root -g root -m 0755 \
+  target/release/icg /usr/local/bin/icg
+```
+
+For a developer-only installation, `cargo install --path . --locked` is
+convenient, but a user-owned `~/.cargo/bin/icg` is not an acceptable location
+for a production guard or its rule pack.
+
+### 3. Create protected directories
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/icg
+sudo install -d -o root -g root -m 0750 /var/cache/icg
+```
+
+The hook identity must be able to create or update the telemetry file if you
+intend to use telemetry. If the hook runs as an unprivileged user, have the
+deployment system grant only the required cache-directory access; never make
+`/etc/icg` user-writable just to solve a cache permission problem.
+
+### 4. Install an approved rule pack
+
+The source tree contains test fixtures, not a general-purpose production rule
+pack. Copy the exact rule-pack artifact from the release record supplied by
+the release approver:
+
+```bash
+sudo install -o root -g root -m 0644 \
+  /path/to/approved/rule-pack.json /etc/icg/rule-pack.json
+```
+
+Do not use `tests/fixtures/current-release-clean.json` as a production policy;
+it is a test manifest with intentionally limited coverage. It is suitable for
+the local smoke test below.
+
+### 5. Initialize the trust pointer
+
+The trust pointer is a separate, exact release reference. It is not a
+`latest` alias. Set it only to the release that passed the project's Layer 1
+regression/coverage checks and Layer 2 human review.
+
+```bash
+sudo /usr/local/bin/icg trust set vX.Y.Z \
+  --justification "Approved release record: <ticket-or-review-reference>"
+sudo /usr/local/bin/icg trust show
+sudo /usr/local/bin/icg trust check vX.Y.Z
+```
+
+The command writes `/etc/icg/trust-pointer.json`. If a release has not yet
+been published to the updater's configured release repository, do not run
+`icg update`; install the approved artifact manually and record the exact
+artifact-to-release mapping in the deployment record.
+
+### 6. Connect the hook
+
+Install the hook in the harness configuration that is actually used on the
+host. The hook command must be an absolute path so it does not depend on the
+agent's working directory or PATH.
+
+#### Claude Code
+
+Add a `PreToolUse` command hook to `~/.claude/settings.json` for the tools
+whose input should be checked. Merge this into an existing `hooks` object;
+do not overwrite unrelated settings:
+
+```json
 {
   "hooks": {
-    "PreToolUse": {
-      "bash": "/usr/local/bin/icg hook",
-      "apply_patch": "/usr/local/bin/icg hook"
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 ```
 
-#### For Codex CLI
+`Bash` supplies command-mode input. `Write` and `Edit` supply file content
+for content-mode packs such as image-tag and storage-class checks. Claude Code
+uses the `tool_name`/`tool_input` payload shape; `icg` also accepts the
+camelCase spelling used by older fixtures.
 
-```bash
-# Create Codex hooks configuration
-mkdir -p ~/.codex
-cat > ~/.codex/hooks.json <<EOF
+Confirm the hook appears in Claude Code's hook inspection UI or diagnostics
+before relying on it. Hook matchers are case-sensitive. If the host uses a
+managed settings policy, place the hook in the administrator-controlled
+location instead of weakening that policy.
+
+#### Codex CLI
+
+For a local Codex CLI that supports native `PreToolUse` command hooks, add the
+equivalent handler to the supported user or project hook configuration. A
+typical configuration shape is:
+
+```json
 {
-  "PreToolUse": {
-    "bash": "/usr/local/bin/icg hook",
-    "apply_patch": "/usr/local/bin/icg hook"
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 ```
 
-### Step 5: Set Up PATH-Wrapper Symlinks (Optional)
+Use the file and schema documented by the installed Codex CLI version. The
+current adapter accepts `Bash` command input and Codex `apply_patch` input,
+including patches that touch multiple files. A cloud-hosted Codex job does
+not execute this host's `/usr/local/bin/icg` and is outside this deployment.
+
+### 7. Verify the installation
+
+First verify the files and pointer:
 
 ```bash
-# Create wrapper directory
-sudo mkdir -p /usr/local/libexec/icg-wrappers
-
-# Add to PATH before system binaries
-# Add to /etc/environment or ~/.bashrc:
-export PATH="/usr/local/libexec/icg-wrappers:$PATH"
-
-# Create symlinks for guarded binaries
-sudo ln -sf /usr/local/bin/icg /usr/local/libexec/icg-wrappers/vault
-sudo ln -sf /usr/local/bin/icg /usr/local/libexec/icg-wrappers/git
-sudo ln -sf /usr/local/bin/icg /usr/local/libexec/icg-wrappers/bao
-```
-
-### Step 6: Verify Installation
-
-```bash
-# Test basic functionality
-icg check --command "vault status"
-
-# Test hook integration (in a Claude Code or Codex session)
-# Try a denied operation:
-#vault kv destroy secret/test
-```
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Purpose | Default | Notes |
-|----------|---------|---------|-------|
-| `ICG_FAIL_CLOSED` | Enable fail-closed mode | `false` | Only enable after reliability validation |
-| `ICG_RULE_PACK_PATH` | Override rule pack location | `/etc/icg/rule-pack.json` | For testing only |
-| `ICG_STATE_PATH` | Override state store location | `/var/lib/icg/state.json` | For testing only |
-| `ICG_LOG_LEVEL` | Logging verbosity | `info` | Options: `error`, `warn`, `info`, `debug`, `trace` |
-
-### Fail-Closed Mode
-
-**WARNING**: Only enable after 90+ days of crash-free production operation.
-
-```bash
-# Enable fleet-wide
-sudo tee /etc/icg/fail-closed.conf > /dev/null <<EOF
-ICG_FAIL_CLOSED=true
-EOF
-
-# Enable per-session
-export ICG_FAIL_CLOSED=true
-```
-
-See `fail-closed-transition.md` for graduation criteria and procedures.
-
-### Rule Pack Overrides
-
-For repository-specific overrides (e.g., allowing a pattern in one repo):
-
-```bash
-# Create override file (requires Layer 1/2 approval via release pipeline)
-icg override create --repo /path/to/repo \
-  --pattern-id "vault-destructive" \
-  --justification "Legacy vault migration in progress"
-```
-
-## Maintenance Procedures
-
-### Daily Operations
-
-```bash
-# Check guard health
+command -v icg
+icg --version
+stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg/rule-pack.json /etc/icg/trust-pointer.json
+icg trust show
 icg status
-
-# View recent denials
-icg status --denials --since 24h
-
-# Check for updates
-icg update --check-only
 ```
 
-### Updating Rule Packs
+Then exercise the hook directly with a known test command. This does not
+execute the command; it only invokes the guard:
 
 ```bash
-# Check for available updates
-icg update --check-only
-
-# Preview what would change
-icg update --dry-run
-
-# Apply update
-icg update
-
-# Verify after update
-icg regression-suite verify /etc/icg/rule-pack.json
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault kv destroy secret/test"}}' \
+  | icg hook --rule-pack /etc/icg/rule-pack.json
 ```
 
-### Monitoring
-
-#### Key Metrics
-
-- **Guard uptime**: Time since last guard crash/restart
-- **Denial rate**: Percentage of operations denied (alert if >1%)
-- **Rule pack version**: Currently active release
-- **Health status**: Overall system health
-
-#### Health Checks
+For a pack containing that rule, the output should contain
+`"permissionDecision":"deny"`. A safe command should produce an empty JSON
+object or an allow decision:
 
 ```bash
-# Basic health check
-icg health
-
-# Detailed diagnostics
-icg health --verbose
-
-# Check specific components
-icg health --component engine
-icg health --component rule-pack
-icg health --component state-store
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault status"}}' \
+  | icg hook --rule-pack /etc/icg/rule-pack.json
 ```
 
-### Log Analysis
-
-icg logs to stderr by default. Configure log aggregation:
+Test content-mode input separately when the installed pack covers it:
 
 ```bash
-# Journal-based logging (systemd)
-journalctl -u icg -f
-
-# File-based logging
-icg check --command "test" 2> /var/log/icg.log
+printf '%s\n' '{"tool_name":"Write","tool_input":{"filePath":"deploy/app.yaml","content":"storageClassName: ssd\n"}}' \
+  | icg hook --rule-pack /etc/icg/rule-pack.json
 ```
 
-## Deployment Patterns
+Finally run one real, non-destructive command through the configured harness
+and inspect its hook diagnostics. Never use a real Vault destroy, force-push,
+secret deletion, or other destructive operation as an installation test.
 
-### Single Host Deployment
+## Common deployment configurations
 
-Simplest pattern for individual workstations:
+### Hook-only workstation
+
+For one developer workstation, install the binary and rule pack under the
+protected system paths, then configure only the local harness hook. This is
+the smallest useful deployment. Do not install PATH symlinks for the current
+`wrapper` scaffold.
+
+### Shared host with both harnesses
+
+Install one root-owned binary and rule pack, then configure both Claude Code
+and local Codex CLI to call that same absolute path. Both adapters use the
+same rule-pack format and engine. Test each harness independently because
+their hook registration and failure behavior are separate.
+
+### Offline or manual rule-pack installation
+
+When a host cannot reach the release API, an administrator can transfer the
+approved JSON artifact through the organization's existing signed/controlled
+distribution path and install it with `install` as shown above. Set the trust
+pointer to the release reference recorded with that artifact, but do not run
+`icg update` on the offline host. Keep the previous artifact until the new
+one has passed the direct hook smoke tests.
+
+### Channel-specific rollout
+
+Channels select a different trust-pointer file. The updater still writes the
+artifact path you specify, so a canary must use a separate artifact and hook
+configuration if it shares a host with the stable channel:
 
 ```bash
-# Install as above
-# No additional coordination needed
+sudo icg trust set --channel canary vX.Y.Z \
+  --justification "Canary cohort approved for vX.Y.Z"
+sudo icg update --channel canary \
+  --artifact-path /etc/icg/rule-pack-canary.json
+sudo icg trust show --channel canary
 ```
 
-### Fleet Deployment
+Configure the canary hook with the matching pack:
 
-For coordinated fleet rollouts:
-
-#### 1. Canary Deployment
-
-```bash
-# Deploy to canary subset first
-export ICG_CANARY_ID="workstation-001"
-icg update --canary
-
-# Monitor for 7 days
-icg status --health --since 7d
-
-# Rollout to rest of fleet if successful
-icg update --fleet-wide
+```text
+/usr/local/bin/icg hook --rule-pack /etc/icg/rule-pack-canary.json
 ```
 
-#### 2. NEEDLE Worker Integration
+The current `icg status --channel` command reports the default artifact path,
+not an arbitrary `--artifact-path`; use `icg trust show --channel` and inspect
+the canary file explicitly when using this layout. Do not advance the stable
+pointer until the canary observation and release review are complete.
 
-For NEEDLE fleet deployments:
+### Release-bound repository override
 
-```bash
-# Set worker identifier
-export NEEDLE_WORKER_ID="$(hostname)"
+An override is not a local disable switch. It is a reviewed
+`overrides/<repo>.toml` release artifact whose `release_ref` must equal the
+host's trusted reference, whose expiry and 90-day re-justification dates must
+be current, and whose rule IDs must exist in the loaded pack.
 
-# Deploy with canary identifier
-icg update --identifier "$NEEDLE_WORKER_ID"
+When an approved deployment requires one, pass all three hook options:
+
+```text
+/usr/local/bin/icg hook \
+  --rule-pack /etc/icg/rule-pack.json \
+  --override-file /path/to/overrides/example.toml \
+  --repository jedarden/example \
+  --trusted-ref vX.Y.Z
 ```
 
-#### 3. Coordinated Rollout
+Supplying only some of these options is an error. See
+[`per-repo-overrides.md`](../notes/per-repo-overrides.md) for the manifest
+schema and release-gate commands.
+
+## Upgrades and version migration
+
+There are two independently versioned things to upgrade: the executable and
+the rule-pack artifact. Upgrade them deliberately and keep a known-good copy
+of both.
+
+### Upgrade the executable from source
+
+1. Select the reviewed commit or tag.
+2. Run `cargo test --locked` and `cargo build --release --locked` from that
+   source.
+3. Back up the current binary and record its checksum.
+4. Install the new binary to `/usr/local/bin/icg` with root ownership and
+   mode `0755`.
+5. Re-run `icg --version`, the direct deny/allow hook smoke tests, and one
+   harness-level test.
+
+Because the guard is per-invocation, new hook calls use the new binary without
+a service restart. A hook process already running continues with the binary
+it already loaded.
+
+Example backup and replacement:
 
 ```bash
-# On orchestration host
-for host in workstation-001 workstation-002 workstation-003; do
-  ssh $host "icg update && icg status"
-done
+sudo cp --preserve=mode,ownership \
+  /usr/local/bin/icg /usr/local/bin/icg.previous
+sha256sum /usr/local/bin/icg /usr/local/bin/icg.previous
+sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 ```
 
-## Troubleshooting Installation
+### Upgrade a rule pack with the self-updater
 
-### Installation Fails
+The updater does not discover or choose a latest release. It reads the exact
+reference from the trust pointer, requests that tag from the configured GitHub
+Releases API, downloads an asset whose name contains `rule-pack`, and
+atomically replaces `/etc/icg/rule-pack.json`.
 
-**Symptom**: Permission denied during installation
+After Layer 1 and Layer 2 approval of a release:
 
-**Solution**:
 ```bash
-# Ensure running with sudo
-sudo -i
+sudo cp --preserve=mode,ownership \
+  /etc/icg/rule-pack.json /etc/icg/rule-pack.previous.json
 
-# Verify directories exist
-sudo mkdir -p /usr/local/bin /etc/icg
-
-# Check disk space
-df -h /usr/local /etc
+sudo icg trust set vX.Y.Z \
+  --justification "Layer 1 passed; Layer 2 approved <review-reference>"
+sudo icg trust check vX.Y.Z
+sudo icg update
+sudo icg status
 ```
 
-### Hook Not Triggering
+If the updater cannot find the pointer, release, or matching asset, it exits
+without a successful update. The download is written to a temporary file and
+renamed into place only after the download completes. `icg update` updates the
+rule pack only; it does not upgrade `/usr/local/bin/icg`. The current updater
+does not validate a checksum or signature itself, so the operator must bind
+the selected release asset to the approved release record and verify any
+required provenance before advancing the pointer.
 
-**Symptom**: Commands execute without guard evaluation
+### Version migration checklist
 
-**Solution**:
+For each release, record:
+
+- old and new executable commit/version;
+- old and new trusted release references;
+- rule-pack artifact checksum and source release;
+- the `regression-suite` result and `coverage-diff/v1` report;
+- any new, removed, disabled, narrowed, or widened rules;
+- the canary cohort and observation result, if used; and
+- every repository override whose `release_ref`, expiry, or justification
+  changed.
+
+Run the release checks before changing the pointer:
+
 ```bash
-# Verify hook configuration
-cat ~/.claude/settings.json | grep -A5 hooks
-cat ~/.codex/hooks.json
-
-# Test hook directly
-echo '{"name":"bash","input":{"command":"vault kv destroy secret/test"}}' | icg hook
-
-# Check binary is executable
-which icg
-ls -la /usr/local/bin/icg
+icg regression-suite path/to/current-release.json \
+  --output /tmp/icg-regression-suite.json
+icg coverage-diff path/to/previous-release.json \
+  path/to/current-release.json
 ```
 
-### PATH-Wrapper Not Working
+A coverage regression requires a non-blank `--justification` and human review;
+that flag is evidence for review, not a substitute for it. If an override is
+present, use `--previous-override` and `--current-override` as described in
+[`per-repo-overrides.md`](../notes/per-repo-overrides.md).
 
-**Symptom**: Real binary executes instead of wrapper
+There is no automatic schema migration for an arbitrary rule-pack file and
+there is no `icg update --rollback-to` command. Treat a malformed or
+incompatible artifact as a failed deployment and restore the last-known-good
+artifact and pointer:
 
-**Solution**:
 ```bash
-# Check symlink exists
-ls -la /usr/local/libexec/icg-wrappers/git
-
-# Verify PATH order
-echo $PATH | tr ':' '\n' | grep icg-wrappers
-
-# Test wrapper directly
-/usr/local/libexec/icg-wrappers/vault version
+sudo install -o root -g root -m 0644 \
+  /etc/icg/rule-pack.previous.json /etc/icg/rule-pack.json
+sudo icg trust set vPREVIOUS \
+  --justification "Rollback to last-known-good deployment"
+sudo icg trust check vPREVIOUS
 ```
 
-## Backup and Recovery
+If the previous artifact is available from the approved release repository,
+the pointer can instead be set to `vPREVIOUS` and `sudo icg update` can fetch
+it. Re-run the smoke tests after either rollback path.
 
-### Backup Configuration
+### Fail-closed migration caution
+
+`ICG_FAIL_CLOSED=true` is an engine setting exposed for the fail-closed
+transition work. It is not a substitute for a complete harness-level
+fail-closed deployment in the current tree: unknown tools, telemetry failures,
+and hook registration failures still need explicit operational handling. Do
+not enable it fleet-wide based only on this guide. Follow
+[`fail-closed-transition.md`](../design/fail-closed-transition.md), validate
+the harness behavior, and obtain the required operational approval first.
+
+## Package and artifact distribution
+
+The repository currently provides a Cargo project and release-integrity
+commands. It does not currently commit a Debian/RPM/Homebrew package,
+container image, installer script, checksum/signature manifest, or a release
+workflow that this guide can safely treat as an always-available download.
+
+Accordingly:
+
+- Source builds are the supported installation path in this checkout.
+- `cargo install --path .` is a developer convenience, not a protected fleet
+  installation.
+- A prebuilt binary may be used only when it comes from an approved release
+  record and its architecture, checksum, and provenance have been verified by
+  the operator.
+- Do not copy a guessed `/releases/latest/download/...` URL into automation.
+  The exact asset name and release reference must come from the release record.
+- `icg update` downloads only a rule-pack asset from the configured GitHub
+  release; it never installs or upgrades the binary.
+- The current updater does not perform checksum or signature verification;
+  downstream packaging or deployment automation must do that before invoking
+  the updater or staging an artifact.
+
+If a downstream package is created, it should install the binary at
+`/usr/local/bin/icg` or the distribution's administrator-controlled equivalent,
+create `/etc/icg` without user write access, preserve the rule-pack and trust
+pointer across binary upgrades, and run the hook smoke test as a package
+post-install check. The package must not silently set the trust pointer to a
+moving release alias.
+
+## Installation troubleshooting
+
+### `cargo build` fails while compiling TLS dependencies
+
+Install the build prerequisites for the host (`build-essential pkg-config
+libssl-dev` on Debian/Ubuntu, or the Fedora/RHEL equivalents above), then
+rerun `cargo build --release --locked`. If the release build used a different
+toolchain, use that pinned toolchain rather than weakening the TLS dependency.
+
+### `icg: command not found`
+
+Check the installed path and the invoking user's PATH:
 
 ```bash
-# Backup rule pack and trust pointer
-sudo tar -czf /backups/icg-config-$(date +%F).tar.gz /etc/icg/
-
-# Backup state (if using Tier 2 rules)
-sudo cp /var/lib/icg/state.json /backups/icg-state-$(date +%F).json
+command -v icg || true
+ls -l /usr/local/bin/icg
+echo "$PATH"
 ```
 
-### Recovery Procedures
+Use `/usr/local/bin/icg` in the hook configuration even if an interactive
+shell resolves `icg` correctly.
 
-#### Restore from Backup
+### Permission denied reading or writing `/etc/icg`
+
+Check the directory and file ownership without making them writable by the
+agent:
 
 ```bash
-# Stop any active sessions
-# Extract backup
-sudo tar -xzf /backups/icg-config-2026-08-16.tar.gz -C /
+namei -l /etc/icg/rule-pack.json
+stat -c '%U:%G %a %n' /etc/icg /etc/icg/rule-pack.json /etc/icg/trust-pointer.json
+```
 
-# Verify restoration
+Use `sudo install` for deployment operations. The normal hook only needs read
+access to the rule pack and trust pointer; an operator running `trust set` or
+`update` needs the corresponding administrator privilege.
+
+### The direct hook test returns `{}` for every command
+
+That is the expected fail-open behavior when no pack is loaded or when the
+input is for an unrecognized tool. Confirm:
+
+```bash
+test -r /etc/icg/rule-pack.json
 icg status
-icg health
 ```
 
-#### Emergency Rollback
+Then pass the pack explicitly with `--rule-pack` and test a command that the
+pack actually contains. A test fixture is not evidence that the production
+pack has the same rules.
+
+### The hook never fires in the harness
+
+Check all of the following:
+
+1. The harness configuration is in the scope actually loaded (user, project,
+   or managed policy).
+2. The event is `PreToolUse` and the matcher uses the exact tool name and
+   capitalization.
+3. The command is an absolute executable path and is executable by the hook
+   user.
+4. The hook receives JSON on stdin and has no diagnostic text on stdout.
+5. The direct pipe test works outside the harness.
+
+For Claude Code, use its hook inspection/diagnostics command and verify the
+`Bash|Write|Edit` matcher. For Codex CLI, verify that the installed version
+supports native `PreToolUse` hooks and use its current configuration path.
+
+### The hook reports invalid JSON or missing fields
+
+The required envelope is:
+
+```json
+{
+  "tool_name": "Bash",
+  "tool_input": {"command": "git status"}
+}
+```
+
+For `Write`, supply `filePath` and `content`; for `Edit`, supply `filePath`,
+`oldString`, and `newString`; for Codex `apply_patch`, supply the patch in the
+`command` field. Do not wrap the JSON in shell diagnostics or send multiple
+JSON objects to one invocation.
+
+### The rule pack is valid JSON but still does not load
+
+`icg` supports JSON and TOML pack loading based on the file extension, but the
+hook's default is `/etc/icg/rule-pack.json`. Check that the file extension,
+permissions, and manifest schema match the release artifact. A malformed pack
+causes the invocation to fail open and reports the failure to stderr. Replace
+it with the last-known-good artifact rather than editing a production pack in
+place.
+
+### `icg trust show` says no pointer exists
+
+Initialize it with the exact approved release reference:
 
 ```bash
-# Rollback to previous trusted release
-icg update --rollback-to v0.0.9
-
-# If rule pack is corrupted
-sudo wget -O /etc/icg/rule-pack.json \
-  https://github.com/jedarden/irreversible-command-gate/releases/download/v0.0.9/rule-pack.json
+sudo icg trust set vX.Y.Z --justification "<review reference>"
+sudo icg trust show
 ```
 
-## Security Considerations
+For a channel, use `--channel NAME` on both `trust` and `update`. A custom
+`--trust-pointer-path` is useful for tests and isolated staging, but the
+default production pointer belongs under `/etc/icg`.
 
-### Deployment Security
+### `icg update` cannot reach the release or find an asset
 
-- **Binary ownership**: Must be `root:root` to prevent agent modification
-- **Rule pack ownership**: Must be `root:root` to prevent agent modification
-- **Trust pointer**: Only updated via release pipeline, not manual edits
-- **State directory**: Should be root-owned and mode `0700`
-
-### Update Security
-
-- Updates are user-triggered, not automatic
-- Only adopts releases verified by release-integrity pipeline
-- Trust pointer ensures untrusted releases can't be loaded
-- Poison-pill mechanism auto-rolls back bad releases
-
-### Operational Security
-
-- Monitor denial rate for anomalies (may indicate compromised rule pack)
-- Review trust pointer changes in audit logs
-- Never manually edit `/etc/icg/trust-pointer.json` (use `icg update`)
-- Keep backup of known-good rule pack releases
-
-## Performance Considerations
-
-### Overhead
-
-- **Per-command overhead**: ~1-5ms for typical command evaluation
-- **PATH-wrapper overhead**: ~1ms additional process spawn time
-- **Memory footprint**: ~10-20MB resident set (no daemon)
-
-### Optimization
+The updater needs network access to `https://api.github.com`, a trust pointer,
+an exact release reference, and a release asset whose name contains
+`rule-pack`. Check these in order:
 
 ```bash
-# Use PATH-wrapper for frequently-used binaries (faster than hook for raw commands)
-# Disable debug logging in production
-export ICG_LOG_LEVEL=error
-
-# Use state store only when Tier 2 rules are needed
+icg trust show
+curl --fail --silent --show-error https://api.github.com/repos/jedarden/irreversible-command-gate/releases/tags/vX.Y.Z >/dev/null
 ```
 
-## Compliance and Auditing
+Use the manual artifact procedure for an intentionally offline host. Do not
+change the trust pointer to `latest` to work around an unavailable tag.
 
-### Audit Log
+### Telemetry warnings mention `/var/cache/icg`
+
+Telemetry is auxiliary to the immediate hook verdict. Give the hook identity
+the narrowly scoped ability to write `/var/cache/icg`, or accept that the
+rolling baseline is unavailable while the rule evaluation continues. Do not
+make `/etc/icg` writable. Inspect the file with:
 
 ```bash
-# View denial history
-icg audit --since 30d
-
-# Export for compliance
-icg audit --since 90d --format json > /compliance/icg-audit-90d.json
+sudo icg telemetry status
 ```
 
-### Compliance Reports
+### A PATH wrapper does not block a command
+
+This is expected for the current repository state. `icg wrapper` is a parser
+scaffold and does not execute a real binary or enforce a rule pack. Remove any
+experimental symlink and rely on the native hook until a completed wrapper
+implementation is released and documented.
+
+### A deployment must be rolled back
+
+Do not use an undocumented flag or delete the active configuration. Restore a
+known-good rule pack, point the trust pointer to the corresponding exact
+release, and repeat the direct hook tests:
 
 ```bash
-# Generate compliance summary
-icg compliance-report --period 90d
+sudo install -o root -g root -m 0644 \
+  /etc/icg/rule-pack.previous.json /etc/icg/rule-pack.json
+sudo icg trust set vPREVIOUS --justification "Incident rollback"
+sudo icg trust check vPREVIOUS
 ```
 
-## Next Steps
+Preserve the failed artifact, stderr, trust-pointer contents, and deployment
+commit for incident review. Never use a real destructive operation to prove
+that rollback succeeded.
 
-After completing installation:
+## Operational references
 
-1. Read `troubleshooting.md` for common issues and solutions
-2. Review `deny-messages.md` to understand how to interpret and respond to denials
-3. If migrating from `org-rule-guard.py`, see `migration-from-org-rule-guard.md`
-4. Configure monitoring and alerting for guard health
-5. Set up regular rule pack updates (weekly or bi-weekly recommended)
-
-## Support and Resources
-
-- **Issues**: https://github.com/jedarden/irreversible-command-gate/issues
-- **Documentation**: `docs/` directory in repository
-- **Architecture**: See `docs/plan/plan.md` for detailed design
-- **Design Notes**: See `docs/notes/` for individual design decisions
+- [Operator documentation index](README.md)
+- [Deny-message interpretation](deny-messages.md)
+- [Migration from `org-rule-guard.py`](migration-from-org-rule-guard.md)
+- [Fail-closed transition design](../design/fail-closed-transition.md)
+- [Release-cutting runbook](../runbooks/release-cutting.md)
+- [Per-repository overrides](../notes/per-repo-overrides.md)
