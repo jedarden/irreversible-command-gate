@@ -98,6 +98,12 @@ struct GitHubRelease {
 pub struct UpdateConfig {
     /// GitHub repository (owner/repo format)
     pub repository: String,
+    /// Base URL for the GitHub Releases API.
+    ///
+    /// Production uses the public GitHub API.  Keeping the endpoint in the
+    /// configuration also lets integration tests exercise the complete update
+    /// path against a local release fixture without making network calls.
+    pub release_api_base_url: String,
     /// Rule pack artifact name pattern to download
     pub artifact_pattern: String,
     /// Where to store the rule pack artifact
@@ -123,6 +129,7 @@ impl Default for UpdateConfig {
 
         Self {
             repository: "jedarden/irreversible-command-gate".to_string(),
+            release_api_base_url: "https://api.github.com".to_string(),
             artifact_pattern: "rule-pack".to_string(),
             artifact_path,
             trust_pointer_path: PathBuf::from("/etc/icg/trust-pointer.json"),
@@ -197,7 +204,12 @@ async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
     println!("📋 Trusted reference: `{}`", trusted_ref);
 
     // Check GitHub Releases API for the release
-    let release = fetch_github_release(&config.repository, &trusted_ref).await?;
+    let release = fetch_github_release(
+        &config.release_api_base_url,
+        &config.repository,
+        &trusted_ref,
+    )
+    .await?;
 
     println!("🔍 Found release: {} ({})", release.name, release.tag_name);
 
@@ -245,7 +257,11 @@ async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
 }
 
 /// Fetch a release from GitHub
-async fn fetch_github_release(repository: &str, reference: &str) -> Result<GitHubRelease> {
+async fn fetch_github_release(
+    release_api_base_url: &str,
+    repository: &str,
+    reference: &str,
+) -> Result<GitHubRelease> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -253,8 +269,10 @@ async fn fetch_github_release(repository: &str, reference: &str) -> Result<GitHu
 
     // Try to fetch by tag first, then by commit SHA if that fails
     let url = format!(
-        "https://api.github.com/repos/{}/releases/tags/{}",
-        repository, reference
+        "{}/repos/{}/releases/tags/{}",
+        release_api_base_url.trim_end_matches('/'),
+        repository,
+        reference
     );
 
     println!("🌐 Checking GitHub Releases API: {}", url);
