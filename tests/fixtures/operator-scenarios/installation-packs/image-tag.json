@@ -1,0 +1,23 @@
+{
+  "id": "image-tag",
+  "tool_keywords": [],
+  "applies_to": ["*.yaml", "*.yml"],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "latest-tag",
+      "enabled": true,
+      "type": "content_regex",
+      "regex": "(?m)^[ \\t]*image:[ \\t]*[^#\\n]*:latest[ \\t]*$",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Using :latest image tag prevents reproducible deployments",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Pin this image to a specific version before deploying.",
+        "rewrite_template": null
+      },
+      "destructive": true
+    }
+  ]
+}

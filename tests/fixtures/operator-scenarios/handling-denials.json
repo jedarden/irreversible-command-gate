@@ -1,0 +1,32 @@
+{
+  "scenario": "Handling Denials",
+  "pack": {
+    "id": "vault",
+    "tool_keywords": ["vault"],
+    "applies_to": [],
+    "safe_patterns": [],
+    "guarded_patterns": [
+      {
+        "id": "vault-kv-destroy",
+        "enabled": true,
+        "type": "command_regex",
+        "regex": "vault kv destroy",
+        "tier": "tier1",
+        "severity": "Critical",
+        "explanation": "This operation would permanently destroy secret data and cannot be undone.",
+        "redirect": {
+          "channel": "deny",
+          "reason_template": "Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.",
+          "rewrite_template": null
+        },
+        "destructive": true
+      }
+    ]
+  },
+  "denied_command": "vault kv destroy secret/app/api-key",
+  "safe_commands": [
+    "vault kv patch secret/app/api-key -remove=expired_field",
+    "vault kv get secret/app/api-key"
+  ],
+  "explain_pattern": "vault-kv-destroy"
+}

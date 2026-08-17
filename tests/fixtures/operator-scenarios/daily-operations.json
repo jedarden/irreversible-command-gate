@@ -1,0 +1,35 @@
+{
+  "scenario": "Daily Operations",
+  "denials": [
+    {
+      "timestamp": "2026-08-16T10:23:45Z",
+      "packId": "vault",
+      "patternId": "vault-kv-destroy",
+      "severity": "Critical",
+      "command": "vault kv destroy secret/app/api-key",
+      "reason": "vault kv destroy is permanently destructive and cannot be undone",
+      "sessionId": "session-456",
+      "telemetryId": "den-abc123"
+    },
+    {
+      "timestamp": "2026-08-16T10:15:32Z",
+      "packId": "git",
+      "patternId": "git-force-push",
+      "severity": "Critical",
+      "command": "git push --force origin main",
+      "reason": "git push --force would rewrite public history",
+      "sessionId": "session-789",
+      "telemetryId": "den-def456"
+    },
+    {
+      "timestamp": "2026-08-16T09:58:17Z",
+      "packId": "image-tag",
+      "patternId": "latest-tag",
+      "severity": "High",
+      "command": "Write: deployment.yaml with content 'image: nginx:latest'",
+      "reason": "image tag :latest is not pinned to a specific version",
+      "sessionId": "session-123",
+      "telemetryId": "den-ghi789"
+    }
+  ]
+}

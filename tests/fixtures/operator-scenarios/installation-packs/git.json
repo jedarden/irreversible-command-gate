@@ -1,0 +1,23 @@
+{
+  "id": "git",
+  "tool_keywords": ["git"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "git-force-push",
+      "enabled": true,
+      "type": "command_regex",
+      "regex": "git push.*--force",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "git push --force would rewrite public history",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Use git push --force-with-lease after reviewing the remote branch.",
+        "rewrite_template": null
+      },
+      "destructive": true
+    }
+  ]
+}

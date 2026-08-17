@@ -1,0 +1,12 @@
+{
+  "scenario": "Emergency Response",
+  "incident": {
+    "service": "auth-api",
+    "issue": "Vault policy deleted, breaking authentication",
+    "action": "Bypassing icg to restore policy",
+    "justification": "Service down, users affected"
+  },
+  "bypass_command": "vault policy write auth-policy auth-policy.hcl",
+  "denial_id": "den-abc123",
+  "restored_health": "✓ icg is active and protecting"
+}

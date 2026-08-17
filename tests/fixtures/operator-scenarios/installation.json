@@ -1,0 +1,17 @@
+{
+  "scenario": "First-time Installation",
+  "health": {
+    "packs": "✓ All rule packs valid",
+    "hooks": "✓ Claude Code hook configured",
+    "verbose": [
+      "✓ icg binary: /usr/local/bin/icg v0.1.0",
+      "✓ Rule packs: 3 packs loaded",
+      "✓ Claude Code hook: Configured",
+      "✓ State store: /var/lib/icg/state.db",
+      "✓ Denial log: /var/log/icg/denials.log"
+    ]
+  },
+  "dangerous_command": "vault kv destroy secret/test",
+  "safe_command": "vault kv get secret/test",
+  "pattern_id": "vault-kv-destroy"
+}
