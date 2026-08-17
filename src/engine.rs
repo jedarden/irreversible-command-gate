@@ -790,7 +790,11 @@ impl Engine {
     /// - ContentSource for Write/Edit tool calls
     /// - None for unrecognized tools
     pub fn read_from_stdin(&self) -> Result<Option<InputSource>> {
-        let result = catch_unwind(AssertUnwindSafe(|| self.read_from_stdin_inner()));
+        let Some((input, _)) = self.read_pre_tool_use_payload_from_stdin()? else {
+            return Ok(None);
+        };
+
+        let result = catch_unwind(AssertUnwindSafe(|| Self::input_source_from_pre_tool_use(input)));
         match result {
             Ok(Ok(input)) => Ok(input),
             Ok(Err(error)) => {
@@ -804,7 +808,30 @@ impl Engine {
         }
     }
 
-    fn read_from_stdin_inner(&self) -> Result<Option<InputSource>> {
+    /// Read the validated PreToolUse input together with its original JSON
+    /// tool-input object. The typed input intentionally models only fields the
+    /// engine evaluates, while the raw object lets the hook preserve any
+    /// harness-specific fields in an `updatedInput` response.
+    pub fn read_pre_tool_use_payload_from_stdin(
+        &self,
+    ) -> Result<Option<(PreToolUseInput, serde_json::Value)>> {
+        let result = catch_unwind(AssertUnwindSafe(|| self.read_pre_tool_use_payload_inner()));
+        match result {
+            Ok(Ok(input)) => Ok(Some(input)),
+            Ok(Err(error)) => {
+                report_fail_open(&format!("stdin input failure: {error}"));
+                Ok(None)
+            }
+            Err(_) => {
+                report_fail_open("stdin input panicked");
+                Ok(None)
+            }
+        }
+    }
+
+    fn read_pre_tool_use_payload_inner(
+        &self,
+    ) -> Result<(PreToolUseInput, serde_json::Value)> {
         use std::io::{self, Read};
 
         let mut input = String::new();
@@ -813,10 +840,16 @@ impl Engine {
             .context("Failed to read stdin")?;
 
         // Parse and validate the JSON input
-        let parsed: PreToolUseInput = Self::parse_and_validate_pre_tool_use(&input)?;
+        let raw: serde_json::Value = serde_json::from_str(&input)
+            .context("Failed to parse hook input JSON")?;
+        let parsed = Self::parse_and_validate_pre_tool_use(&input)?;
+        let tool_input = raw
+            .get("toolInput")
+            .or_else(|| raw.get("tool_input"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
-        // Convert to InputSource based on tool type
-        Ok(Self::input_source_from_pre_tool_use(parsed)?)
+        Ok((parsed, tool_input))
     }
 
     /// Read command from PreToolUse JSON on stdin (legacy method for backward compatibility)

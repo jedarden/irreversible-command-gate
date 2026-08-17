@@ -180,6 +180,7 @@ fn load_rule_pack(path: PathBuf) -> Result<crate::rule_pack::Pack> {
 /// Codex additionally requires `hookEventName` to identify the event.
 fn render_hook_response(
     result: engine::CheckResult,
+    original_input: Option<&serde_json::Value>,
     updated_input_key: &str,
     context: Option<&str>,
 ) -> serde_json::Value {
@@ -197,7 +198,13 @@ fn render_hook_response(
     );
 
     match result {
-        engine::CheckResult::Allowed => serde_json::json!({}),
+        engine::CheckResult::Allowed => {
+            hook_output.insert(
+                "permissionDecision".to_string(),
+                serde_json::Value::String("allow".to_string()),
+            );
+            serde_json::json!({"hookSpecificOutput": hook_output})
+        }
         engine::CheckResult::Denied {
             reason,
             pack_id,
@@ -223,7 +230,10 @@ fn render_hook_response(
                 "permissionDecision".to_string(),
                 serde_json::Value::String("allow".to_string()),
             );
-            let mut updated_input = serde_json::Map::new();
+            let mut updated_input = original_input
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             updated_input.insert(
                 updated_input_key.to_string(),
                 serde_json::Value::String(rewrite),
@@ -253,6 +263,14 @@ fn render_hook_response(
             );
             serde_json::json!({"hookSpecificOutput": hook_output})
         }
+    }
+}
+
+fn updated_input_key(tool_name: Option<&str>) -> &'static str {
+    match tool_name {
+        Some("Write") => "content",
+        Some("Edit") => "newString",
+        _ => "command",
     }
 }
 
@@ -378,14 +396,35 @@ fn main() -> Result<()> {
             }
             // If no pack exists, we'll fail-open (allow everything)
 
+            // Retain the original tool input so an updatedInput response can
+            // replace one field without dropping the other tool arguments.
+            let hook_payload = engine.read_pre_tool_use_payload_from_stdin()?;
+            let (hook_input, original_input) = match hook_payload {
+                Some((input, original_input)) => (Some(input), Some(original_input)),
+                None => (None, None),
+            };
+            let input_key = updated_input_key(
+                hook_input.as_ref().map(|input| input.tool_name.as_str()),
+            );
+            let input_source = match hook_input {
+                Some(input) => match Engine::input_source_from_pre_tool_use(input) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        eprintln!("Engine: invalid hook input: {error}");
+                        None
+                    }
+                },
+                None => None,
+            };
+
             // Read input from stdin (either command-mode or content-mode)
-            match engine.read_from_stdin()? {
+            match input_source {
                 Some(InputSource::Command(source)) => {
                     // Command-mode: Bash command
                     let result = engine.evaluate_command(&source);
                     println!(
                         "{}",
-                        render_hook_response(result, "command", None)
+                        render_hook_response(result, original_input.as_ref(), input_key, None)
                     );
 
                     Ok(())
@@ -396,7 +435,12 @@ fn main() -> Result<()> {
                     let result = engine.evaluate_content(&content);
                     println!(
                         "{}",
-                        render_hook_response(result, "content", Some(content.file_path()))
+                        render_hook_response(
+                            result,
+                            original_input.as_ref(),
+                            input_key,
+                            Some(content.file_path()),
+                        )
                     );
 
                     Ok(())
@@ -410,14 +454,27 @@ fn main() -> Result<()> {
                         .join(",");
                     println!(
                         "{}",
-                        render_hook_response(result, "content", Some(&files))
+                        render_hook_response(
+                            result,
+                            original_input.as_ref(),
+                            input_key,
+                            Some(&files),
+                        )
                     );
 
                     Ok(())
                 }
                 None => {
                     // Unrecognized tool - allow by default (fail-open)
-                    println!("{}", serde_json::json!({}));
+                    println!(
+                        "{}",
+                        render_hook_response(
+                            engine::CheckResult::Allowed,
+                            original_input.as_ref(),
+                            input_key,
+                            None,
+                        )
+                    );
                     Ok(())
                 }
             }
