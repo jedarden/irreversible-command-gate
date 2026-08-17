@@ -1,17 +1,32 @@
 {
   "id": "test-pack-current-with-regressions",
   "tool_keywords": ["vault", "git"],
-  "applies_to": [],
+  "applies_to": ["*.yaml", "*.yml"],
   "safe_patterns": [
     {
-      "id": "safe-read-operations",
+      "id": "safe-vault-read",
       "type": "command_regex",
       "regex": "vault.*get"
     },
     {
-      "id": "safe-list",
+      "id": "safe-vault-list",
       "type": "command_regex",
       "regex": ".*"
+    },
+    {
+      "id": "safe-git-status",
+      "type": "command_regex",
+      "regex": "^git status"
+    },
+    {
+      "id": "safe-storage-class",
+      "type": "content_regex",
+      "regex": "storageClassName: .*"
+    },
+    {
+      "id": "safe-image-tag",
+      "type": "content_regex",
+      "regex": "image: .*"
     }
   ],
   "guarded_patterns": [
@@ -41,6 +56,48 @@
         "channel": "deny",
         "reason_template": "Force-push rewrites git history and can lose commits. Use git push --force-with-lease instead.",
         "rewrite_template": "git push --force-with-lease"
+      }
+    },
+    {
+      "id": "storage-class-ssd",
+      "type": "content_regex",
+      "regex": "storageClassName: ssd",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "SSD storage class is prohibited on Rackspace Spot",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "SSD and SSD-Large storage classes are prohibited on Rackspace Spot. Use sata or sata-large instead, and always set storageClassName explicitly.",
+        "rewrite_template": "storageClassName: sata"
+      }
+    },
+    {
+      "id": "image-tag-latest",
+      "type": "content_regex",
+      "regex": "image: .*:latest[^-]",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Using :latest image tag prevents reproducible deployments",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Never use :latest or bare git SHA for ronaldraygun/* images. Pin a semver tag from containers/<name>/VERSION.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "vault-token-revoke",
+      "type": "command_regex",
+      "regex": "vault token revert",
+      "tier": "tier1",
+      "severity": "Medium",
+      "explanation": "Revokes vault tokens",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Revoking tokens can terminate active sessions",
+        "rewrite_template": null
       }
     }
   ]

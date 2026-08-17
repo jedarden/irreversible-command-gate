@@ -1,15 +1,15 @@
 {
   "id": "test-pack-previous",
   "tool_keywords": ["vault", "git"],
-  "applies_to": [],
+  "applies_to": ["*.yaml", "*.yml"],
   "safe_patterns": [
     {
-      "id": "safe-read-operations",
+      "id": "safe-vault-read",
       "type": "command_regex",
       "regex": "vault kv get"
     },
     {
-      "id": "safe-list",
+      "id": "safe-vault-list",
       "type": "command_regex",
       "regex": "vault.*list"
     },
@@ -17,6 +17,16 @@
       "id": "safe-git-status",
       "type": "command_regex",
       "regex": "^git status"
+    },
+    {
+      "id": "safe-storage-class",
+      "type": "content_regex",
+      "regex": "storageClassName: (sata|sata-large|standard)"
+    },
+    {
+      "id": "safe-image-tag",
+      "type": "content_regex",
+      "regex": "image: [a-z0-9/-]+:v[0-9]+\\.[0-9]+\\.[0-9]+"
     }
   ],
   "guarded_patterns": [
@@ -49,6 +59,20 @@
       }
     },
     {
+      "id": "vault-secrets-disable",
+      "type": "command_regex",
+      "regex": "vault secrets disable",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Disables an entire secrets engine",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Disabling a secrets engine cuts off access to all secrets under it",
+        "rewrite_template": null
+      }
+    },
+    {
       "id": "git-force-push",
       "type": "command_regex",
       "regex": "git push.*--force",
@@ -63,16 +87,58 @@
       }
     },
     {
-      "id": "vault-secrets-disable",
-      "type": "command_regex",
-      "regex": "vault secrets disable",
+      "id": "storage-class-ssd",
+      "type": "content_regex",
+      "regex": "storageClassName:.*ssd",
       "tier": "tier1",
       "severity": "High",
-      "explanation": "Disables an entire secrets engine",
+      "explanation": "SSD storage class is prohibited on Rackspace Spot",
       "destructive": true,
       "redirect": {
         "channel": "deny",
-        "reason_template": "Disabling a secrets engine cuts off access to all secrets under it",
+        "reason_template": "SSD and SSD-Large storage classes are prohibited on Rackspace Spot. Use sata or sata-large instead, and always set storageClassName explicitly.",
+        "rewrite_template": "storageClassName: sata"
+      }
+    },
+    {
+      "id": "image-tag-latest",
+      "type": "content_regex",
+      "regex": "image: .*:latest",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Using :latest image tag prevents reproducible deployments",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Never use :latest or bare git SHA for ronaldraygun/* images. Pin a semver tag from containers/<name>/VERSION.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "image-tag-bare-sha",
+      "type": "content_regex",
+      "regex": "image: ronaldraygun/[a-z-]+:[0-9a-f]{8,64}",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Bare git SHA image tag prevents reproducible deployments",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Never use :latest or bare git SHA for ronaldraygun/* images. Pin a semver tag from containers/<name>/VERSION.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "vault-token-revoke",
+      "type": "command_regex",
+      "regex": "vault token revert",
+      "tier": "tier1",
+      "severity": "Medium",
+      "explanation": "Revokes vault tokens",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Revoking tokens can terminate active sessions",
         "rewrite_template": null
       }
     }
