@@ -166,6 +166,17 @@ engine:
   younger and still stabilizing (~5 months old as of this writing) than
   Claude Code's.
 
+  **Claude Code installation contract:** the user-level
+  `~/.claude/settings.json` registers `icg hook` as its own `PreToolUse`
+  command entry for `Bash|Write|Edit`, using the absolute production path
+  `/usr/local/bin/icg hook`. This entry is added alongside the existing
+  `org-rule-guard.py` entry; it must not replace or wrap that hook. Claude
+  Code therefore invokes both guards independently during the coexistence
+  period, preserving the existing org rules while adding icg's command and
+  content coverage. The operator installation procedure documents the
+  corresponding merge and verification steps in
+  `docs/operators/deployment-guide.md`.
+
 Rationale for running both rather than picking one: they have non-
 overlapping blind spots (a wrapper misses structured/MCP tool calls a hook
 sees; a hook is only as reliable as its harness's own implementation, which
