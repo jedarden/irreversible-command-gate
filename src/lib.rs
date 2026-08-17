@@ -4,6 +4,7 @@
 
 pub mod coverage;
 pub mod engine;
+pub mod new_pack;
 pub mod regression;
 pub mod regex_safety;
 pub mod rule_pack;

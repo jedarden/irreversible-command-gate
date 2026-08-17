@@ -65,3 +65,15 @@ icg regression-suite path/to/rule-pack.json --output regression-suite.json
 The generated JSON records each pack ID, guarded-pattern ID, command, and
 expected `deny` verdict. Generation fails if a case is missing, is not a deny
 rule, is shadowed by a safe rule, or no longer matches its intended pattern.
+
+## Authoring a rule pack
+
+Start a new pack and its matching regression-test stub together:
+
+```bash
+icg new-pack <tool> --pack-type command --output-dir path/to/output
+```
+
+`--pack-type` may be `command` (the default) or `content`. The command writes
+`<tool>.json` and `<tool>_pack_tests.rs`, pre-filling the pack and guarded-rule
+fields. It refuses to overwrite either file, so an existing scaffold must be

@@ -1,6 +1,7 @@
 mod coverage;
 mod documented_commands;
 mod engine;
+mod new_pack;
 mod overrides;
 mod regression;
 mod rule_pack;
@@ -112,6 +113,9 @@ enum Commands {
     NewPack {
         /// Name for the new rule pack
         pack_name: String,
+        /// Type of pack: "command" (shell commands) or "content" (file contents)
+        #[arg(short, long, default_value = "command")]
+        pack_type: String,
         /// Target output directory
         #[arg(short, long)]
         output_dir: Option<PathBuf>,
@@ -802,21 +806,35 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        Commands::NewPack { pack_name, output_dir } => {
-            // TODO: Implement pack scaffolding tool (bead irrevers-54b33e0c)
+        Commands::NewPack {
+            pack_name,
+            pack_type,
+            output_dir,
+        } => {
+            let dest = output_dir.unwrap_or_else(|| PathBuf::from("."));
+
             println!("# icg new-pack");
             println!();
             println!("Pack name: `{}`", pack_name);
-
-            let dest = output_dir.unwrap_or_else(|| PathBuf::from("."));
+            println!("Pack type: `{}`", pack_type);
             println!("Output directory: {}", dest.display());
             println!();
-            println!("**Pack scaffolding coming soon** (bead irrevers-54b33e0c)");
-            println!("This will generate a new rule pack template with examples.");
-            println!();
-            println!("For now, create packs manually following the pattern in existing packs.");
-
-            Ok(())
+            match new_pack::generate_pack_scaffolding(&pack_name, &pack_type, &dest) {
+                Ok((pack_path, test_path)) => {
+                    println!("✓ Pack scaffold created: {}", pack_path.display());
+                    println!("✓ Test stub created: {}", test_path.display());
+                    println!();
+                    println!("Next steps:");
+                    println!("  1. Edit the pack file to add your specific patterns");
+                    println!("  2. Implement the test cases in the test file");
+                    println!("  3. Run `cargo test` to verify your implementation");
+                    Ok(())
+                }
+                Err(e) => {
+                    println!("✗ Failed to generate scaffolding: {}", e);
+                    Err(e)
+                }
+            }
         }
     }
 }
