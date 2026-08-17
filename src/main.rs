@@ -5,6 +5,7 @@ mod regression;
 mod rule_pack;
 mod trust_pointer;
 mod update;
+mod value_derivation;
 
 use anyhow::Context;
 use anyhow::Result;

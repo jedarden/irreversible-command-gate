@@ -10,6 +10,7 @@
 
 use anyhow::{Context, Result};
 use crate::rule_pack::Pack;
+use crate::value_derivation::render_reason;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1469,7 +1470,7 @@ impl Engine {
     ) -> CheckResult {
         match pattern.redirect.channel {
             crate::rule_pack::Channel::Deny => CheckResult::Denied {
-                reason: pattern.redirect.reason_template.clone(),
+                reason: render_reason(&pattern.redirect.reason_template, None, None),
                 pack_id: pack_id.to_string(),
                 pattern_id: pattern.id.clone(),
             },
@@ -1477,14 +1478,14 @@ impl Engine {
                 let rewrite = pattern.redirect.rewrite_template.clone()
                     .unwrap_or_else(|| command.to_string());
                 CheckResult::Rewrite {
-                    reason: pattern.redirect.reason_template.clone(),
+                    reason: render_reason(&pattern.redirect.reason_template, None, None),
                     rewrite,
                     pack_id: pack_id.to_string(),
                     pattern_id: pattern.id.clone(),
                 }
             }
             crate::rule_pack::Channel::AdditionalContext => CheckResult::Warning {
-                reason: pattern.redirect.reason_template.clone(),
+                reason: render_reason(&pattern.redirect.reason_template, None, None),
                 pack_id: pack_id.to_string(),
                 pattern_id: pattern.id.clone(),
             },
@@ -1635,7 +1636,7 @@ impl Engine {
                     let pattern_result = self.guarded_pattern_to_result_content(
                         guarded_pattern,
                         &pack.id,
-                        source.file_path(),
+                        source,
                     );
 
                     // Return immediately if this is a deny (most severe)
@@ -1696,11 +1697,17 @@ impl Engine {
         &self,
         pattern: &crate::rule_pack::GuardedPattern,
         pack_id: &str,
-        file_path: &str,
+        source: &ContentSource,
     ) -> CheckResult {
+        let reason = render_reason(
+            &pattern.redirect.reason_template,
+            Some(source.new_content()),
+            Some(source.file_path()),
+        );
+
         match pattern.redirect.channel {
             crate::rule_pack::Channel::Deny => CheckResult::Denied {
-                reason: pattern.redirect.reason_template.clone(),
+                reason,
                 pack_id: pack_id.to_string(),
                 pattern_id: pattern.id.clone(),
             },
@@ -1708,19 +1715,16 @@ impl Engine {
                 // For content-mode, updatedInput would provide corrected content
                 // This is not yet implemented - would require rewrite_template to
                 // specify the replacement content
-                let reason = format!(
-                    "{} (content-mode updatedInput not yet implemented)",
-                    pattern.redirect.reason_template
-                );
+                let reason = format!("{reason} (content-mode updatedInput not yet implemented)");
                 CheckResult::Rewrite {
                     reason,
-                    rewrite: format!("<corrected content for {}>", file_path),
+                    rewrite: format!("<corrected content for {}>", source.file_path()),
                     pack_id: pack_id.to_string(),
                     pattern_id: pattern.id.clone(),
                 }
             }
             crate::rule_pack::Channel::AdditionalContext => CheckResult::Warning {
-                reason: pattern.redirect.reason_template.clone(),
+                reason,
                 pack_id: pack_id.to_string(),
                 pattern_id: pattern.id.clone(),
             },
