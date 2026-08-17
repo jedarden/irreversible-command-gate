@@ -177,6 +177,18 @@ engine:
   corresponding merge and verification steps in
   `docs/operators/deployment-guide.md`.
 
+  **Codex CLI installation contract:** the user-level
+  `~/.codex/hooks.json` (or the trusted project-local `.codex/hooks.json`)
+  registers `icg hook` as its own `PreToolUse` command entry for
+  `Bash|apply_patch`, using the absolute production path
+  `/usr/local/bin/icg hook`. Installation must merge this entry with any
+  existing hook groups rather than replacing the file, and project-local
+  hooks require Codex's project trust review before they run. The `Bash`
+  matcher covers command-mode checks; `apply_patch` covers Codex's
+  content-mode payloads, including multi-file patches. The operator
+  installation procedure documents the corresponding merge and verification
+  steps in `docs/operators/deployment-guide.md`.
+
 Rationale for running both rather than picking one: they have non-
 overlapping blind spots (a wrapper misses structured/MCP tool calls a hook
 sees; a hook is only as reliable as its harness's own implementation, which
