@@ -1,0 +1,22 @@
+{
+  "id": "beads",
+  "tool_keywords": [],
+  "applies_to": [".beads/**"],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "beads-shared-checkout-write",
+      "type": "predicate",
+      "predicate_name": "is_shared_checkout",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Writing to .beads/ in a shared checkout risks concurrent corruption. This check denies writes to .beads/ paths when the repository root has .git as a directory (the shared/primary tree where concurrent workers operate), but allows writes when .git is a file (a linked worktree, which by construction is not the shared tree).",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Hand-editing .beads/ in a shared checkout is blocked. This repository's .git is a directory, indicating it's the shared primary tree where concurrent worker corruption can occur. Use 'git worktree add --detach <dir> origin/main' to create a linked worktree for .beads/ work instead. See CLAUDE.md: 'Never hand-edit anything under .beads/'",
+        "rewrite_template": null
+      }
+    }
+  ]
+}
