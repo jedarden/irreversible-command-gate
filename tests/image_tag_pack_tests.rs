@@ -1,5 +1,6 @@
 use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::rule_pack::{load_pack, Channel, Check, Severity, Tier};
+use std::fs;
 
 fn load_image_tag_engine() -> Engine {
     let mut engine = Engine::new();
@@ -93,6 +94,34 @@ fn denies_bare_sha_image_tags_in_yaml_and_yml_content() {
             ),
             "expected bare SHA in {file_path} to be denied, got {result:?}"
         );
+    }
+}
+
+#[test]
+fn embeds_the_container_version_in_unpinned_image_denials() {
+    let root = tempfile::tempdir().expect("temporary repository should exist");
+    fs::create_dir_all(root.path().join("containers/myapp")).expect("container directory");
+    fs::write(root.path().join("containers/myapp/VERSION"), "1.2.3\n")
+        .expect("version file");
+
+    let engine = load_image_tag_engine();
+    let file_path = root.path().join("deploy/app.yaml");
+
+    for content in [
+        "image: ronaldraygun/myapp:latest\n",
+        "image: ronaldraygun/myapp:abcdef12\n",
+    ] {
+        let result = engine.evaluate_content(&ContentSource::Write {
+            file_path: file_path.to_string_lossy().into_owned(),
+            content: content.to_string(),
+        });
+
+        let CheckResult::Denied { reason, .. } = result else {
+            panic!("expected unpinned image to be denied");
+        };
+        assert!(reason.contains("1.2.3"), "denial should include the version: {reason}");
+        assert!(!reason.contains("{derived_value}"), "placeholder must be rendered: {reason}");
+        assert!(!reason.contains("containers/<name>/VERSION"), "path pointer must be replaced: {reason}");
     }
 }
 

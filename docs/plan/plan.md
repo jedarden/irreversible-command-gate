@@ -296,10 +296,12 @@ for Codex is still maturing). Full reasoning in
   `docs/notes/self-update-and-release-gating.md` for why release-cutting,
   specifically, needs its own human gate separate from routine
   CI-on-push.
-- **Value-derivation helpers** (later phase, not Phase 1) — for cases where
-  the correct redirect value is programmatically derivable at check-time
-  (e.g. the real semver from `containers/<name>/VERSION`), embed it
-  directly in the deny reason rather than pointing at where to look.
+- **Value-derivation helpers** — for cases where the correct redirect value is
+  programmatically derivable at check-time (e.g. the real semver from
+  `containers/<name>/VERSION`), embed it directly in the deny reason rather
+  than pointing at where to look. The image-tag pack uses the
+  `{derived_value}` placeholder for this today; unavailable values retain an
+  actionable path-based fallback.
 - **State store** (later phase, not Phase 1) — minimal persistent marker
   needed only for Tier 2 ordering rules. `org-rule-guard.py` has no
   equivalent today; this is new surface.
@@ -508,8 +510,8 @@ GuardedPattern:
 - [ ] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
       for confirmed intent-preserving cases (force-push flag stripping is
       the clearest candidate) and `additionalContext` for non-blocking
-      warnings; add value-derivation helpers so deny reasons embed real
-      answers instead of pointers. (Ideation finalist #10 proposed
+      warnings; extend value-derivation helpers to additional rules as
+      needed. (Ideation finalist #10 proposed
       building the force-push `updatedInput` case in Phase 1 instead, to
       de-risk the mechanism early — considered and deliberately deferred
       to notes only, not adopted as a bead; see
@@ -614,16 +616,12 @@ GuardedPattern:
 - ~~Release-gating mechanism~~ — **resolved 2026-08-13**, see Phase 0.
 - ~~Hot-reload trigger specifics~~ — **resolved 2026-08-13**, see Phase 0
   and Components.
-- **Value-derivation helpers' Phase 1 inclusion — known tradeoff, not an
-  oversight.** `docs/notes/redirect-not-just-block.md` uses the exact
-  `image-tag` bare-SHA case as its own canonical illustration of an
-  inadequate redirect ("pin a semver tag read from
-  `containers/<name>/VERSION`" vs. embedding the real value). Phase 1
-  ships that identical rule without value-derivation anyway, deliberately
-  deferred to Phase 3 for scope reasons — this project reproduces, for one
-  phase, the specific shortfall its own design notes single out. Accepted
-  consciously, not silently; revisit once Phase 1's actual rule count
-  makes the manual-authoring cost of doing it earlier concrete.
+- ~~Value-derivation helpers' Phase 1 inclusion — known tradeoff, not an
+  oversight.~~ — **resolved 2026-08-17.** The image-tag rules now replace
+  `{derived_value}` with the semver read from the matching
+  `containers/<name>/VERSION` file, with an actionable fallback when that
+  value cannot be read. The helper can be extended for future derivable
+  redirects.
 - ~~`beads`-in-`bf` question~~ — **resolved 2026-08-13: stays in this
   project.** With `bf` itself now confirmed heading toward deprecation
   (see the Architecture section and `irrevers-692a56c3`), embedding the `.beads/`

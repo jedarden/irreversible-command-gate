@@ -109,4 +109,5 @@ this is also a gap in `org-rule-guard.py` itself worth knowing about, even
 though fixing it isn't this project's job: it uses `permissionDecisionReason`
 exclusively today and has never used `updatedInput` or `additionalContext`,
 even in the one case (`:latest`) where the redirect value is programmatically
-derivable and currently isn't derived.
+derivable; unlike that legacy guard, icg's `image-tag` pack now derives the
+value from the matching `containers/<name>/VERSION` file.

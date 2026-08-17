@@ -14,7 +14,7 @@
       "destructive": true,
       "redirect": {
         "channel": "deny",
-        "reason_template": "The :latest image tag is banned — it silently changes what runs and makes rollback impossible. Pin a semver tag read from containers/<name>/VERSION.",
+        "reason_template": "The :latest image tag is banned — it silently changes what runs and makes rollback impossible. Pin this image to semver tag {derived_value}.",
         "rewrite_template": null
       },
       "example_file_path": "regression.yaml",
@@ -30,7 +30,7 @@
       "destructive": true,
       "redirect": {
         "channel": "deny",
-        "reason_template": "Never use a bare git SHA for ronaldraygun/* images. Pin a semver tag read from containers/<name>/VERSION.",
+        "reason_template": "Never use a bare git SHA for ronaldraygun/* images. Pin this image to semver tag {derived_value}.",
         "rewrite_template": null
       },
       "example_file_path": "regression.yaml",
