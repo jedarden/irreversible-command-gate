@@ -36,15 +36,22 @@ icg trust show|set|check
 icg update
 icg health status|reset|mark-start|mark-clean-exit|record-crash
 icg telemetry status|reset|configure
+icg check --command|--stdin|--file
+icg explain --pattern|--denial
+icg coverage --list
+icg bug-report --output <path>
+icg backup create|verify
+icg override create|approve|list
 icg regression-suite <manifest>
 icg coverage-diff <previous> <current>
 icg new-pack <name>
 ```
 
 Run `icg <command> --help` on the installed binary for the exact options.
-The guide intentionally does not document commands that are not present in
-the current CLI, such as `icg check`, `icg audit`, or updater dry-run and
-rollback flags.
+The diagnostic commands operate on explicit local rule-pack paths when no
+installed pack is available. Repository overrides remain release-bound: an
+approval without an exact trusted release reference records the review but does
+not create an active bypass artifact.
 
 ## Deployment model
 

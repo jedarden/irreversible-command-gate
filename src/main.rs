@@ -1,4 +1,5 @@
 mod coverage;
+mod documented_commands;
 mod engine;
 mod overrides;
 mod regression;
@@ -28,6 +29,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Check a command, file, or PreToolUse request without executing it.
+    Check(documented_commands::CheckArgs),
+    /// Explain a rule-pack pattern or recorded denial.
+    Explain(documented_commands::ExplainArgs),
+    /// List the rule packs available to the local installation.
+    Coverage(documented_commands::CoverageArgs),
+    /// Create a privacy-conscious diagnostic report.
+    BugReport(documented_commands::BugReportArgs),
+    /// Create or verify a maintenance backup.
+    #[command(subcommand)]
+    Backup(documented_commands::BackupSubcommand),
+    /// Create, approve, or list repository override artifacts.
+    #[command(subcommand)]
+    Override(documented_commands::OverrideSubcommand),
     /// Compare rule packs and detect coverage regressions
     CoverageDiff {
         /// Path to previous release's rule pack manifest
@@ -291,6 +306,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Check(args) => documented_commands::run_check(args),
+        Commands::Explain(args) => documented_commands::run_explain(args),
+        Commands::Coverage(args) => documented_commands::run_coverage(args),
+        Commands::BugReport(args) => documented_commands::run_bug_report(args),
+        Commands::Backup(command) => documented_commands::run_backup(command),
+        Commands::Override(command) => documented_commands::run_override(command),
         Commands::CoverageDiff {
             previous,
             current,
