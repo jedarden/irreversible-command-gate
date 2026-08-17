@@ -14,7 +14,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// PreToolUse hook JSON structure for Claude Code/Codex.
 ///
@@ -414,6 +414,59 @@ fn wildcard_match(value: &str, pattern: &str) -> bool {
     }
 
     visit(&value, &pattern, 0, 0, &mut memo)
+}
+
+/// Return an absolute, lexically normalized path for a hook-reported target.
+///
+/// The target may not exist yet (a Write commonly creates a new file), so this
+/// intentionally does not use `canonicalize`. Lexical normalization is enough
+/// to keep `..` components from changing which repository root is inspected.
+fn absolute_normalized_path(path: &Path) -> Option<PathBuf> {
+    let mut normalized = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().ok()?
+    };
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Do not allow a relative path to escape the current directory
+                // while it is being normalized. Absolute paths are already
+                // anchored at the filesystem root.
+                let _ = normalized.pop();
+            }
+            Component::Normal(component) => normalized.push(component),
+        }
+    }
+
+    Some(normalized)
+}
+
+/// Check the beads protection predicate for a Write/Edit target.
+///
+/// The target must be under the repository root's `.beads/` directory, and
+/// that repository root must have `.git` as a directory. A `.git` file
+/// identifies a linked worktree and is deliberately allowed because it is not
+/// the shared primary checkout.
+fn is_shared_beads_target(file_path: &str) -> bool {
+    let Some(path) = absolute_normalized_path(Path::new(file_path)) else {
+        return false;
+    };
+
+    let mut ancestor = Some(path.as_path());
+    while let Some(candidate) = ancestor {
+        let git_path = candidate.join(".git");
+        if git_path.is_dir() || git_path.is_file() {
+            return git_path.is_dir() && path.starts_with(candidate.join(".beads"));
+        }
+        ancestor = candidate.parent();
+    }
+
+    false
 }
 
 /// Input source from PreToolUse hook
@@ -1594,10 +1647,13 @@ impl Engine {
                 // Command regex doesn't apply to content-mode checks
                 Ok(false)
             }
-            crate::rule_pack::Check::Predicate { .. } => {
-                // Predicate checks are not yet implemented for content-mode
-                // (e.g., beads pack filesystem check)
-                Ok(false)
+            crate::rule_pack::Check::Predicate { predicate_name } => {
+                // Predicates are evaluated against the target path rather
+                // than the text being written. The beads pack's
+                // `is_shared_checkout` predicate is additionally scoped by
+                // `applies_to` during pack dispatch.
+                Ok(predicate_name == "is_shared_checkout"
+                    && is_shared_beads_target(source.file_path()))
             }
         }
     }
@@ -1801,6 +1857,32 @@ mod tests {
         }
     }
 
+    fn beads_pack() -> Pack {
+        Pack {
+            id: "beads".to_string(),
+            tool_keywords: Vec::new(),
+            applies_to: vec![".beads/**".to_string()],
+            safe_patterns: Vec::new(),
+            guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                id: "beads-shared-checkout-write".to_string(),
+                enabled: true,
+                check: crate::rule_pack::Check::Predicate {
+                    predicate_name: "is_shared_checkout".to_string(),
+                },
+                tier: crate::rule_pack::Tier::Tier1,
+                severity: crate::rule_pack::Severity::Critical,
+                explanation: "Writing to .beads/ in a shared checkout risks concurrent corruption"
+                    .to_string(),
+                redirect: crate::rule_pack::Redirect {
+                    channel: crate::rule_pack::Channel::Deny,
+                    reason_template: "Use a worktree instead".to_string(),
+                    rewrite_template: None,
+                },
+                destructive: true,
+            }],
+        }
+    }
+
     #[test]
     fn test_dispatch_content_packs_returns_all_matching_packs_in_order() {
         let engine = default_engine();
@@ -1840,6 +1922,99 @@ mod tests {
 
         assert_eq!(matching.len(), 1);
         assert_eq!(matching[0].id, "beads");
+    }
+
+    #[test]
+    fn test_content_regex_checks_the_final_edit_content() {
+        let mut engine = default_engine();
+        engine
+            .load_pack(Pack {
+                id: "storage-class".to_string(),
+                tool_keywords: Vec::new(),
+                applies_to: vec!["*.yaml".to_string()],
+                safe_patterns: Vec::new(),
+                guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                    id: "ssd-storage-class".to_string(),
+                    enabled: true,
+                    check: crate::rule_pack::Check::ContentRegex {
+                        regex: "storageClassName:.*ssd".to_string(),
+                    },
+                    tier: crate::rule_pack::Tier::Tier1,
+                    severity: crate::rule_pack::Severity::High,
+                    explanation: "SSD storage class is prohibited".to_string(),
+                    redirect: crate::rule_pack::Redirect {
+                        channel: crate::rule_pack::Channel::Deny,
+                        reason_template: "use sata".to_string(),
+                        rewrite_template: None,
+                    },
+                    destructive: true,
+                }],
+            })
+            .unwrap();
+
+        let source = ContentSource::Edit {
+            file_path: "deployment.yaml".to_string(),
+            old_content: "storageClassName: ssd".to_string(),
+            new_content: "storageClassName: sata".to_string(),
+        };
+
+        assert_eq!(engine.evaluate_content(&source), CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_beads_predicate_denies_shared_checkout_write() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repository.path().join(".git")).unwrap();
+        std::fs::create_dir(repository.path().join(".beads")).unwrap();
+
+        let mut engine = default_engine();
+        engine.load_pack(beads_pack()).unwrap();
+
+        let source = ContentSource::Write {
+            file_path: repository
+                .path()
+                .join(".beads/checkpoint/current.json")
+                .to_string_lossy()
+                .into_owned(),
+            content: "{}".to_string(),
+        };
+
+        assert!(matches!(
+            engine.evaluate_content(&source),
+            CheckResult::Denied {
+                ref pack_id,
+                ref pattern_id,
+                ..
+            } if pack_id == "beads" && pattern_id == "beads-shared-checkout-write"
+        ));
+    }
+
+    #[test]
+    fn test_beads_predicate_allows_linked_worktree_write() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::write(repository.path().join(".git"), "gitdir: ../main/.git/worktrees/x\n")
+            .unwrap();
+        std::fs::create_dir(repository.path().join(".beads")).unwrap();
+
+        let mut engine = default_engine();
+        engine.load_pack(beads_pack()).unwrap();
+
+        let source = ContentSource::Write {
+            file_path: repository.path().join(".beads/events.jsonl").to_string_lossy().into_owned(),
+            content: "{}".to_string(),
+        };
+
+        assert_eq!(engine.evaluate_content(&source), CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_beads_predicate_requires_a_beads_path() {
+        let repository = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repository.path().join(".git")).unwrap();
+
+        assert!(!is_shared_beads_target(
+            &repository.path().join("ordinary.txt").to_string_lossy()
+        ));
     }
 
     // Command-mode tests (existing)
