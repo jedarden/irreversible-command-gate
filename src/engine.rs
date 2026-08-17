@@ -462,10 +462,216 @@ pub enum CheckResult {
     },
 }
 
+/// Split shell input into command-word vectors without invoking a shell.
+///
+/// This is intentionally a small lexer rather than a shell evaluator. The
+/// guard needs to identify command boundaries and argv words, but must not
+/// execute expansions or run anything supplied by the caller. Quotes and
+/// backslash escapes are removed so rule expressions see the words that the
+/// shell would pass to the executable.
+fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    let mut command = Vec::new();
+    let mut word = String::new();
+    let mut word_started = false;
+    let mut quote = None;
+    let mut escaped = false;
+
+    let finish_word = |command: &mut Vec<String>, word: &mut String, started: &mut bool| {
+        if *started {
+            command.push(std::mem::take(word));
+            *started = false;
+        }
+    };
+
+    let finish_command =
+        |commands: &mut Vec<Vec<String>>, command: &mut Vec<String>, word: &mut String, started: &mut bool| {
+            finish_word(command, word, started);
+            if !command.is_empty() {
+                commands.push(std::mem::take(command));
+            }
+        };
+
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        if escaped {
+            // A backslash-newline is a shell line continuation. For all other
+            // characters, retain the escaped character as part of this word.
+            if character != '\n' {
+                word.push(character);
+                word_started = true;
+            }
+            escaped = false;
+            continue;
+        }
+
+        if let Some(active_quote) = quote {
+            if character == active_quote {
+                quote = None;
+                word_started = true;
+            } else if active_quote == '"' && character == '\\' {
+                // Inside double quotes only shell-special escapes lose their
+                // backslash. Keep other backslashes literal.
+                match chars.peek().copied() {
+                    Some(next @ ('"' | '\\' | '$' | '`' | '\n')) => {
+                        chars.next();
+                        if next != '\n' {
+                            word.push(next);
+                            word_started = true;
+                        }
+                    }
+                    _ => {
+                        word.push(character);
+                        word_started = true;
+                    }
+                }
+            } else {
+                word.push(character);
+                word_started = true;
+            }
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => {
+                quote = Some(character);
+                word_started = true;
+            }
+            '\\' => escaped = true,
+            '\n' => {
+                finish_command(&mut commands, &mut command, &mut word, &mut word_started);
+            }
+            character if character.is_whitespace() => {
+                finish_word(&mut command, &mut word, &mut word_started);
+            }
+            ';' | '&' | '|' => {
+                // Treat both short and compound shell operators as command
+                // boundaries. The second character of &&/|| is just another
+                // delimiter and therefore yields no empty command.
+                finish_command(
+                    &mut commands,
+                    &mut command,
+                    &mut word,
+                    &mut word_started,
+                );
+            }
+            _ => {
+                word.push(character);
+                word_started = true;
+            }
+        }
+    }
+
+    // A trailing backslash is malformed shell, but retaining it gives the
+    // caller a conservative best-effort token instead of silently dropping a
+    // command word.
+    if escaped {
+        word.push('\\');
+        word_started = true;
+    }
+    finish_command(
+        &mut commands,
+        &mut command,
+        &mut word,
+        &mut word_started,
+    );
+
+    commands
+}
+
+fn executable_basename(token: &str) -> &str {
+    token.rsplit('/').next().unwrap_or(token)
+}
+
+fn option_name(token: &str) -> &str {
+    token.split_once('=').map_or(token, |(name, _)| name)
+}
+
+fn skip_options(tokens: &[String], mut index: usize, options_with_values: &[&str]) -> usize {
+    while index < tokens.len() {
+        let token = tokens[index].as_str();
+        if token == "--" {
+            return index + 1;
+        }
+        if !token.starts_with('-') || token == "-" {
+            break;
+        }
+
+        let consumes_next = options_with_values.contains(&option_name(token))
+            && !token.contains('=');
+        index += 1;
+        if consumes_next && index < tokens.len() {
+            index += 1;
+        }
+    }
+    index
+}
+
+fn strip_command_prefixes(
+    tokens: &[String],
+    env_assign_pattern: &Regex,
+    ignored_prefixes: &[String],
+) -> usize {
+    let mut index = 0;
+
+    loop {
+        while index < tokens.len() && env_assign_pattern.is_match(&tokens[index]) {
+            index += 1;
+        }
+        if index >= tokens.len() {
+            break;
+        }
+
+        let prefix = executable_basename(&tokens[index]);
+        match prefix {
+            "sudo" => {
+                index += 1;
+                index = skip_options(
+                    tokens,
+                    index,
+                    &[
+                        "-u", "--user", "-g", "--group", "-C", "--chdir", "-R", "--chroot",
+                        "-r", "--role", "-t", "--type", "-p", "--prompt", "-T", "--command-timeout",
+                    ],
+                );
+            }
+            "env" => {
+                index += 1;
+                index = skip_options(
+                    tokens,
+                    index,
+                    &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+                );
+            }
+            _ if ignored_prefixes
+                .iter()
+                .any(|ignored| ignored == prefix) => {
+                index += 1;
+                index = skip_options(tokens, index, &["-a", "--argv0", "--format", "-f"]);
+            }
+            _ => break,
+        }
+    }
+
+    index
+}
+
+fn command_token_from_words(
+    words: Vec<String>,
+    env_assign_pattern: &Regex,
+    ignored_prefixes: &[String],
+) -> Option<CommandToken> {
+    let executable_index = strip_command_prefixes(&words, env_assign_pattern, ignored_prefixes);
+    let executable = words.get(executable_index)?;
+
+    Some(CommandToken {
+        executable: executable_basename(executable).to_string(),
+        args: words[executable_index + 1..].to_vec(),
+    })
+}
+
 /// Engine: command-mode input acquisition, segmentation, and pack dispatch
 pub struct Engine {
-    /// Splits on ||, &&, ;, |, &, newline
-    segment_splitter: Option<Regex>,
     /// Detects env assignments like VAR=value or FOO_BAR=value
     env_assign_pattern: Option<Regex>,
     /// Prefixes to skip: sudo, command, exec, time, nohup
@@ -492,10 +698,6 @@ impl Default for Engine {
 impl Engine {
     /// Create a new Engine with default segmentation patterns
     pub fn new() -> Self {
-        // Match shell command separators: ||, &&, ;, |, &, \n
-        // Pattern: (?:\|\||&&|[;&|\n])
-        let segment_splitter = Regex::new(r"(?:\|\||&&|[;&|\n])").ok();
-
         // Match env variable assignments: starts with letter or underscore, followed by alphanumerics/underscores, then =
         // Pattern: ^[A-Za-z_][A-Za-z0-9_]*=
         let env_assign_pattern = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").ok();
@@ -799,84 +1001,29 @@ impl Engine {
     ///
     /// Returns a list of command tokens, one per segment found in the input
     pub fn segment_command(&self, source: &CommandSource) -> Vec<CommandToken> {
-        let (Some(segment_splitter), Some(env_assign_pattern)) =
-            (&self.segment_splitter, &self.env_assign_pattern)
+        let Some(env_assign_pattern) = &self.env_assign_pattern
         else {
             return vec![];
         };
 
-        let command_text = match source {
-            CommandSource::Hook(cmd) => cmd.clone(),
-            CommandSource::Argv(argv) => {
-                if argv.is_empty() {
-                    return vec![];
-                }
-                // Reconstruct command from argv for segmentation
-                // Note: this loses quoting information; for proper shell parsing,
-                // the hook mode (CommandSource::Hook) should be preferred
-                argv.join(" ")
-            }
-        };
-
-        let mut tokens = Vec::new();
-
-        // Split the command on segment boundaries
-        for segment in segment_splitter.split(&command_text) {
-            let segment = segment.trim();
-            if segment.is_empty() {
-                continue;
-            }
-
-            // Split segment into whitespace-separated tokens
-            let toks: Vec<&str> = segment.split_whitespace().collect();
-            if toks.is_empty() {
-                continue;
-            }
-
-            // Skip sudo / env assignments / command wrappers
-            let mut i = 0;
-            while i < toks.len() {
-                let tok = toks[i];
-
-                // Check if this token should be skipped
-                if self.ignored_prefixes.contains(&tok.to_string()) {
-                    i += 1;
-                    continue;
-                }
-
-                // Check if this is an env assignment (e.g., VAR=value)
-                if env_assign_pattern.is_match(tok) {
-                    i += 1;
-                    continue;
-                }
-
-                // Found the actual executable
-                break;
-            }
-
-            // If we've exhausted all tokens or found nothing, skip this segment
-            if i >= toks.len() {
-                continue;
-            }
-
-            // Extract basename from the executable path
-            // e.g., /usr/local/bin/vault -> vault
-            let executable = toks[i]
-                .rsplit('/')
-                .next()
-                .unwrap_or(toks[i])
-                .to_string();
-
-            // Collect remaining arguments
-            let args: Vec<String> = toks[i + 1..].iter().map(|s| s.to_string()).collect();
-
-            tokens.push(CommandToken {
-                executable,
-                args,
-            });
+        match source {
+            CommandSource::Hook(command) => lex_shell_commands(command)
+                .into_iter()
+                .filter_map(|words| {
+                    command_token_from_words(words, env_assign_pattern, &self.ignored_prefixes)
+                })
+                .collect(),
+            // argv has already gone through the operating system's argument
+            // parsing. Do not join it and lex again: an argument such as
+            // `--message=a;b` is data, not a second shell command.
+            CommandSource::Argv(argv) => command_token_from_words(
+                argv.clone(),
+                env_assign_pattern,
+                &self.ignored_prefixes,
+            )
+            .into_iter()
+            .collect(),
         }
-
-        tokens
     }
 
     /// Get all unique executable basenames from a command source
@@ -884,9 +1031,11 @@ impl Engine {
     /// This is used for pack dispatch: each pack registers tool_keywords
     /// (e.g., ["vault", "bao"]), and we match tokens against those keywords
     pub fn get_executables(&self, source: &CommandSource) -> Vec<String> {
+        let mut seen = HashSet::new();
         self.segment_command(source)
             .into_iter()
             .map(|token| token.executable)
+            .filter(|executable| seen.insert(executable.clone()))
             .collect()
     }
 
@@ -913,10 +1062,23 @@ impl Engine {
         validate_pack_regexes(&pack)?;
         let pack_id = pack.id.clone();
 
+        // Replacing a pack must also replace its dispatch entries. Otherwise
+        // a reload leaves stale IDs in the index and can evaluate a pack that
+        // is no longer installed.
+        if let Some(previous) = self.packs.get(&pack_id) {
+            for keyword in &previous.tool_keywords {
+                let keyword = executable_basename(keyword).to_string();
+                if let Some(pack_ids) = self.keyword_index.get_mut(&keyword) {
+                    pack_ids.retain(|id| id != &pack_id);
+                }
+            }
+        }
+
         // Index tool_keywords for fast dispatch
         for keyword in &pack.tool_keywords {
+            let keyword = executable_basename(keyword).to_string();
             self.keyword_index
-                .entry(keyword.clone())
+                .entry(keyword)
                 .or_insert_with(Vec::new)
                 .push(pack_id.clone());
         }
@@ -1032,10 +1194,9 @@ impl Engine {
     ///
     /// This is the core pack dispatch logic:
     /// 1. Find packs whose tool_keywords match the token's executable
-    /// 2. Also include packs with empty tool_keywords (unconditional packs like secrets)
-    /// 3. For each matching pack, check safe_patterns first (skip the rest if any match)
-    /// 4. Then check guarded_patterns (return first match)
-    /// 5. Return the most severe result (deny > rewrite > warning > allowed)
+    /// 2. For each matching pack, check safe_patterns first (skip the rest if any match)
+    /// 3. Then check guarded_patterns (return first match)
+    /// 4. Return the most severe result (deny > rewrite > warning > allowed)
     pub fn evaluate_token(&self, token: &CommandToken) -> CheckResult {
         match catch_unwind(AssertUnwindSafe(|| self.evaluate_token_inner(token))) {
             Ok(result) => result,
@@ -1057,16 +1218,12 @@ impl Engine {
         let full_command = format!("{} {}", executable, token.args.join(" "));
 
         // Find packs that match this executable via tool_keywords
-        let mut matching_pack_ids: Vec<String> = self.keyword_index
-            .get(executable)
-            .map(|ids| ids.iter().cloned().collect())
-            .unwrap_or_default();
-
-        // Also include packs with empty tool_keywords (unconditional packs like secrets)
-        // These packs scan the entire raw Bash command string regardless of executable
-        for (pack_id, pack) in &self.packs {
-            if pack.tool_keywords.is_empty() {
-                matching_pack_ids.push(pack_id.clone());
+        let mut matching_pack_ids = Vec::new();
+        if let Some(ids) = self.keyword_index.get(executable) {
+            for pack_id in ids {
+                if !matching_pack_ids.contains(pack_id) {
+                    matching_pack_ids.push(pack_id.clone());
+                }
             }
         }
 
@@ -1166,10 +1323,10 @@ impl Engine {
         let tokens = self.segment_command(source);
 
         if tokens.is_empty() {
-            return CheckResult::Allowed;
+            return unconditional_result;
         }
 
-        let mut result = CheckResult::Allowed;
+        let mut result = unconditional_result;
 
         for token in &tokens {
             let token_result = self.evaluate_token_inner(token);
@@ -1721,6 +1878,20 @@ mod tests {
     }
 
     #[test]
+    fn test_segment_with_sudo_options_and_nested_env_prefix() {
+        let engine = default_engine();
+        let source = CommandSource::Hook(
+            "env -i VAULT_TOKEN='x y' sudo --user root /usr/local/bin/vault kv destroy secret/foo"
+                .to_string(),
+        );
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].executable, "vault");
+        assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
     fn test_segment_with_env_assignment() {
         let engine = default_engine();
         let source = CommandSource::Hook("VAULT_TOKEN=xyz vault kv destroy secret/foo".to_string());
@@ -1776,6 +1947,24 @@ mod tests {
     }
 
     #[test]
+    fn test_segment_does_not_split_quoted_or_escaped_separators() {
+        let engine = default_engine();
+        let source = CommandSource::Hook(
+            "vault kv destroy 'secret/foo;bar' && git commit -m \"keep && this\"; echo escaped\\;semi"
+                .to_string(),
+        );
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].executable, "vault");
+        assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo;bar"]);
+        assert_eq!(tokens[1].executable, "git");
+        assert_eq!(tokens[1].args, vec!["commit", "-m", "keep && this"]);
+        assert_eq!(tokens[2].executable, "echo");
+        assert_eq!(tokens[2].args, vec!["escaped;semi"]);
+    }
+
+    #[test]
     fn test_segment_pipe() {
         let engine = default_engine();
         let source = CommandSource::Hook("cat file | grep foo".to_string());
@@ -1810,6 +1999,25 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].executable, "vault");
         assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
+    fn test_argv_mode_preserves_separator_arguments() {
+        let engine = default_engine();
+        let source = engine.read_from_argv(vec![
+            "/usr/bin/git".to_string(),
+            "commit".to_string(),
+            "-m".to_string(),
+            "message;still-one-argument".to_string(),
+        ]);
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].executable, "git");
+        assert_eq!(
+            tokens[0].args,
+            vec!["commit", "-m", "message;still-one-argument"]
+        );
     }
 
     // Pack dispatch tests
@@ -1860,6 +2068,55 @@ mod tests {
         assert_eq!(engine.packs.len(), 2);
         assert_eq!(engine.keyword_index.get("vault").unwrap().len(), 1);
         assert_eq!(engine.keyword_index.get("git").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_command_mode_dispatches_vault_git_misc_and_tmux_packs() {
+        let mut engine = default_engine();
+        for (id, keyword, command) in [
+            ("vault", "vault", "kv destroy"),
+            ("git", "git", "push --force"),
+            ("misc", "misc", "cleanup"),
+            ("tmux", "tmux", "kill-session"),
+        ] {
+            engine
+                .load_pack(crate::rule_pack::Pack {
+                    id: id.to_string(),
+                    tool_keywords: vec![keyword.to_string()],
+                    applies_to: vec![],
+                    safe_patterns: vec![],
+                    guarded_patterns: vec![crate::rule_pack::GuardedPattern {
+                        id: format!("{id}-guard"),
+                        enabled: true,
+                        check: crate::rule_pack::Check::CommandRegex {
+                            regex: format!("{keyword} {command}"),
+                        },
+                        tier: crate::rule_pack::Tier::Tier1,
+                        severity: crate::rule_pack::Severity::High,
+                        explanation: "test command rule".to_string(),
+                        redirect: crate::rule_pack::Redirect {
+                            channel: crate::rule_pack::Channel::Deny,
+                            reason_template: "denied".to_string(),
+                            rewrite_template: None,
+                        },
+                        destructive: true,
+                    }],
+                })
+                .unwrap();
+        }
+
+        for (command, expected_pack) in [
+            ("sudo -n vault kv destroy secret/foo", "vault"),
+            ("/usr/bin/git push --force origin main", "git"),
+            ("misc cleanup", "misc"),
+            ("tmux kill-session -t ABC", "tmux"),
+        ] {
+            let result = engine.evaluate_command(&CommandSource::Hook(command.to_string()));
+            assert!(
+                matches!(result, CheckResult::Denied { ref pack_id, .. } if pack_id == expected_pack),
+                "expected {expected_pack} to deny {command}, got {result:?}"
+            );
+        }
     }
 
     #[test]
