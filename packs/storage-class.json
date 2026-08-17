@@ -1,0 +1,24 @@
+{
+  "id": "storage-class",
+  "tool_keywords": [],
+  "applies_to": ["*.yaml", "*.yml"],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "storage-class-ssd",
+      "type": "content_regex",
+      "regex": "(?m)^[ \\t]*storageClassName:[ \\t]*ssd(?:-large)?[ \\t]*(?:#.*)?$",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "SSD storage classes are prohibited on Rackspace Spot",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "SSD and SSD-Large storage classes are prohibited on Rackspace Spot. Use sata or sata-large instead, and set storageClassName explicitly.",
+        "rewrite_template": null
+      },
+      "example_file_path": "regression.yaml",
+      "example_content": "storageClassName: ssd-large"
+    }
+  ]
+}
