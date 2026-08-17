@@ -17,16 +17,21 @@ fn manifest_declares_yaml_content_mode_and_deny_rule() {
     assert!(pack.tool_keywords.is_empty());
     assert_eq!(pack.applies_to, vec!["*.yaml", "*.yml"]);
     assert!(pack.safe_patterns.is_empty());
-    assert_eq!(pack.guarded_patterns.len(), 1);
+    assert_eq!(pack.guarded_patterns.len(), 2);
 
-    let rule = &pack.guarded_patterns[0];
-    assert_eq!(rule.id, "image-tag-latest");
-    assert!(rule.enabled);
-    assert_eq!(rule.tier, Tier::Tier1);
-    assert_eq!(rule.severity, Severity::High);
-    assert!(rule.destructive);
-    assert_eq!(rule.redirect.channel, Channel::Deny);
-    assert!(matches!(rule.check, Check::ContentRegex { .. }));
+    for (rule, id) in pack
+        .guarded_patterns
+        .iter()
+        .zip(["image-tag-latest", "image-tag-bare-sha"])
+    {
+        assert_eq!(rule.id, id);
+        assert!(rule.enabled);
+        assert_eq!(rule.tier, Tier::Tier1);
+        assert_eq!(rule.severity, Severity::High);
+        assert!(rule.destructive);
+        assert_eq!(rule.redirect.channel, Channel::Deny);
+        assert!(matches!(rule.check, Check::ContentRegex { .. }));
+    }
 }
 
 #[test]
@@ -60,6 +65,38 @@ fn denies_latest_image_tags_in_yaml_and_yml_content() {
 }
 
 #[test]
+fn denies_bare_sha_image_tags_in_yaml_and_yml_content() {
+    let engine = load_image_tag_engine();
+
+    for (file_path, content) in [
+        (
+            "deploy/app.yaml",
+            "containers:\n  - image: ronaldraygun/myapp:0123456789abcdef0123456789abcdef01234567\n",
+        ),
+        ("deploy/app.yml", "image: ronaldraygun/myapp:abcdef12\n"),
+    ] {
+        let result = engine.evaluate_content(&ContentSource::Write {
+            file_path: file_path.to_string(),
+            content: content.to_string(),
+        });
+
+        assert!(
+            matches!(
+                result,
+                CheckResult::Denied {
+                    ref pack_id,
+                    ref pattern_id,
+                    ref reason,
+                } if pack_id == "image-tag"
+                    && pattern_id == "image-tag-bare-sha"
+                    && reason.contains("containers/<name>/VERSION")
+            ),
+            "expected bare SHA in {file_path} to be denied, got {result:?}"
+        );
+    }
+}
+
+#[test]
 fn allows_pinned_images_non_yaml_content_and_commands() {
     let engine = load_image_tag_engine();
 
@@ -67,6 +104,22 @@ fn allows_pinned_images_non_yaml_content_and_commands() {
         engine.evaluate_content(&ContentSource::Write {
             file_path: "deploy/app.yaml".to_string(),
             content: "image: ronaldraygun/myapp:v1.2.3\n".to_string(),
+        }),
+        CheckResult::Allowed
+    );
+
+    assert_eq!(
+        engine.evaluate_content(&ContentSource::Write {
+            file_path: "deploy/app.yaml".to_string(),
+            content: "image: ronaldraygun/myapp@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".to_string(),
+        }),
+        CheckResult::Allowed
+    );
+
+    assert_eq!(
+        engine.evaluate_content(&ContentSource::Write {
+            file_path: "deploy/app.yaml".to_string(),
+            content: "image: otherorg/myapp:0123456789abcdef0123456789abcdef01234567\n".to_string(),
         }),
         CheckResult::Allowed
     );

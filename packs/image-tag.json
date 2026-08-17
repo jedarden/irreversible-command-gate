@@ -19,6 +19,22 @@
       },
       "example_file_path": "regression.yaml",
       "example_content": "image: ronaldraygun/example:latest"
+    },
+    {
+      "id": "image-tag-bare-sha",
+      "type": "content_regex",
+      "regex": "image: ronaldraygun/[a-z-]+:[0-9a-f]{8,64}",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Bare git SHA image tag prevents reproducible deployments",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Never use a bare git SHA for ronaldraygun/* images. Pin a semver tag read from containers/<name>/VERSION.",
+        "rewrite_template": null
+      },
+      "example_file_path": "regression.yaml",
+      "example_content": "image: ronaldraygun/example:0123456789abcdef0123456789abcdef01234567"
     }
   ]
 }
