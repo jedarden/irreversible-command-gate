@@ -4,6 +4,10 @@ use std::process::{Command, Stdio};
 use tempfile::tempdir;
 
 fn run_hook(rule_pack: &std::path::Path, tool_input: Value) -> Value {
+    run_hook_for_tool(rule_pack, "Bash", tool_input)
+}
+
+fn run_hook_for_tool(rule_pack: &std::path::Path, tool_name: &str, tool_input: Value) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
         .args([
             "hook",
@@ -17,7 +21,7 @@ fn run_hook(rule_pack: &std::path::Path, tool_input: Value) -> Value {
         .expect("hook process should start");
 
     let input = json!({
-        "tool_name": "Bash",
+        "tool_name": tool_name,
         "tool_input": tool_input,
     });
     child
@@ -112,6 +116,7 @@ fn emits_allow_deny_rewrite_and_warning_responses() {
         .as_str()
         .expect("deny reason should be a string")
         .contains("Do not discard work"));
+    assert!(denied["hookSpecificOutput"].get("updatedInput").is_none());
 
     let rewritten = run_hook(
         &pack_path,
@@ -142,4 +147,97 @@ fn emits_allow_deny_rewrite_and_warning_responses() {
         .as_str()
         .expect("warning context should be a string")
         .contains("Verify the worktree is disposable"));
+}
+
+#[test]
+fn serializes_content_rewrite_template_and_preserves_tool_input() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = temp.path().join("pack.json");
+    let pack = json!({
+        "id": "content-rewrite-test",
+        "tool_keywords": [],
+        "applies_to": ["*.yaml"],
+        "safe_patterns": [],
+        "guarded_patterns": [{
+            "id": "rewrite-storage-class",
+            "type": "content_regex",
+            "regex": "storageClassName: ssd",
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": "Use the portable storage class",
+            "redirect": {
+                "channel": "updated_input",
+                "reason_template": "Rewrite the storage class",
+                "rewrite_template": "storageClassName: sata"
+            },
+            "destructive": true
+        }]
+    });
+    std::fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("pack should serialize"),
+    )
+    .expect("pack should be written");
+
+    let rewritten = run_hook_for_tool(
+        &pack_path,
+        "Write",
+        json!({
+            "filePath": "deployment.yaml",
+            "content": "storageClassName: ssd",
+            "encoding": "utf-8"
+        }),
+    );
+    let output = &rewritten["hookSpecificOutput"];
+    assert_eq!(output["permissionDecision"], "allow");
+    assert_eq!(output["updatedInput"]["content"], "storageClassName: sata");
+    assert_eq!(output["updatedInput"]["filePath"], "deployment.yaml");
+    assert_eq!(output["updatedInput"]["encoding"], "utf-8");
+}
+
+#[test]
+fn preserves_snake_case_edit_input_when_serializing_rewrite() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = temp.path().join("pack.json");
+    let pack = json!({
+        "id": "edit-rewrite-test",
+        "tool_keywords": [],
+        "applies_to": ["*.txt"],
+        "safe_patterns": [],
+        "guarded_patterns": [{
+            "id": "rewrite-text",
+            "type": "content_regex",
+            "regex": "unsafe",
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": "Use the safe text",
+            "redirect": {
+                "channel": "updated_input",
+                "reason_template": "Rewrite the unsafe text",
+                "rewrite_template": "safe"
+            },
+            "destructive": true
+        }]
+    });
+    std::fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&pack).expect("pack should serialize"),
+    )
+    .expect("pack should be written");
+
+    let rewritten = run_hook_for_tool(
+        &pack_path,
+        "Edit",
+        json!({
+            "file_path": "notes.txt",
+            "old_string": "unsafe",
+            "new_string": "unsafe",
+            "description": "preserve this field"
+        }),
+    );
+    let output = &rewritten["hookSpecificOutput"];
+    assert_eq!(output["permissionDecision"], "allow");
+    assert_eq!(output["updatedInput"]["new_string"], "safe");
+    assert!(output["updatedInput"].get("newString").is_none());
+    assert_eq!(output["updatedInput"]["description"], "preserve this field");
 }

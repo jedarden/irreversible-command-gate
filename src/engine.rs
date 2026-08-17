@@ -1712,13 +1712,14 @@ impl Engine {
                 pattern_id: pattern.id.clone(),
             },
             crate::rule_pack::Channel::UpdatedInput => {
-                // For content-mode, updatedInput would provide corrected content
-                // This is not yet implemented - would require rewrite_template to
-                // specify the replacement content
-                let reason = format!("{reason} (content-mode updatedInput not yet implemented)");
+                let rewrite = pattern
+                    .redirect
+                    .rewrite_template
+                    .clone()
+                    .unwrap_or_else(|| source.new_content().to_string());
                 CheckResult::Rewrite {
                     reason,
-                    rewrite: format!("<corrected content for {}>", source.file_path()),
+                    rewrite,
                     pack_id: pack_id.to_string(),
                     pattern_id: pattern.id.clone(),
                 }

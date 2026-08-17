@@ -267,10 +267,22 @@ fn render_hook_response(
     }
 }
 
-fn updated_input_key(tool_name: Option<&str>) -> &'static str {
+fn updated_input_key(
+    tool_name: Option<&str>,
+    original_input: Option<&serde_json::Value>,
+) -> &'static str {
     match tool_name {
         Some("Write") => "content",
-        Some("Edit") => "newString",
+        Some("Edit") => {
+            if original_input
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|input| input.contains_key("new_string"))
+            {
+                "new_string"
+            } else {
+                "newString"
+            }
+        }
         _ => "command",
     }
 }
@@ -406,6 +418,7 @@ fn main() -> Result<()> {
             };
             let input_key = updated_input_key(
                 hook_input.as_ref().map(|input| input.tool_name.as_str()),
+                original_input.as_ref(),
             );
             let input_source = match hook_input {
                 Some(input) => match Engine::input_source_from_pre_tool_use(input) {
