@@ -1,0 +1,24 @@
+{
+  "id": "image-tag",
+  "tool_keywords": [],
+  "applies_to": ["*.yaml", "*.yml"],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "image-tag-latest",
+      "type": "content_regex",
+      "regex": "(?m)^[ \\t]*-?[ \\t]*image:[ \\t]*[^#\\n]*:latest[ \\t]*$",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Using :latest image tag prevents reproducible deployments",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "The :latest image tag is banned — it silently changes what runs and makes rollback impossible. Pin a semver tag read from containers/<name>/VERSION.",
+        "rewrite_template": null
+      },
+      "example_file_path": "regression.yaml",
+      "example_content": "image: ronaldraygun/example:latest"
+    }
+  ]
+}
