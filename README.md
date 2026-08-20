@@ -32,11 +32,21 @@ Stated plainly, because it's easy to assume more than is actually true:
   repository trying to trick an otherwise-honest agent.** That's a
   different threat class, explicitly out of scope (see the ideas ledger's
   second run for why that idea was killed rather than adopted).
-- **The native hook is the supported front-end in the current tree.** The
-  `icg wrapper` subcommand is still a parser scaffold: it does not execute a
-  real shadowed binary or enforce a rule pack, so PATH symlinks must not be
-  deployed from this build. Even a completed PATH wrapper would not cover
-  absolute-path invocations or direct library calls.
+- **Both hook and PATH-wrapper front-ends are fully implemented.** The
+  binary automatically detects when invoked under a shadowed name (via symlinks
+  like `vault` → `icg` in PATH) and runs command-mode checks before exec'ing
+  the real binary. Hook mode (`icg hook`) handles both command-mode and
+  content-mode (Write/Edit) checks via the PreToolUse JSON protocol.
+  The wrapper does not cover absolute-path invocations or direct library calls.
+
+## Getting Started
+
+New to icg? Start here:
+
+- **[Onboarding Guide](docs/onboarding-guide.md)** — Structured learning path for operators and developers (recommended starting point)
+- **[Quick Start Guide](docs/quick-start.md)** — Get up and running in 5 minutes
+- **[Training Manual](docs/operators/training-manual.md)** — Comprehensive operator training (8-hour learning path)
+- **[Examples](docs/examples/README.md)** — Real-world scenarios and workflows
 
 ## Structure
 
@@ -47,6 +57,12 @@ Stated plainly, because it's easy to assume more than is actually true:
   (`destructive_command_guard`, `agent-guard`, `vault-mcp-server`, etc.)
 - `docs/operators/` — installation, deployment, upgrade, and troubleshooting
   procedures for the current CLI
+  - `training-manual.md` — Comprehensive operator training guide
+  - `deny-messages.md` — Complete denial message interpretation guide
+- `docs/developers/` — developer documentation for extending icg
+  - `rule-pack-best-practices.md` — Best practices for rule pack authoring
+- `docs/examples/` — real-world scenarios and workflows
+- `docs/onboarding-guide.md` — structured learning path with role-specific tracks
 - `docs/plan/plan.md` — complete application plan
 
 ## Fixed deny-regression suite
@@ -77,3 +93,4 @@ icg new-pack <tool> --pack-type command --output-dir path/to/output
 `--pack-type` may be `command` (the default) or `content`. The command writes
 `<tool>.json` and `<tool>_pack_tests.rs`, pre-filling the pack and guarded-rule
 fields. It refuses to overwrite either file, so an existing scaffold must be
+removed or renamed deliberately before retrying.
