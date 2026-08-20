@@ -31,6 +31,20 @@
         "reason_template": "bead doctor --repair is denied unless flush has already occurred this session. Run 'bead sync flush-only' first, then retry repair. This ordering prevents reinitializing a corrupted store when the checkpoint is stale.",
         "rewrite_template": null
       }
+    },
+    {
+      "id": "beads-flush-requires-pull",
+      "type": "predicate",
+      "predicate_name": "flush_requires_pull",
+      "tier": "tier2",
+      "severity": "High",
+      "explanation": "Flushing before pull risks committing stale checkpoint state. If the remote has commits you don't have, flushing before pull makes the checkpoint permanently out-of-sync with the real repository state.",
+      "destructive": false,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "bead sync flush-only is denied unless git pull has already occurred this session. Run 'git pull' first, then retry flush. This ordering prevents committing a stale checkpoint that doesn't reflect remote commits.",
+        "rewrite_template": null
+      }
     }
   ]
 }

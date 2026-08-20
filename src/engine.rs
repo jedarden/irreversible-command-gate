@@ -1672,6 +1672,21 @@ impl Engine {
                     Ok(false)
                 }
             }
+            "flush_requires_pull" => {
+                // Tier 2: Deny bead/bf sync flush-only unless git pull has already occurred this session
+                // Returns true (pattern matches/deny) when:
+                // 1. The command is a flush operation (bead/bf sync flush-only), AND
+                // 2. Git pull has NOT occurred in this session
+                if let Some(state_store) = &self.state_store {
+                    let is_flush = command.contains("sync") && command.contains("flush-only");
+                    let pull_has_occurred = state_store.has_git_pull()?;
+                    // Deny only if this is a flush command AND pull hasn't happened
+                    Ok(is_flush && !pull_has_occurred)
+                } else {
+                    // No state store available - fail open (allow the command)
+                    Ok(false)
+                }
+            }
             _ => {
                 // Unknown predicate - fail open (allow the command)
                 Ok(false)
