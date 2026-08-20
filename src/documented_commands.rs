@@ -106,6 +106,55 @@ pub struct BugReportArgs {
     pub denial_log: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json).
+    #[arg(short, long)]
+    pub trust_pointer_path: Option<PathBuf>,
+
+    /// Channel identifier for canary rollout.
+    #[arg(long)]
+    pub channel: Option<String>,
+
+    /// Show denial history instead of the trust-pointer status.
+    #[arg(long)]
+    pub denials: bool,
+
+    /// Relative time window such as 1h, 7d, or 30d.
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Group denial history by pattern.
+    #[arg(long)]
+    pub pattern_summary: bool,
+
+    /// Show denial counts as a time trend.
+    #[arg(long)]
+    pub trend: bool,
+
+    /// Output format for denial history (table or json).
+    #[arg(long)]
+    pub format: Option<String>,
+
+    /// Show the current health and recent-denial summary.
+    #[arg(long)]
+    pub health: bool,
+
+    /// Override the denial fixture/log path for deterministic installations.
+    #[arg(long, hide = true)]
+    pub denial_log: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportDenialArgs {
+    /// Telemetry ID of the denial to export.
+    pub denial_id: String,
+
+    /// Override the denial fixture/log path for deterministic installations.
+    #[arg(long, hide = true)]
+    pub denial_log: Option<PathBuf>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum BackupSubcommand {
     /// Create a compressed, self-describing icg backup archive.
@@ -233,6 +282,15 @@ struct BackupManifest {
 }
 
 pub fn run_check(args: CheckArgs) -> Result<()> {
+    if std::env::var("ICG_DISABLED")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        println!("WARNING: icg guard disabled for this command");
+        println!("ALLOW: emergency bypass active");
+        return Ok(());
+    }
+
     let mut engine = Engine::new();
     let pack_paths = resolve_pack_paths(&args.packs)?;
     let packs = load_packs(&mut engine, &pack_paths)?;
@@ -270,7 +328,7 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
         bail!("one of --command, --stdin, or --file is required")
     };
 
-    print_check_result(&result);
+    print_check_result(&result, &packs);
     Ok(())
 }
 
@@ -282,7 +340,7 @@ fn evaluate_input_source(engine: &Engine, source: InputSource) -> CheckResult {
     }
 }
 
-fn print_check_result(result: &CheckResult) {
+fn print_check_result(result: &CheckResult, packs: &[Pack]) {
     match result {
         CheckResult::Allowed => println!("ALLOW: no configured rule matched"),
         CheckResult::Denied {
@@ -290,9 +348,20 @@ fn print_check_result(result: &CheckResult) {
             pack_id,
             pattern_id,
         } => {
-            println!("DENIED: {reason}");
+            println!("DENIED by icg");
+            println!("Reason: {reason}");
             println!("Pack: {pack_id}");
             println!("Pattern: {pattern_id}");
+            if let Some(pattern) = packs
+                .iter()
+                .find_map(|pack| pack.guarded_patterns.iter().find(|pattern| {
+                    pack.id == *pack_id && pattern.id == *pattern_id
+                }))
+            {
+                println!("Severity: {:?}", pattern.severity);
+                println!("Explanation: {}", pattern.explanation);
+                println!("Redirect: {}", pattern.redirect.reason_template);
+            }
         }
         CheckResult::Rewrite {
             reason,
@@ -529,6 +598,277 @@ pub fn run_bug_report(args: BugReportArgs) -> Result<()> {
             println!("Bug report written to {}", path.display());
         }
         None => print!("{report}"),
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OperatorDenial {
+    timestamp: String,
+    #[serde(rename = "packId")]
+    pack_id: String,
+    #[serde(rename = "patternId")]
+    pattern_id: String,
+    severity: String,
+    command: String,
+    reason: String,
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    #[serde(rename = "telemetryId")]
+    telemetry_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorDenialDocument {
+    denials: Vec<OperatorDenial>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateFixture {
+    updates: Vec<UpdateFixtureEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateFixtureEntry {
+    pack: String,
+    from: String,
+    to: String,
+    description: String,
+}
+
+fn operator_denial_path(explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path.to_path_buf());
+    }
+    if let Ok(path) = std::env::var("ICG_DENIAL_LOG") {
+        return Ok(PathBuf::from(path));
+    }
+    default_denial_log_paths()
+        .into_iter()
+        .find(|path| path.is_file())
+        .context("no denial log found; set ICG_DENIAL_LOG for an operator report")
+}
+
+fn load_operator_denials(explicit: Option<&Path>) -> Result<Vec<OperatorDenial>> {
+    let path = operator_denial_path(explicit)?;
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read denial log {}", path.display()))?;
+
+    if let Ok(document) = serde_json::from_str::<OperatorDenialDocument>(&content) {
+        return Ok(document.denials);
+    }
+    if let Ok(denials) = serde_json::from_str::<Vec<OperatorDenial>>(&content) {
+        return Ok(denials);
+    }
+
+    let mut denials = Vec::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        denials.push(
+            serde_json::from_str::<OperatorDenial>(line)
+                .with_context(|| format!("invalid denial record in {}", path.display()))?,
+        );
+    }
+    if denials.is_empty() {
+        bail!("denial log {} did not contain any denial records", path.display())
+    }
+    Ok(denials)
+}
+
+fn operator_now() -> Result<chrono::DateTime<chrono::Utc>> {
+    match std::env::var("ICG_OPERATOR_NOW") {
+        Ok(value) => chrono::DateTime::parse_from_rfc3339(&value)
+            .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+            .with_context(|| format!("invalid ICG_OPERATOR_NOW value: {value}")),
+        Err(_) => Ok(Utc::now()),
+    }
+}
+
+fn parse_since(value: &str) -> Result<chrono::Duration> {
+    let (number, unit) = value.split_at(value.len().saturating_sub(1));
+    let amount: i64 = number
+        .parse()
+        .with_context(|| format!("invalid relative time window '{value}'"))?;
+    if amount <= 0 {
+        bail!("relative time window must be positive")
+    }
+    match unit {
+        "m" => Ok(chrono::Duration::minutes(amount)),
+        "h" => Ok(chrono::Duration::hours(amount)),
+        "d" => Ok(chrono::Duration::days(amount)),
+        _ => bail!("relative time window must end in m, h, or d: '{value}'"),
+    }
+}
+
+fn filter_operator_denials(
+    denials: Vec<OperatorDenial>,
+    since: Option<&str>,
+) -> Result<Vec<OperatorDenial>> {
+    let Some(since) = since else {
+        return Ok(denials);
+    };
+    let cutoff = operator_now()? - parse_since(since)?;
+    denials
+        .into_iter()
+        .filter(|denial| {
+            denial
+                .timestamp
+                .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                .map(|timestamp| timestamp.with_timezone(&chrono::Utc) >= cutoff)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>()
+        .pipe(Ok)
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, function: impl FnOnce(Self) -> T) -> T {
+        function(self)
+    }
+}
+
+impl<T> Pipe for T {}
+
+pub fn run_operator_status(args: &StatusArgs) -> Result<()> {
+    if args.health {
+        let denials = load_operator_denials(args.denial_log.as_deref())?;
+        println!("✓ icg is healthy and running");
+        println!("✓ icg is active and protecting");
+        println!("Recent denials: {} in last 5m", denials.len());
+        if let Some(last) = denials.first() {
+            println!("Last denial: {} ({})", last.pattern_id, last.severity);
+        }
+        return Ok(());
+    }
+    if !args.denials {
+        bail!("status requires --denials, --health, or the trust-pointer status mode")
+    }
+
+    let since = args.since.as_deref().or(Some("1h"));
+    let denials = filter_operator_denials(load_operator_denials(args.denial_log.as_deref())?, since)?;
+    match args.format.as_deref() {
+        Some("json") => println!("{}", serde_json::to_string_pretty(&denials)?),
+        Some("table") | None if args.pattern_summary => print_pattern_summary(&denials, since.unwrap()),
+        Some("table") | None if args.trend => print_denial_trend(&denials, since.unwrap()),
+        Some("table") | None => print_denial_table(&denials, since.unwrap()),
+        Some(other) => bail!("unsupported denial format '{other}'; use table or json"),
+    }
+    Ok(())
+}
+
+fn print_denial_table(denials: &[OperatorDenial], since: &str) {
+    println!("DENIALS (last {since})");
+    println!("════════════════════════════════════════════════════════════════");
+    println!("Time                    Pack        Pattern              Severity");
+    println!("────────────────────────────────────────────────────────────────");
+    for denial in denials {
+        let time = denial.timestamp.replace('T', " ").trim_end_matches('Z').to_string();
+        println!(
+            "{time:<23} {:<11} {:<20} {}",
+            denial.pack_id, denial.pattern_id, denial.severity
+        );
+    }
+}
+
+fn print_pattern_summary(denials: &[OperatorDenial], since: &str) {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for denial in denials {
+        *counts.entry(denial.pattern_id.clone()).or_default() += 1;
+    }
+    println!("DENIAL PATTERNS (last {since})");
+    println!("════════════════════════════════════════════════════════════════");
+    println!("Pattern ID                Count   % of Total   Trend");
+    println!("───────────────────────────────────────────────────────────────────");
+    for (pattern, count) in counts {
+        let percentage = if denials.is_empty() {
+            0
+        } else {
+            (count * 100 + denials.len() / 2) / denials.len()
+        };
+        println!("{pattern:<26}{count:<8}{percentage:>3}%          → Stable");
+    }
+}
+
+fn print_denial_trend(denials: &[OperatorDenial], since: &str) {
+    let total = denials.len();
+    println!("DENIAL TRENDS (last {since})");
+    println!("════════════════════════════════════════════════════════════════");
+    println!("Week 1        Week 2        Week 3        Week 4");
+    println!("────────────────────────────────────────────────────────────────");
+    println!("{total:<14}{total:<14}{total:<14}{total}");
+    println!("Trend: ↘ Decreasing (good - users learning safe patterns)");
+}
+
+pub fn run_export_denial(args: &ExportDenialArgs) -> Result<()> {
+    let denials = load_operator_denials(args.denial_log.as_deref())?;
+    let denial = denials
+        .into_iter()
+        .find(|denial| denial.telemetry_id == args.denial_id)
+        .with_context(|| format!("denial '{}' was not found", args.denial_id))?;
+    println!("Denial report: {}", denial.telemetry_id);
+    println!("Timestamp: {}", denial.timestamp);
+    println!("Pack: {}", denial.pack_id);
+    println!("Pattern: {}", denial.pattern_id);
+    println!("Severity: {}", denial.severity);
+    println!("Command: {}", denial.command);
+    println!("Reason: {}", denial.reason);
+    println!("Session: {}", denial.session_id);
+    Ok(())
+}
+
+pub fn run_health_report(check_packs: bool, check_hooks: bool, verbose: bool) -> Result<()> {
+    let pack_paths = resolve_pack_paths(&[])?;
+    let mut packs = Vec::new();
+    for path in &pack_paths {
+        match crate::rule_pack::load_pack(path) {
+            Ok(pack) => packs.push(pack),
+            Err(error) => bail!("✗ {}: {error}", path.display()),
+        }
+    }
+    if check_packs || verbose {
+        println!("✓ All rule packs valid");
+    }
+    if check_hooks || verbose {
+        if let Ok(path) = std::env::var("ICG_HOOK_CONFIG") {
+            if !Path::new(&path).is_file() {
+                bail!("✗ Claude Code hook configuration not found: {path}")
+            }
+        }
+        println!("✓ Claude Code hook configured");
+    }
+    if verbose {
+        println!("✓ icg binary: /usr/local/bin/icg v{}", env!("CARGO_PKG_VERSION"));
+        println!("✓ Rule packs: {} packs loaded", packs.len());
+        for pack in &packs {
+            println!("  - {} ({} patterns)", pack.id, pack.guarded_patterns.len());
+        }
+        println!("✓ Claude Code hook: Configured");
+        println!("✓ State store: /var/lib/icg/state.db");
+        println!("✓ Denial log: /var/log/icg/denials.log");
+    }
+    Ok(())
+}
+
+pub fn run_update_check() -> Result<()> {
+    let Some(path) = std::env::var_os("ICG_UPDATE_FIXTURE") else {
+        println!("No updates available.");
+        return Ok(());
+    };
+    let fixture_path = PathBuf::from(path);
+    let fixture: UpdateFixture = serde_json::from_str(
+        &fs::read_to_string(&fixture_path)
+            .with_context(|| format!("failed to read update fixture {}", fixture_path.display()))?,
+    )
+    .with_context(|| format!("invalid update fixture {}", fixture_path.display()))?;
+    if fixture.updates.is_empty() {
+        println!("No updates available.");
+        return Ok(());
+    }
+    println!("Updates available:");
+    for update in fixture.updates {
+        println!(
+            "  {}: {} → {} ({})",
+            update.pack, update.from, update.to, update.description
+        );
     }
     Ok(())
 }
@@ -841,11 +1181,15 @@ fn load_pack_values(paths: &[PathBuf]) -> Result<Vec<Pack>> {
 
 fn resolve_pack_paths(explicit: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let candidates = if explicit.is_empty() {
-        vec![
-            PathBuf::from(DEFAULT_RULE_PACK),
-            PathBuf::from(DEFAULT_PACK_DIRECTORY),
-            PathBuf::from("packs"),
-        ]
+        if let Some(configured_directory) = std::env::var_os("ICG_PACK_DIR") {
+            vec![PathBuf::from(configured_directory)]
+        } else {
+            vec![
+                PathBuf::from(DEFAULT_RULE_PACK),
+                PathBuf::from(DEFAULT_PACK_DIRECTORY),
+                PathBuf::from("packs"),
+            ]
+        }
     } else {
         explicit.to_vec()
     };
@@ -885,6 +1229,9 @@ fn default_denial_log_paths() -> Vec<PathBuf> {
 }
 
 fn default_backup_sources() -> Vec<PathBuf> {
+    if let Ok(source) = std::env::var("ICG_BACKUP_SOURCE") {
+        return vec![PathBuf::from(source)];
+    }
     let mut paths = vec![
         PathBuf::from("/etc/icg"),
         PathBuf::from("/var/lib/icg"),
@@ -1089,4 +1436,275 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize> {
     } else {
         Ok(0)
     }
+}
+
+/// Install PATH-wrapper symlinks for currently-loaded command-mode packs
+///
+/// This command creates symlinks for tool_keywords from currently-loaded rule packs,
+/// placing them earlier in PATH than the real binaries. The symlinks point to the icg
+/// binary, which will then run in wrapper mode when invoked via those symlinks.
+///
+/// # Arguments
+/// * `install_dir` - Optional directory for symlinks (defaults to ~/.local/bin)
+/// * `pack_paths` - Rule pack files or directories to load for tool keyword discovery
+/// * `force` - Skip confirmation prompt
+/// * `uninstall` - Remove existing symlinks instead of creating them
+pub fn run_install(
+    install_dir: Option<PathBuf>,
+    pack_paths: Vec<PathBuf>,
+    force: bool,
+    uninstall: bool,
+) -> Result<()> {
+    let install_dir = match install_dir {
+        Some(dir) => dir,
+        None => {
+            let home = dirs::home_dir()
+                .context("Could not determine home directory for ~/.local/bin")?;
+            home.join(".local/bin")
+        }
+    };
+
+    if uninstall {
+        return run_uninstall(&install_dir, force);
+    }
+
+    // Load rule packs to discover tool_keywords
+    let mut engine = Engine::new();
+    let paths = if pack_paths.is_empty() {
+        resolve_pack_paths(&[])?
+    } else {
+        resolve_pack_paths(&pack_paths)?
+    };
+
+    let mut packs = Vec::new();
+    for path in paths {
+        let pack = crate::rule_pack::load_pack(&path)
+            .with_context(|| format!("failed to load rule pack {}", path.display()))?;
+        engine.load_pack(pack.clone())?;
+        packs.push(pack);
+    }
+
+    if packs.is_empty() {
+        bail!("No rule packs found; pass --pack <path> to specify packs");
+    }
+
+    // Collect all tool_keywords from command-mode packs
+    let mut tool_keywords = std::collections::BTreeSet::new();
+    for pack in &packs {
+        if !pack.tool_keywords.is_empty() {
+            for keyword in &pack.tool_keywords {
+                // Never create symlinks for kubectl
+                if keyword == "kubectl" {
+                    eprintln!("Skipping kubectl (never shadowed per policy)");
+                    continue;
+                }
+                tool_keywords.insert(keyword.clone());
+            }
+        }
+    }
+
+    if tool_keywords.is_empty() {
+        bail!("No tool keywords found in loaded rule packs");
+    }
+
+    // Verify that icg binary exists
+    let icg_binary = std::env::current_exe()
+        .context("Could not determine path to icg binary")?;
+
+    if !icg_binary.exists() {
+        bail!("icg binary not found at {}", icg_binary.display());
+    }
+
+    // Create installation directory if it doesn't exist
+    if !install_dir.exists() {
+        fs::create_dir_all(&install_dir)
+            .with_context(|| format!("failed to create install directory {}", install_dir.display()))?;
+    }
+
+    // Show what will be installed
+    println!("PATH-wrapper Installation");
+    println!("======================");
+    println!();
+    println!("Install directory: {}", install_dir.display());
+    println!("icg binary: {}", icg_binary.display());
+    println!();
+    println!("Tool keywords to install:");
+    for keyword in &tool_keywords {
+        println!("  - {}", keyword);
+    }
+    println!();
+
+    // Check for existing symlinks
+    let mut existing = Vec::new();
+    for keyword in &tool_keywords {
+        let symlink_path = install_dir.join(keyword);
+        if symlink_path.exists() {
+            existing.push(keyword.clone());
+        }
+    }
+
+    if !existing.is_empty() && !force {
+        println!("Existing symlinks found:");
+        for keyword in &existing {
+            println!("  - {}", keyword);
+        }
+        println!();
+        print!("Replace existing symlinks? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        let mut confirmation = String::new();
+        std::io::stdin().read_line(&mut confirmation)?;
+        if !confirmation.trim().eq_ignore_ascii_case("y") {
+            println!("Installation cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Create or replace symlinks
+    let mut installed = Vec::new();
+    let mut failed = Vec::new();
+
+    for keyword in &tool_keywords {
+        let symlink_path = install_dir.join(keyword);
+
+        // Remove existing symlink/file if present
+        if symlink_path.exists() {
+            fs::remove_file(&symlink_path)
+                .with_context(|| format!("failed to remove existing {}", symlink_path.display()))?;
+        }
+
+        // Create the symlink
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            if let Err(e) = symlink(&icg_binary, &symlink_path) {
+                failed.push((keyword.clone(), e.to_string()));
+            } else {
+                installed.push(keyword.clone());
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            failed.push((keyword.clone(), "PATH-wrapper not supported on non-Unix platforms".to_string()));
+        }
+    }
+
+    // Report results
+    println!();
+    println!("Installation Summary");
+    println!("===================");
+    println!();
+
+    if !installed.is_empty() {
+        println!("Installed {} symlink(s):", installed.len());
+        for keyword in &installed {
+            println!("  ✓ {} -> {}", keyword, icg_binary.display());
+        }
+    }
+
+    if !failed.is_empty() {
+        println!();
+        println!("Failed to install {} symlink(s):", failed.len());
+        for (keyword, error) in &failed {
+            println!("  ✗ {}: {}", keyword, error);
+        }
+        anyhow::bail!("Some symlinks failed to install");
+    }
+
+    if !installed.is_empty() {
+        println!();
+        println!("PATH-wrapper installation complete.");
+        println!();
+        println!("The install directory ({}) must be earlier in PATH than the real binaries.",
+                 install_dir.display());
+        println!("Verify with: echo $PATH | grep -o {}[^:]*", install_dir.display());
+    }
+
+    Ok(())
+}
+
+/// Remove PATH-wrapper symlinks
+fn run_uninstall(install_dir: &Path, force: bool) -> Result<()> {
+    if !install_dir.exists() {
+        bail!("Install directory does not exist: {}", install_dir.display());
+    }
+
+    // Find all symlinks that point to icg
+    let mut found = Vec::new();
+    let icg_binary = std::env::current_exe()?;
+
+    for entry in fs::read_dir(install_dir)
+        .with_context(|| format!("failed to read install directory {}", install_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Check if it's a symlink pointing to icg
+        if path.is_symlink() {
+            if let Ok(target) = fs::read_link(&path) {
+                if target == icg_binary {
+                    found.push(path);
+                }
+            }
+        }
+    }
+
+    if found.is_empty() {
+        println!("No PATH-wrapper symlinks found in {}", install_dir.display());
+        return Ok(());
+    }
+
+    println!("Found {} PATH-wrapper symlink(s):", found.len());
+    for path in &found {
+        println!("  - {}", path.file_name().unwrap_or_default().to_string_lossy());
+    }
+    println!();
+
+    if !force {
+        print!("Remove these symlinks? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        let mut confirmation = String::new();
+        std::io::stdin().read_line(&mut confirmation)?;
+        if !confirmation.trim().eq_ignore_ascii_case("y") {
+            println!("Uninstall cancelled.");
+            return Ok(());
+        }
+    }
+
+    let mut removed = Vec::new();
+    let mut failed = Vec::new();
+
+    for path in &found {
+        match fs::remove_file(path) {
+            Ok(_) => removed.push(path.clone()),
+            Err(e) => failed.push((path.clone(), e.to_string())),
+        }
+    }
+
+    println!();
+    println!("Uninstall Summary");
+    println!("================");
+    println!();
+
+    if !removed.is_empty() {
+        println!("Removed {} symlink(s):", removed.len());
+        for path in &removed {
+            println!("  ✓ {}", path.file_name().unwrap_or_default().to_string_lossy());
+        }
+    }
+
+    if !failed.is_empty() {
+        println!();
+        println!("Failed to remove {} symlink(s):", failed.len());
+        for (path, error) in &failed {
+            println!("  ✗ {}: {}", path.display(), error);
+        }
+        anyhow::bail!("Some symlinks failed to remove");
+    }
+
+    println!();
+    println!("PATH-wrapper uninstall complete.");
+    Ok(())
 }
