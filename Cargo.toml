@@ -1,7 +1,7 @@
 [package]
 name = "icg"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -9,7 +9,14 @@ serde_json = "1.0"
 regex = "1.11"
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.40", features = ["full"] }
+dirs = "5.0"
+thiserror = "1.0"
+uuid = { version = "1.11", features = ["v4"] }
+libc = "0.2"
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3.13"
