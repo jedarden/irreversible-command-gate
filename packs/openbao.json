@@ -1,0 +1,86 @@
+{
+  "id": "openbao",
+  "tool_keywords": ["bao", "vault"],
+  "applies_to": [],
+  "safe_patterns": [
+    {
+      "id": "safe-bao-status",
+      "type": "command_regex",
+      "regex": "(?i)^(bao|vault)\\s+status\\b"
+    },
+    {
+      "id": "safe-bao-token-lookup",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+token\\s+lookup\\b"
+    },
+    {
+      "id": "safe-bao-token-revoke-self",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+token\\s+revoke\\s+-self\\b"
+    },
+    {
+      "id": "safe-bao-policy-read",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+policy\\s+(read|list)\\b"
+    },
+    {
+      "id": "safe-bao-kv-metadata-get",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+kv\\s+metadata\\s+get\\b"
+    },
+    {
+      "id": "safe-bao-kv-list",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+kv\\s+list\\b"
+    },
+    {
+      "id": "safe-bao-kv-get-redirected",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+kv\\s+get\\b[^\\n]*>"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "openbao-inline-secret-literal",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+kv\\s+(put|patch)\\b.*\\s[A-Za-z_][A-Za-z0-9_.-]*=[^-@\\s]",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "A credential value passed as a command-line argument is captured in the agent transcript, in shell history, and in ps output. The leak happens before the write ever reaches OpenBao.",
+      "destructive": false,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "This puts a secret VALUE in argv, which lands in the transcript, shell history and ps. Pass it by file descriptor instead: 'key=-' to read that field from stdin (e.g. `openssl rand -base64 32 | bao kv put <path> password=-`), or '@file.json' to read the whole object from a mode-600 file. See 'OpenBao — Agent Read/Write Access' in ~/CLAUDE.md.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "openbao-destructive-verb",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+(kv\\s+destroy|kv\\s+metadata\\s+delete|secrets\\s+disable|auth\\s+disable|policy\\s+delete|operator\\s+rekey|lease\\s+revoke)\\b",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Permanently destroys secret data, an auth mount, a policy, or the unseal shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that is not written back leaves the instance unable to unseal.",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are written back first (see ~/scratch/openbao-rotation/README.md). If this is genuinely intended, a human runs it.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "openbao-kv-get-to-stdout",
+      "type": "command_regex",
+      "regex": "(?i)\\b(bao|vault)\\s+kv\\s+get\\b",
+      "tier": "tier2",
+      "severity": "Medium",
+      "explanation": "Reading a secret to stdout puts its value in the agent transcript and any log capturing it. Reads should land in a destination, not the terminal.",
+      "destructive": false,
+      "redirect": {
+        "channel": "additional_context",
+        "reason_template": "This read prints a secret value to stdout, where it enters the transcript. Prefer redirecting to a mode-600 destination (`bao kv get -field=<k> <path> > ~/.config/<app>/creds`), or consuming it inline for one command via an environment assignment. To check that a path exists without revealing the value, use `bao kv metadata get`.",
+        "rewrite_template": null
+      }
+    }
+  ]
+}
