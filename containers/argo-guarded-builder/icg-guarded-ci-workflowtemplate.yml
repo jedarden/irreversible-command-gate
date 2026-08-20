@@ -1,0 +1,144 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: icg-guarded-ci
+  namespace: argo-workflows
+  labels:
+    app: icg-guarded-ci
+spec:
+  # Backstop against a run that hangs before its pod ever starts
+  activeDeadlineSeconds: 7200
+  entrypoint: ci
+  serviceAccountName: argo-workflow
+  templates:
+    - name: ci
+      steps:
+        # Stage 1: Build with PATH-wrapper protection
+        - - name: guarded-build
+            template: build-with-guard
+            arguments:
+              parameters:
+                - name: repo
+                  value: "{{workflow.parameters.repo}}"
+                - name: revision
+                  value: "{{workflow.parameters.revision}}"
+
+        # Stage 2: Test (continues with same protection)
+        - - name: guarded-test
+            template: test-with-guard
+            arguments:
+              parameters:
+                - name: repo
+                  value: "{{workflow.parameters.repo}}"
+                - name: revision
+                  value: "{{workflow.parameters.revision}}"
+
+    - name: build-with-guard
+      activeDeadlineSeconds: 3600
+      inputs:
+        parameters:
+          - name: repo
+          - name: revision
+      container:
+        # This image includes icg PATH-wrapper pre-installed
+        # Note: Update this tag when building new versions of the guarded builder
+        # Check containers/argo-guarded-builder/VERSION for the current version
+        image: ronaldraygun/argo-guarded-builder:0.1.0
+        imagePullPolicy: IfNotPresent
+        command: [bash, -c]
+        args:
+          - |
+            set -ex
+
+            REPO="{{inputs.parameters.repo}}"
+            REVISION="{{inputs.parameters.revision}}"
+
+            echo "=== icg Guarded Build ==="
+            echo "Repository: ${REPO}"
+            echo "Revision: ${REVISION}"
+            echo
+
+            # Show icg status
+            echo "=== icg Status ==="
+            icg status || true
+            echo
+
+            # Clone the repository
+            echo "=== Cloning repository ==="
+            git clone "${REPO}" /workspace
+            cd /workspace
+            git checkout "${REVISION}"
+            echo
+
+            # Normal operations are allowed
+            echo "=== Running cargo build ==="
+            cargo build --release
+            echo
+
+            # Dangerous operations would be blocked
+            # Uncomment to test denial:
+            # git push --force  # This would be DENIED
+
+            echo "✅ Build completed successfully"
+        env:
+          - name: ICG_RULE_PACK
+            value: /etc/icg/rule-pack.json
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 3500m
+            memory: 6Gi
+
+    - name: test-with-guard
+      activeDeadlineSeconds: 3600
+      inputs:
+        parameters:
+          - name: repo
+          - name: revision
+      container:
+        # This image includes icg PATH-wrapper pre-installed
+        # Note: Update this tag when building new versions of the guarded builder
+        # Check containers/argo-guarded-builder/VERSION for the current version
+        image: ronaldraygun/argo-guarded-builder:0.1.0
+        imagePullPolicy: IfNotPresent
+        command: [bash, -c]
+        args:
+          - |
+            set -ex
+
+            echo "=== icg Guarded Test ==="
+
+            cd /workspace
+
+            # Run tests
+            echo "=== Running cargo test ==="
+            cargo test
+
+            echo "✅ Tests completed successfully"
+
+            # Show denial log (if any denials occurred)
+            if [ -f /var/cache/icg/denials.jsonl ]; then
+              echo
+              echo "=== Denial Log ==="
+              cat /var/cache/icg/denials.jsonl || true
+            fi
+        env:
+          - name: ICG_RULE_PACK
+            value: /etc/icg/rule-pack.json
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 4Gi
+          limits:
+            cpu: 3500m
+            memory: 6Gi
+
+  # Workflow-level parameters
+  arguments:
+    parameters:
+      - name: repo
+        value: "https://github.com/jedarden/irreversible-command-gate.git"
+      - name: revision
+        value: "main"

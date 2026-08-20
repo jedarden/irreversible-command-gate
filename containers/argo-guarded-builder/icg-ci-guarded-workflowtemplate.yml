@@ -1,0 +1,209 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: icg-ci-guarded
+  namespace: argo-workflows
+  labels:
+    app: icg-ci
+spec:
+  # Backstop against a run that hangs before its pod ever starts
+  activeDeadlineSeconds: 10800
+  entrypoint: ci
+  serviceAccountName: argo-workflow
+  synchronization:
+    mutexes:
+      - name: icg-ci-mutex
+  templates:
+    - name: ci
+      steps:
+        # Keep the Codex compatibility gate ahead of the release-producing stage
+        - - name: codex-hook-compatibility
+            template: codex-hook-compatibility
+            arguments:
+              parameters:
+                - name: codex-version
+                  value: "{{item}}"
+            withItems:
+              - "0.144.4"
+              - "0.145.0"
+              - "0.146.0"
+        - - name: build-and-release
+            template: build-and-release
+
+    - name: codex-hook-compatibility
+      activeDeadlineSeconds: 3600
+      inputs:
+        parameters:
+          - name: codex-version
+      container:
+        # Use guarded builder for Codex compatibility tests
+        image: ronaldraygun/argo-guarded-builder:0.1.0
+        imagePullPolicy: IfNotPresent
+        command: [bash, -c]
+        args:
+          - |
+            set -ex
+
+            echo "=== Codex Compatibility Test with icg Guard ==="
+            icg status || true
+            echo
+
+            # Install the exact stable Codex CLI version
+            CODEX_VERSION="{{inputs.parameters.codex-version}}"
+            npm install --global --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"
+            test "$(codex --version)" = "codex-cli ${CODEX_VERSION}"
+            codex --help >/dev/null
+
+            # Each matrix pod gets a clean checkout and Rust toolchain
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+            . "$HOME/.cargo/env"
+            rustc --version
+            git clone --depth 1 "https://github.com/jedarden/irreversible-command-gate.git" /workspace
+            cd /workspace
+            cargo test --locked --test codex_hook_tests
+
+            echo "✅ Codex compatibility test passed"
+        env:
+          - name: ICG_RULE_PACK
+            value: /etc/icg/rule-pack.json
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 1500m
+            memory: 3Gi
+
+    - name: build-and-release
+      activeDeadlineSeconds: 3600
+      container:
+        # SELF-REFERENTIAL PROTECTION: icg's own release pipeline uses the guarded builder
+        # This ensures the guard protecting everything else is itself protected
+        image: ronaldraygun/argo-guarded-builder:0.1.0
+        imagePullPolicy: IfNotPresent
+        command: [bash, -c]
+        args:
+          - |
+            set -ex
+
+            echo "=== icg Self-Referential Guarded Build ==="
+            icg status || true
+            echo
+
+            # Install gh CLI (already in guarded builder, but verify)
+            gh --version
+
+            # Rust toolchain is already in guarded builder
+            . "$HOME/.cargo/env"
+            rustc --version
+
+            # Clone from GitHub mirror (ignore webhook payload)
+            echo "=== Cloning repository ==="
+            git clone --depth 1 "https://github.com/jedarden/irreversible-command-gate.git" /workspace
+            cd /workspace
+
+            COMMIT=$(git rev-parse HEAD)
+
+            # CI checks
+            echo "=== Running CI checks ==="
+            cargo fmt --all -- --check
+            cargo check --all-targets
+            cargo clippy --all-targets -- -D warnings
+            cargo test
+
+            # Generate and validate the fixed deny-must-still-fire suite
+            echo "=== Generating regression suite ==="
+            cargo run --quiet -- regression-suite \
+              tests/fixtures/previous-release.json \
+              --output /tmp/icg-regression-suite.json
+
+            # Compare the previous and current rule-pack manifests
+            echo "=== Checking coverage diffs ==="
+            cargo run --quiet -- coverage-diff \
+              tests/fixtures/previous-release.json \
+              tests/fixtures/current-release-clean.json
+
+            echo "✅ CI passed!"
+
+            # Extract version from workspace Cargo.toml
+            VERSION=$(grep -A10 '\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            echo "Version: ${VERSION}"
+
+            # Tag-to-Forgejo (protected by icg - no force-push allowed)
+            echo "=== Creating and pushing tag ==="
+            git tag "v${VERSION}" 2>/dev/null || [ "$(git rev-parse "refs/tags/v${VERSION}^{commit}")" = "$(git rev-parse HEAD)" ]
+            echo "Pushing tag v${VERSION} to Forgejo"
+            set +x
+            git push "https://x-token:${FORGEJO_TOKEN}@git.ardenone.com/jedarden/irreversible-command-gate.git" "refs/tags/v${VERSION}"
+            set -x
+
+            # Check if release already exists
+            IS_DRAFT=$(gh release view "v${VERSION}" --repo jedarden/irreversible-command-gate --json isDraft --jq '.isDraft' 2>/dev/null || echo "absent")
+            if [ "$IS_DRAFT" = "false" ]; then
+              echo "Release v${VERSION} already published — skipping"
+              exit 0
+            fi
+            if [ "$IS_DRAFT" = "true" ]; then
+              echo "Release v${VERSION} exists as a DRAFT — publishing it in place"
+              gh release edit "v${VERSION}" --repo jedarden/irreversible-command-gate --draft=false
+              echo "Release v${VERSION} published"
+              exit 0
+            fi
+
+            # Build release binary
+            echo "=== Building release binary ==="
+            cargo build --release --bin icg
+
+            # Create GitHub release with binary
+            echo "=== Creating GitHub release ==="
+            gh release create "v${VERSION}" \
+              --repo jedarden/irreversible-command-gate \
+              --title "irreversible-command-gate v${VERSION}" \
+              --notes "Release v${VERSION}
+
+            Built from commit: ${COMMIT}
+
+            **Self-Referential Protection**: This release was built using icg PATH-wrapper
+            protection in Argo Workflows. The guard protecting everything else is itself
+            protected.
+
+            Binaries:
+            - icg: Main guard binary (supports: hook, wrapper, and admin subcommands)
+            " \
+              --target main \
+              ./target/release/icg
+
+            echo "✅ Release v${VERSION} created!"
+
+            # Show denial log if any denials occurred during the build
+            if [ -f /var/cache/icg/denials.jsonl ]; then
+              echo
+              echo "=== Build Denial Log ==="
+              cat /var/cache/icg/denials.jsonl || true
+            fi
+        env:
+          - name: GIT_CONFIG_COUNT
+            value: "1"
+          - name: GIT_CONFIG_KEY_0
+            value: credential.helper
+          - name: GIT_CONFIG_VALUE_0
+            value: '!f() { test "$1" = get && echo "username=x-access-token" && echo "password=$GH_TOKEN"; }; f'
+          - name: GH_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-webhook-secret
+                key: token
+          - name: FORGEJO_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: forgejo-webhook-token
+                key: token
+          - name: ICG_RULE_PACK
+            value: /etc/icg/rule-pack.json
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 1500m
+            memory: 3Gi
