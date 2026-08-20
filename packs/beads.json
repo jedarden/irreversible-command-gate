@@ -1,6 +1,6 @@
 {
   "id": "beads",
-  "tool_keywords": [],
+  "tool_keywords": ["bead", "bf"],
   "applies_to": [".beads/**"],
   "safe_patterns": [],
   "guarded_patterns": [
@@ -15,6 +15,20 @@
       "redirect": {
         "channel": "deny",
         "reason_template": "Hand-editing .beads/ in a shared checkout is blocked. This repository's .git is a directory, indicating it's the shared primary tree where concurrent worker corruption can occur. Use 'git worktree add --detach <dir> origin/main' to create a linked worktree for .beads/ work instead. See CLAUDE.md: 'Never hand-edit anything under .beads/'",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "beads-repair-requires-flush",
+      "type": "predicate",
+      "predicate_name": "repair_requires_flush",
+      "tier": "tier2",
+      "severity": "High",
+      "explanation": "Running repair before flush risks reinitializing a corrupted store instead of recovering from the checkpoint. The flush-before-repair sequence ensures the checkpoint is current before repair reads it.",
+      "destructive": false,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "bead doctor --repair is denied unless flush has already occurred this session. Run 'bead sync flush-only' first, then retry repair. This ordering prevents reinitializing a corrupted store when the checkpoint is stale.",
         "rewrite_template": null
       }
     }
