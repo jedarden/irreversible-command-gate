@@ -6,9 +6,13 @@
 
 ```bash
 # 1. Build the guarded builder image (run from irreversible-command-gate repo)
-cd containers/argo-guarded-builder
-VERSION=$(cat VERSION)
-docker build -t ronaldraygun/argo-guarded-builder:${VERSION} .
+cd /home/coding/irreversible-command-gate
+VERSION=$(cat containers/argo-guarded-builder/VERSION)
+docker build \
+  --build-arg ICG_VERSION=${VERSION} \
+  -f containers/argo-guarded-builder/Dockerfile \
+  -t ronaldraygun/argo-guarded-builder:${VERSION} \
+  .
 docker push ronaldraygun/argo-guarded-builder:${VERSION}
 
 # 2. Deploy the workflow template to iad-ci
@@ -100,7 +104,7 @@ kubectl exec -it $POD -- icg check --command "git push --force"
 kubectl exec -it $POD -- ls -la /etc/icg/
 
 # Test rule pack load
-kubectl exec -it $POD -- icg coverage --pack /etc/icg/rule-pack.json
+kubectl exec -it $POD -- icg coverage --pack /etc/icg/packs
 ```
 
 ## For Developers: Adding icg to Your Workflow
@@ -141,11 +145,11 @@ spec:
         image: ronaldraygun/argo-guarded-builder:0.1.0
         volumeMounts:
           - name: custom-rules
-            mountPath: /etc/icg/rule-pack.json
+            mountPath: /etc/icg/packs/runtime.json
             subPath: rule-pack.json
         env:
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs/runtime.json
   volumes:
     - name: custom-rules
       configMap:
@@ -198,9 +202,13 @@ If icg is blocking legitimate operations:
 echo "0.2.0" > containers/argo-guarded-builder/VERSION
 
 # 2. Rebuild image
-cd containers/argo-guarded-builder
-VERSION=$(cat VERSION)
-docker build -t ronaldraygun/argo-guarded-builder:${VERSION} .
+cd /home/coding/irreversible-command-gate
+VERSION=$(cat containers/argo-guarded-builder/VERSION)
+docker build \
+  --build-arg ICG_VERSION=${VERSION} \
+  -f containers/argo-guarded-builder/Dockerfile \
+  -t ronaldraygun/argo-guarded-builder:${VERSION} \
+  .
 docker push ronaldraygun/argo-guarded-builder:${VERSION}
 
 # 3. Update workflow templates to use new version

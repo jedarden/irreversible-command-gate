@@ -11,9 +11,9 @@ The PATH-wrapper integration extends icg coverage from interactive Claude Code/C
 ### Components
 
 1. **Guarded Builder Image** (`ronaldraygun/argo-guarded-builder:0.1.0`)
-   - Extends `ronaldraygun/needle-ci-builder:with-deps`
+   - Extends `ronaldraygun/needle-ci-builder:0.1.5-with-deps`
    - Pre-installs icg binary and PATH-wrapper symlinks
-   - Includes default rule pack at `/etc/icg/rule-pack.json`
+   - Includes the repository rule packs at `/etc/icg/packs`
 
 2. **PATH-Wrapper Mechanism**
    - Symlinks common tools (`git`, `kubectl`, `vault`, `docker`, etc.) to icg binary
@@ -31,11 +31,15 @@ The PATH-wrapper integration extends icg coverage from interactive Claude Code/C
 ### Step 1: Build the Guarded Builder Image
 
 ```bash
-cd /home/coding/irreversible-command-gate/containers/argo-guarded-builder
+cd /home/coding/irreversible-command-gate
 
 # Build with pinned version
-VERSION=$(cat VERSION)
-docker build -t ronaldraygun/argo-guarded-builder:${VERSION} .
+VERSION=$(cat containers/argo-guarded-builder/VERSION)
+docker build \
+  --build-arg ICG_VERSION=${VERSION} \
+  -f containers/argo-guarded-builder/Dockerfile \
+  -t ronaldraygun/argo-guarded-builder:${VERSION} \
+  .
 
 # Push to registry
 docker push ronaldraygun/argo-guarded-builder:${VERSION}
@@ -112,13 +116,13 @@ kubectl exec -it <pod-name> -- cat /var/cache/icg/denials.jsonl
 The builder image includes a default rule pack at build time. To update it:
 
 ```bash
-# Download latest rule pack
-curl -fsSL "https://github.com/jedarden/irreversible-command-gate/releases/latest/download/rule-pack.json" \
-  -o /tmp/rule-pack.json
-
-# Rebuild image with updated pack
-docker build --build-arg RULE_PACK_PATH=/tmp/rule-pack.json \
-  -t ronaldraygun/argo-guarded-builder:0.1.0 .
+# Update the pack files in this repository, then rebuild from the repository
+# root. The Dockerfile copies packs/ into /etc/icg/packs.
+docker build \
+  --build-arg ICG_VERSION=0.1.0 \
+  -f containers/argo-guarded-builder/Dockerfile \
+  -t ronaldraygun/argo-guarded-builder:0.1.0 \
+  .
 ```
 
 ### Custom Rule Packs
@@ -133,11 +137,11 @@ spec:
         image: ronaldraygun/argo-guarded-builder:0.1.0
         volumeMounts:
           - name: custom-rules
-            mountPath: /etc/icg/rule-pack.json
+            mountPath: /etc/icg/packs/runtime.json
             subPath: rule-pack.json
         env:
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs/runtime.json
   volumes:
     - name: custom-rules
       configMap:
@@ -192,9 +196,9 @@ This ensures the guard protecting everything else is itself protected.
 **Symptoms**: All commands are allowed (fail-open)
 
 **Checks**:
-1. Verify rule pack exists: `ls -la /etc/icg/`
-2. Test load: `icg coverage --pack /etc/icg/rule-pack.json`
-3. Check permissions: `stat /etc/icg/rule-pack.json`
+1. Verify rule packs exist: `ls -la /etc/icg/packs/`
+2. Test load: `icg coverage --pack /etc/icg/packs`
+3. Check permissions: `stat /etc/icg/packs`
 
 **Fix**: Ensure rule pack is mounted or copied into the container
 
@@ -204,7 +208,7 @@ This ensures the guard protecting everything else is itself protected.
 
 **Steps**:
 1. Increment `VERSION` file in `containers/argo-guarded-builder/`
-2. Rebuild and push new image: `docker build -t ronaldraygun/argo-guarded-builder:0.2.0 .`
+2. Rebuild and push new image from the repository root with the pinned tag.
 3. Update workflow templates to reference new tag
 4. Test with non-critical workflow first
 5. Roll out updates gradually

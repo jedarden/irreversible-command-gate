@@ -1,0 +1,9 @@
+# The guarded image only needs the Rust source and rule packs. Keeping the
+# build context narrow is especially important when Kaniko builds it in iad-ci.
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!packs/
+!packs/**

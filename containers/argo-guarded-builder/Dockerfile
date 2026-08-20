@@ -1,67 +1,66 @@
+# syntax=docker/dockerfile:1
+
 # Argo Workflow Guarded Builder Image
 #
-# This image extends the standard Rust builder with irreversible-command-gate (icg)
-# PATH-wrapper integration to guard commands in CI/CD pipelines.
-#
-# The PATH-wrapper intercepts commands like git, kubectl, vault, docker, etc.
-# and checks them against icg rule packs before allowing execution.
+# This image extends the shared iad-ci Rust executor image with
+# irreversible-command-gate (icg) PATH-wrapper protection. The binary is built
+# from the repository in this image build rather than downloaded from a
+# release: the release workflow uses this image, so downloading the binary it
+# is supposed to protect would create a bootstrap cycle.
 
-FROM ronaldraygun/needle-ci-builder:with-deps
+ARG BASE_IMAGE=ronaldraygun/needle-ci-builder:0.1.5-with-deps
 
-# Metadata
+FROM ${BASE_IMAGE} AS icg-builder
+
+WORKDIR /tmp/icg-source
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN cargo build --release --locked --bin icg
+
+FROM ${BASE_IMAGE}
+
 LABEL maintainer="jedarden"
 LABEL description="Rust builder with irreversible-command-gate PATH-wrapper protection"
 
-# Install icg from a specific release version (read from VERSION file)
-# Use a pinned version, not :latest, to ensure reproducible builds
 ARG ICG_VERSION=0.1.0
 ENV ICG_VERSION="${ICG_VERSION}"
 ENV ICG_INSTALL_DIR="/usr/local/bin"
-ENV ICG_RULE_PACK_PATH="/etc/icg/rule-pack.json"
+ENV ICG_RULE_PACK="/etc/icg/packs"
+ENV ICG_RULE_PACK_PATH="/etc/icg/packs"
 ENV ICG_PACK_DIR="/etc/icg/packs"
 
-# Create directories for icg
-RUN mkdir -p /etc/icg/packs /etc/icg/overrides
+# The compatibility matrix installs the pinned Codex CLI with npm. The base
+# executor intentionally does not need Node, so add it only to this image.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install icg binary
-RUN echo "Installing irreversible-command-gate..." && \
-    curl -fsSL "https://github.com/jedarden/irreversible-command-gate/releases/latest/download/icg" \
-    -o /usr/local/bin/icg && \
-    chmod +x /usr/local/bin/icg && \
-    icg --version
+RUN mkdir -p /etc/icg/packs /etc/icg/overrides /var/cache/icg
+COPY --from=icg-builder /tmp/icg-source/target/release/icg /usr/local/bin/icg
+COPY packs /etc/icg/packs/
 
-# Install PATH-wrapper symlinks for common tools
-# Note: We create these in /usr/local/bin which is typically early in PATH
-RUN echo "Installing PATH-wrapper symlinks..." && \
-    # List of tools to guard - these will be symlinked to icg
-    # When invoked, icg will check the command against rule packs before exec'ing the real binary
-    for tool in vault git docker kubectl kubectlf helm bf bead cargo-build rustc rustup npm node python3 pip cargo; do \
-        if command -v "$tool" >/dev/null 2>&1; then \
-            ln -sf /usr/local/bin/icg "/usr/local/bin/$tool" && \
-            echo "  ✓ $tool"; \
-        fi; \
-    done && \
-    echo "PATH-wrapper installation complete"
+# Put the wrapper directory first while retaining the base image's Rust and
+# system-tool paths. The wrapper skips its own symlink when resolving the real
+# binary, so the original tools remain available later in PATH.
+ENV PATH="/usr/local/bin:${PATH}"
 
-# Download default rule pack
-RUN echo "Downloading default rule pack..." && \
-    curl -fsSL "https://github.com/jedarden/irreversible-command-gate/releases/latest/download/rule-pack.json" \
-    -o "$ICG_RULE_PACK_PATH" || \
-    echo "Warning: Failed to download rule pack - will need manual installation"
+# These are the command front-ends currently used by the image and the
+# commands covered by the installed rule packs. Missing tools are skipped so
+# the image remains usable if the shared executor changes its tool set.
+RUN chmod 0755 /usr/local/bin/icg \
+    && for tool in git bead bf bao vault cargo rustc rustup npm node python3 pip docker kubectl helm; do \
+         tool_path="$(command -v "$tool" || true)"; \
+         if [ -n "$tool_path" ] && [ "$tool_path" != "/usr/local/bin/icg" ]; then \
+           ln -sfn /usr/local/bin/icg "/usr/local/bin/$tool"; \
+         fi; \
+       done \
+    && /usr/local/bin/icg --version \
+    && test "$(/usr/local/bin/icg --version | awk '{print $2}')" = "${ICG_VERSION}" \
+    && /usr/local/bin/icg coverage
 
-# Verify installation
-RUN echo "Verifying icg installation..." && \
-    icg --version && \
-    icg coverage || echo "Warning: No rule packs installed"
-
-# Set PATH to ensure wrapper symlinks are found first
-ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
-
-# Add a health check that verifies icg is functional
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD icg --version || exit 1
+    CMD ["/usr/local/bin/icg", "--version"]
 
 WORKDIR /workspace
-
-# Default command shows icg status
 CMD ["icg", "status"]

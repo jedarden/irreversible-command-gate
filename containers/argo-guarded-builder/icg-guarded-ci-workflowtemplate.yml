@@ -82,7 +82,7 @@ spec:
             echo "✅ Build completed successfully"
         env:
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs
         resources:
           requests:
             cpu: 2000m
@@ -126,7 +126,7 @@ spec:
             fi
         env:
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs
         resources:
           requests:
             cpu: 2000m

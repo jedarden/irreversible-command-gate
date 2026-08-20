@@ -65,7 +65,7 @@ spec:
             echo "✅ Codex compatibility test passed"
         env:
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs
         resources:
           requests:
             cpu: 1000m
@@ -199,7 +199,7 @@ spec:
                 name: forgejo-webhook-token
                 key: token
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs
         resources:
           requests:
             cpu: 1000m

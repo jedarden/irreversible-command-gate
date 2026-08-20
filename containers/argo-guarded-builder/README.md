@@ -4,7 +4,7 @@ This directory contains the Dockerfile and configuration for building an Argo Wo
 
 ## Purpose
 
-Extends the standard `ronaldraygun/needle-ci-builder:with-deps` image with icg PATH-wrapper integration to guard commands in CI/CD pipelines. This prevents destructive operations in Argo Workflow pods while allowing normal development workflows.
+Extends the pinned shared `ronaldraygun/needle-ci-builder:0.1.5-with-deps` image with icg PATH-wrapper integration to guard commands in CI/CD pipelines. The icg binary and rule packs are copied from this repository during the image build, so the self-guarding release workflow does not depend on a release that it has not produced yet.
 
 ## What This Does
 
@@ -18,12 +18,17 @@ The PATH-wrapper intercepts commands before they execute by shadowing them with 
 ## Build
 
 ```bash
-# Build the image
-cd containers/argo-guarded-builder
-docker build -t ronaldraygun/argo-guarded-builder:latest .
+# Build the image from the repository root. The Dockerfile copies Cargo source
+# and rule packs from the root build context.
+VERSION=$(tr -d '[:space:]' < containers/argo-guarded-builder/VERSION)
+docker build \
+  --build-arg ICG_VERSION="${VERSION}" \
+  -f containers/argo-guarded-builder/Dockerfile \
+  -t "ronaldraygun/argo-guarded-builder:${VERSION}" \
+  .
 
 # Push to registry
-docker push ronaldraygun/argo-guarded-builder:latest
+docker push "ronaldraygun/argo-guarded-builder:${VERSION}"
 ```
 
 ## Usage in Argo Workflows
@@ -35,7 +40,7 @@ spec:
   templates:
     - name: build-with-guard
       container:
-        image: ronaldraygun/argo-guarded-builder:latest
+        image: ronaldraygun/argo-guarded-builder:0.1.0
         command: [bash, -c]
         args:
           - |
@@ -53,7 +58,7 @@ spec:
 
 Rule packs define which commands are guarded and the denial messages. They can be:
 
-1. **Baked into the image**: Included at build time in `/etc/icg/rule-pack.json`
+1. **Baked into the image**: The repository's packs are included at build time in `/etc/icg/packs`
 2. **Mounted at runtime**: Via ConfigMaps or Secrets in Argo Workflows
 3. **Downloaded dynamically**: Via `icg update` during workflow execution
 
@@ -64,14 +69,14 @@ spec:
   templates:
     - name: build-with-custom-rules
       container:
-        image: ronaldraygun/argo-guarded-builder:latest
+        image: ronaldraygun/argo-guarded-builder:0.1.0
         volumeMounts:
           - name: rule-pack
-            mountPath: /etc/icg/rule-pack.json
+            mountPath: /etc/icg/packs/runtime.json
             subPath: rule-pack.json
         env:
           - name: ICG_RULE_PACK
-            value: /etc/icg/rule-pack.json
+            value: /etc/icg/packs/runtime.json
   volumes:
     - name: rule-pack
       configMap:
@@ -102,8 +107,8 @@ kubectl exec -it <pod-name> -- icg coverage
 
 ### Rule Pack Not Loading
 
-1. Check rule pack exists: `ls -la /etc/icg/`
-2. Test load: `icg coverage --pack /etc/icg/rule-pack.json`
+1. Check rule packs exist: `ls -la /etc/icg/packs/`
+2. Test load: `icg coverage --pack /etc/icg/packs`
 3. Check logs: Pod logs will show icg warnings
 
 ### Release Workflow Updates
