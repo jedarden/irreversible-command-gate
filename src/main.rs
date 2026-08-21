@@ -1104,15 +1104,19 @@ fn real_binary_in_path(tool: &str, argv0: &OsStr) -> Result<PathBuf> {
 
 #[cfg(unix)]
 fn rewritten_wrapper_args(tool: &str, rewrite: &str) -> Result<Vec<OsString>> {
+    // Rule packs use command text for rewrites because that is the native
+    // representation on the hook front-end.  The wrapper must realize the
+    // same decision as argv, without handing the rewrite to a shell.
     let parser = Engine::new();
     let source = engine::CommandSource::Hook(rewrite.to_string());
     let tokens = parser.segment_command(&source);
-    let token = tokens
-        .first()
-        .filter(|token| token.executable == tool && tokens.len() == 1)
-        .context("rule rewrite did not produce one command for the wrapped tool")?;
+    if tokens.len() != 1 || tokens[0].executable != tool {
+        anyhow::bail!(
+            "rule rewrite did not produce one command for the wrapped tool `{tool}`"
+        );
+    }
 
-    Ok(token.args.iter().map(OsString::from).collect())
+    Ok(tokens[0].args.iter().map(OsString::from).collect())
 }
 
 #[cfg(unix)]
