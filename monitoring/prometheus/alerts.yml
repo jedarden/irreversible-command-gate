@@ -1,0 +1,104 @@
+# Prometheus alerting rules for the standalone `icg monitor` endpoint.
+# Load this file into the existing Prometheus rule_files configuration and
+# route the `icg` alert group through the normal Alertmanager receivers.
+groups:
+  - name: icg.guard
+    interval: 30s
+    rules:
+      - alert: ICGGuardTargetDown
+        expr: up{job="icg"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG monitoring endpoint is unavailable"
+          description: "Prometheus cannot scrape the guard health endpoint for {{ $labels.instance }}."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/incident-response.md"
+
+      - alert: ICGGuardDead
+        expr: icg_health_status{job="icg"} == 5
+        for: 2m
+        labels:
+          severity: critical
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG guard process is not running"
+          description: "The durable guard health state is Dead on {{ $labels.instance }}."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/incident-response.md"
+
+      - alert: ICGGuardUnstable
+        expr: icg_health_status{job="icg"} == 3 or icg_crash_rate{job="icg"} > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG guard is unstable"
+          description: "{{ $labels.instance }} is reporting health status {{ $value }} or more than ten crashes/hour."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/operators/troubleshooting.md"
+
+      - alert: ICGHighDenyRate
+        expr: icg_baseline_evaluations{job="icg"} >= 50 and icg_current_deny_rate{job="icg"} > 0.25
+        for: 10m
+        labels:
+          severity: warning
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG denial rate is high"
+          description: "{{ $labels.instance }} denied {{ $value | humanizePercentage }} of recent evaluations."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/rollback.md"
+
+      - alert: ICGDenyRateSpike
+        expr: icg_baseline_evaluations{job="icg"} >= 100 and icg_current_deny_rate{job="icg"} > (icg_baseline_mean{job="icg"} + 3 * icg_baseline_stddev{job="icg"}) and icg_current_deny_rate{job="icg"} > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG denial rate spiked above baseline"
+          description: "{{ $labels.instance }} has a statistically significant deny-rate increase; inspect the active release and rollback evidence."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/rollback.md"
+
+      - alert: ICGRulePackLoadFailed
+        expr: icg_rule_pack_loaded{job="icg"} == 0 or icg_rule_pack_load_errors{job="icg"} > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG rule pack failed to load"
+          description: "No valid rule pack is available to the monitor on {{ $labels.instance }}."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/operators/troubleshooting.md"
+
+      - alert: ICGDenialLogUnavailable
+        expr: icg_denial_log_readable{job="icg"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG denial log is unavailable"
+          description: "Denied-operation audit events cannot be read on {{ $labels.instance }}."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/operators/troubleshooting.md"
+
+      - alert: ICGCriticalDenial
+        expr: icg_critical_denials_recent{job="icg"} > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG blocked a critical operation"
+          description: "{{ $labels.instance }} recorded {{ $value }} critical denial(s) in the recent window. Review the structured denial log."
+          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/incident-response.md"
+
+      - alert: ICGMonitoringInputReadFailed
+        expr: icg_monitoring_collection_errors{job="icg"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: irreversible-command-gate
+        annotations:
+          summary: "ICG monitoring input cannot be read"
+          description: "{{ $labels.instance }} is exporting a partial monitoring snapshot."

@@ -235,6 +235,7 @@ pub struct HealthServer {
     config: HealthServerConfig,
     state: Arc<Mutex<HealthState>>,
     health_store: Option<crate::health::HealthStore>,
+    monitoring_config: Option<crate::monitoring::MonitoringConfig>,
     bound_address: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
@@ -246,6 +247,7 @@ impl HealthServer {
             config,
             state: Arc::new(Mutex::new(HealthState::default())),
             health_store: None,
+            monitoring_config: None,
             bound_address: None,
             shutdown_tx: None,
         }
@@ -259,6 +261,15 @@ impl HealthServer {
         let mut server = Self::new(config);
         server.health_store = Some(health_store);
         server
+    }
+
+    /// Attach durable telemetry, denial-log, and rule-pack inputs to `/metrics`.
+    pub fn with_monitoring_config(
+        mut self,
+        monitoring_config: crate::monitoring::MonitoringConfig,
+    ) -> Self {
+        self.monitoring_config = Some(monitoring_config);
+        self
     }
 
     /// Get the current health state
@@ -276,6 +287,7 @@ impl HealthServer {
         let state = self.state.clone();
         let config = self.config.clone();
         let health_store = self.health_store.clone();
+        let monitoring_config = self.monitoring_config.clone();
         let bind_address = self.bind_address();
 
         let listener = TcpListener::bind(&bind_address)
@@ -299,9 +311,16 @@ impl HealthServer {
                                 let state = state.clone();
                                 let config = config.clone();
                                 let health_store = health_store.clone();
+                                let monitoring_config = monitoring_config.clone();
 
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_connection(stream, state, config, health_store).await {
+                                    if let Err(e) = handle_connection(
+                                        stream,
+                                        state,
+                                        config,
+                                        health_store,
+                                        monitoring_config,
+                                    ).await {
                                         eprintln!("⚠️  Health server connection error from {}: {}", addr, e);
                                     }
                                 });
@@ -348,6 +367,7 @@ async fn handle_connection(
     state: Arc<Mutex<HealthState>>,
     config: HealthServerConfig,
     health_store: Option<crate::health::HealthStore>,
+    monitoring_config: Option<crate::monitoring::MonitoringConfig>,
 ) -> Result<()> {
     // Read the HTTP request
     let mut reader = tokio::io::BufReader::new(&mut stream);
@@ -504,7 +524,7 @@ async fn handle_connection(
                 let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
-                let mut metrics = format!(
+                let server_metrics = format!(
                     "# Health server metrics\n\
                     icg_health_server_uptime_seconds {}\n\
                     icg_health_server_ready {}\n\
@@ -514,25 +534,38 @@ async fn handle_connection(
                     if state_guard.alive { 1 } else { 0 }
                 );
 
-                if let Some(health) = durable_metrics {
-                    let guard_metrics = crate::metrics::GuardMetrics::from_health_metrics(&health);
-                    metrics.push_str(&format!(
-                        "icg_uptime_seconds {}\n\
-                        icg_total_crashes {}\n\
-                        icg_recent_crashes {}\n\
-                        icg_crash_rate {}\n\
-                        icg_consecutive_clean_runs {}\n\
-                        icg_health_status {}\n\
-                        icg_is_stable {}\n",
-                        guard_metrics.uptime_seconds,
-                        guard_metrics.total_crashes,
-                        guard_metrics.recent_crashes,
-                        guard_metrics.crash_rate,
-                        guard_metrics.consecutive_clean_runs,
-                        guard_metrics.health_status,
-                        guard_metrics.is_stable,
-                    ));
-                }
+                let mut metrics = if let Some(monitoring_config) = monitoring_config {
+                    crate::monitoring::export_prometheus(&monitoring_config)
+                        .unwrap_or_else(|error| {
+                            format!(
+                                "# Monitoring scrape failed: {error:#}\n\
+                                icg_monitoring_collection_errors 1\n"
+                            )
+                        })
+                } else {
+                    let mut metrics = String::new();
+                    if let Some(health) = durable_metrics {
+                        let guard_metrics = crate::metrics::GuardMetrics::from_health_metrics(&health);
+                        metrics.push_str(&format!(
+                            "icg_uptime_seconds {}\n\
+                            icg_total_crashes {}\n\
+                            icg_recent_crashes {}\n\
+                            icg_crash_rate {}\n\
+                            icg_consecutive_clean_runs {}\n\
+                            icg_health_status {}\n\
+                            icg_is_stable {}\n",
+                            guard_metrics.uptime_seconds,
+                            guard_metrics.total_crashes,
+                            guard_metrics.recent_crashes,
+                            guard_metrics.crash_rate,
+                            guard_metrics.consecutive_clean_runs,
+                            guard_metrics.health_status,
+                            guard_metrics.is_stable,
+                        ));
+                    }
+                    metrics
+                };
+                metrics.push_str(&server_metrics);
 
                 (200, "OK", "text/plain", metrics)
             }

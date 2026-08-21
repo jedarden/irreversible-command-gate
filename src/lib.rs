@@ -10,6 +10,7 @@ pub mod fail_closed;
 pub mod health;
 pub mod health_server;
 pub mod metrics;
+pub mod monitoring;
 pub mod new_pack;
 pub mod overrides;
 pub mod regression;

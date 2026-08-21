@@ -3,6 +3,10 @@ mod documented_commands;
 mod engine;
 mod fail_closed;
 mod health;
+mod health_server;
+mod denial_log;
+mod metrics;
+mod monitoring;
 mod new_pack;
 mod overrides;
 mod regex_safety;
@@ -169,6 +173,21 @@ enum Commands {
     Health {
         #[command(flatten)]
         args: HealthArgs,
+    },
+    /// Serve health probes and Prometheus metrics for an external scraper.
+    Monitor {
+        /// Address to bind (use 127.0.0.1 when the endpoint is not isolated).
+        #[arg(long, default_value = "0.0.0.0")]
+        host: String,
+        /// TCP port for `/health/live`, `/health/ready`, and `/metrics`.
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        /// Override the durable health state path.
+        #[arg(long)]
+        health_path: Option<PathBuf>,
+        /// Override the rule pack file/directory used by the metrics scrape.
+        #[arg(long)]
+        rule_pack: Option<PathBuf>,
     },
     /// Hook mode: invoked by Claude Code/Codex's PreToolUse hook system
     Hook {
@@ -607,6 +626,107 @@ fn record_hook_denial(
     }
 }
 
+/// Persist every ordinary rule denial as structured JSONL for log shippers.
+/// This is intentionally best effort: an audit sink outage must not change
+/// the already computed hook decision. Full command/content logging is an
+/// explicit opt-in because denial payloads may contain credentials.
+fn record_operational_denial(source: &InputSource, result: &engine::CheckResult) {
+    let engine::CheckResult::Denied {
+        pack_id,
+        pattern_id,
+        reason,
+    } = result
+    else {
+        return;
+    };
+
+    let denied_input = match source {
+        InputSource::Command(engine::CommandSource::Hook(command)) => {
+            denial_log::DeniedInput::Command {
+                command: command.clone(),
+                segments: command.split_whitespace().map(str::to_string).collect(),
+                working_dir: std::env::current_dir()
+                    .ok()
+                    .map(|path| path.display().to_string()),
+            }
+        }
+        InputSource::Command(engine::CommandSource::Argv(arguments)) => {
+            denial_log::DeniedInput::Command {
+                command: arguments.join(" "),
+                segments: arguments.clone(),
+                working_dir: std::env::current_dir()
+                    .ok()
+                    .map(|path| path.display().to_string()),
+            }
+        }
+        InputSource::Content(content) => denial_log::DeniedInput::Content {
+            file_path: content.file_path().to_string(),
+            content: content.new_content().to_string(),
+            content_size: content.new_content().len(),
+        },
+        InputSource::ContentBatch(contents) => denial_log::DeniedInput::ContentBatch {
+            file_paths: contents
+                .iter()
+                .map(|content| content.file_path().to_string())
+                .collect(),
+            total_size: contents
+                .iter()
+                .map(|content| content.new_content().len())
+                .sum(),
+        },
+    };
+
+    let mut config = denial_log::DenialLogConfig::default();
+    config.log_full_content = std::env::var("ICG_LOG_FULL_CONTENT")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let path = std::env::var_os("ICG_DENIAL_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/cache/icg/denials.jsonl"));
+    let severity = if pack_id == "fail-closed" {
+        denial_log::DenialSeverity::Critical
+    } else {
+        denial_log::DenialSeverity::High
+    };
+    let context = denial_log::ExecutionContext {
+        session_id: std::env::var("ICG_SESSION_ID").ok(),
+        user: std::env::var("USER").ok(),
+        repository: std::env::var("ICG_REPOSITORY").ok(),
+        branch: std::env::var("GIT_BRANCH").ok(),
+        tool: match source {
+            InputSource::Command(_) => "command".to_string(),
+            InputSource::Content(_) => "content".to_string(),
+            InputSource::ContentBatch(_) => "content_batch".to_string(),
+        },
+        hostname: std::env::var("HOSTNAME").ok(),
+    };
+    let state = denial_log::SystemState {
+        release_ref: std::env::var("ICG_RELEASE_REF").unwrap_or_default(),
+        health_status: "observed".to_string(),
+        ..Default::default()
+    };
+    let record = denial_log::DenialRecord::new(
+        pack_id.clone(),
+        pattern_id.clone(),
+        "guarded_operation".to_string(),
+        severity,
+        reason.clone(),
+        denied_input,
+    )
+    .with_context(context)
+    .with_system_state(state);
+
+    match denial_log::DenialStore::new(path.clone(), config)
+        .and_then(|store| store.record_denial(record))
+    {
+        Ok(()) => {}
+        Err(error) => eprintln!(
+            "icg_monitoring_event event=denial_log_write_failed path={} error={error:#}",
+            path.display()
+        ),
+    }
+}
+
 /// Locate the content source responsible for a multi-file patch's aggregate
 /// denial before recording it. The engine intentionally returns only the most
 /// severe result, so this small re-evaluation preserves the actual file and
@@ -1023,6 +1143,7 @@ fn run_shadowed_tool(
         engine.evaluate_command(&source)
     };
     record_engine_guard_failure(lifecycle.as_deref_mut(), &engine);
+    record_operational_denial(&InputSource::Command(source.clone()), &result);
 
     if let Ok(state_path) = state_store::StateStore::default_path() {
         let state_store = state_store::StateStore::new(state_path);
@@ -1113,6 +1234,56 @@ fn run_shadowed_tool(
         "failed to exec real `{tool}` binary `{}`: {error}",
         real_binary.display()
     )
+}
+
+/// Run the standalone monitoring endpoint used by a supervisor or sidecar.
+/// The endpoint owns a durable lifecycle marker so a probe can distinguish a
+/// responsive monitor from a guard process that disappeared.
+fn run_monitor(
+    host: String,
+    port: u16,
+    health_path: Option<PathBuf>,
+    rule_pack: Option<PathBuf>,
+) -> Result<()> {
+    let mut monitoring_config = monitoring::MonitoringConfig::from_environment();
+    if let Some(path) = rule_pack {
+        monitoring_config.rule_pack_path = path;
+    }
+    let health_path = health_path.unwrap_or_else(|| monitoring_config.health_path.clone());
+    monitoring_config = monitoring_config.with_health_path(health_path.clone());
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to create monitoring runtime")?;
+    runtime.block_on(async move {
+        let health_store = health::HealthStore::new(&health_path);
+        health_store.mark_start()?;
+        let server_config = health_server::HealthServerConfig {
+            host,
+            port,
+            ..Default::default()
+        };
+        let mut server = health_server::HealthServer::with_health_store(
+            server_config,
+            health_store.clone(),
+        )
+        .with_monitoring_config(monitoring_config);
+        if let Err(error) = server.spawn_background_task().await {
+            let _ = health_store.mark_clean_exit();
+            return Err(error);
+        }
+
+        if let Some(address) = server.local_addr() {
+            println!("icg monitor listening on http://{address}");
+        }
+        let signal_result = tokio::signal::ctrl_c().await;
+        let shutdown_result = server.shutdown().await;
+        let clean_exit_result = health_store.mark_clean_exit();
+        signal_result.context("monitoring signal handler failed")?;
+        shutdown_result?;
+        clean_exit_result
+    })
 }
 
 #[cfg(not(unix))]
@@ -1390,6 +1561,7 @@ fn main() -> Result<()> {
                         &InputSource::Command(source.clone()),
                         &result,
                     );
+                    record_operational_denial(&InputSource::Command(source.clone()), &result);
                     println!(
                         "{}",
                         render_hook_response(result, original_input.as_ref(), input_key, None)
@@ -1418,6 +1590,7 @@ fn main() -> Result<()> {
                         &InputSource::Content(content.clone()),
                         &result,
                     );
+                    record_operational_denial(&InputSource::Content(content.clone()), &result);
                     println!(
                         "{}",
                         render_hook_response(
@@ -1450,6 +1623,7 @@ fn main() -> Result<()> {
                         &contents,
                         &result,
                     );
+                    record_operational_denial(&InputSource::ContentBatch(contents.clone()), &result);
                     let files = contents
                         .iter()
                         .map(|content| content.file_path())
@@ -2035,6 +2209,7 @@ fn main() -> Result<()> {
 
                 // Copy existing window data to new store
                 let window_records = store.window().records().to_vec();
+                let rule_metrics = store.rule_metrics().cloned().collect::<Vec<_>>();
                 for record in window_records {
                     new_store.record_evaluation(
                         record.verdict,
@@ -2042,6 +2217,7 @@ fn main() -> Result<()> {
                         record.session_id,
                     );
                 }
+                new_store.restore_rule_metrics(rule_metrics);
 
                 // Persist the updated configuration
                 new_store.persist()?;
@@ -2367,6 +2543,12 @@ fn main() -> Result<()> {
             }
         }
         },
+        Commands::Monitor {
+            host,
+            port,
+            health_path,
+            rule_pack,
+        } => run_monitor(host, port, health_path, rule_pack),
     };
 
     if let Some(run) = lifecycle.as_mut() {

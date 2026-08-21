@@ -151,6 +151,17 @@ pub struct HealthTelemetry {
     pub last_start_at: Option<DateTime<Utc>>,
 }
 
+/// Durable counters for rules that produced a non-allowing evaluation.
+/// Keeping these counters in telemetry makes rule performance available to a
+/// scrape without putting I/O on the evaluation hot path.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuleEvaluationTelemetry {
+    pub pack_id: String,
+    pub pattern_id: String,
+    pub match_count: u64,
+    pub deny_count: u64,
+}
+
 impl EvaluationWindow {
     /// Create a new empty window with specified capacity
     pub fn new(capacity: usize) -> Self {
@@ -316,6 +327,10 @@ pub struct TelemetryStore {
     #[serde(default)]
     health: HealthTelemetry,
 
+    /// Bounded-by-pack rule counters for dashboard and alert consumers.
+    #[serde(default)]
+    rule_metrics: std::collections::BTreeMap<String, RuleEvaluationTelemetry>,
+
     /// Path to telemetry file on disk
     store_path: PathBuf,
 }
@@ -328,6 +343,7 @@ impl TelemetryStore {
             config: TelemetryConfig::default(),
             last_rollback_at: None,
             health: HealthTelemetry::default(),
+            rule_metrics: std::collections::BTreeMap::new(),
             store_path,
         }
     }
@@ -344,6 +360,7 @@ impl TelemetryStore {
             config,
             last_rollback_at: None,
             health: HealthTelemetry::default(),
+            rule_metrics: std::collections::BTreeMap::new(),
             store_path,
         }
     }
@@ -403,6 +420,55 @@ impl TelemetryStore {
         self.window.push(record);
     }
 
+    /// Record an evaluation and associate it with the rule that matched.
+    pub fn record_evaluation_for_rule(
+        &mut self,
+        verdict: Verdict,
+        release_ref: Option<String>,
+        session_id: Option<String>,
+        pack_id: Option<&str>,
+        pattern_id: Option<&str>,
+    ) {
+        self.record_evaluation(verdict, release_ref, session_id);
+        let (Some(pack_id), Some(pattern_id)) = (pack_id, pattern_id) else {
+            return;
+        };
+        let key = format!("{pack_id}\u{1f}{pattern_id}");
+        let entry = self
+            .rule_metrics
+            .entry(key)
+            .or_insert_with(|| RuleEvaluationTelemetry {
+                pack_id: pack_id.to_string(),
+                pattern_id: pattern_id.to_string(),
+                ..Default::default()
+            });
+        entry.match_count = entry.match_count.saturating_add(1);
+        if verdict.is_deny() {
+            entry.deny_count = entry.deny_count.saturating_add(1);
+        }
+    }
+
+    /// Return the persisted per-rule counters for monitoring exporters.
+    pub fn rule_metrics(&self) -> impl Iterator<Item = &RuleEvaluationTelemetry> {
+        self.rule_metrics.values()
+    }
+
+    /// Restore rule counters when a configuration update rebuilds the store.
+    pub fn restore_rule_metrics(
+        &mut self,
+        metrics: impl IntoIterator<Item = RuleEvaluationTelemetry>,
+    ) {
+        self.rule_metrics = metrics
+            .into_iter()
+            .map(|metric| {
+                (
+                    format!("{}\u{1f}{}", metric.pack_id, metric.pattern_id),
+                    metric,
+                )
+            })
+            .collect();
+    }
+
     /// Get the current evaluation window
     pub fn window(&self) -> &EvaluationWindow {
         &self.window
@@ -411,6 +477,11 @@ impl TelemetryStore {
     /// Get the telemetry configuration
     pub fn config(&self) -> &TelemetryConfig {
         &self.config
+    }
+
+    /// Return the time of the last successful automatic rollback, if any.
+    pub fn last_rollback_at(&self) -> Option<DateTime<Utc>> {
+        self.last_rollback_at
     }
 
     /// Return the latest health snapshot copied into telemetry.
@@ -453,6 +524,7 @@ impl TelemetryStore {
     pub fn clear(&mut self) {
         self.window.clear();
         self.last_rollback_at = None;
+        self.rule_metrics.clear();
     }
 }
 

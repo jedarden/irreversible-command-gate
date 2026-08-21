@@ -1,0 +1,39 @@
+# Promtail example for the JSONL denial log. Mount the host/container log
+# directory at /var/cache/icg in the shipper, or change __path__ accordingly.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: icg-denials
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: icg-denials
+          service: irreversible-command-gate
+          __path__: /var/cache/icg/denials*.jsonl
+    pipeline_stages:
+      - json:
+          expressions:
+            timestamp: timestamp
+            pack_id: pack_id
+            pattern_id: pattern_id
+            severity: severity
+            category: category
+            denial_id: id
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      - labels:
+          pack_id:
+          pattern_id:
+          severity:
+          category:
+          denial_id:

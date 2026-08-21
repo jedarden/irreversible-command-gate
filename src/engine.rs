@@ -2115,8 +2115,27 @@ impl Engine {
             let release_ref = self.release_ref().map(String::from);
             let session_id = self.session_id().map(String::from);
 
+            let (pack_id, pattern_id) = match result {
+                CheckResult::Denied {
+                    pack_id, pattern_id, ..
+                }
+                | CheckResult::Rewrite {
+                    pack_id, pattern_id, ..
+                }
+                | CheckResult::Warning {
+                    pack_id, pattern_id, ..
+                } => (Some(pack_id.as_str()), Some(pattern_id.as_str())),
+                CheckResult::Allowed => (None, None),
+            };
+
             if let Ok(mut store) = telemetry_store.lock() {
-                store.record_evaluation(verdict, release_ref, session_id);
+                store.record_evaluation_for_rule(
+                    verdict,
+                    release_ref,
+                    session_id,
+                    pack_id,
+                    pattern_id,
+                );
             }
         }
 

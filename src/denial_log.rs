@@ -425,6 +425,15 @@ impl DenialStore {
             return Ok(());
         }
 
+        // Monitoring systems are often multi-tenant.  Keep the structured
+        // rule metadata while omitting command arguments and file contents
+        // unless an operator explicitly opts into full-content logging.
+        let record = if self.config.log_full_content {
+            record
+        } else {
+            redact_denial_input(record)
+        };
+
         // Acquire write lock
         let _lock = self.write_lock.lock().map_err(|e| {
             anyhow::anyhow!("Failed to acquire denial log write lock: {}", e)
@@ -578,6 +587,33 @@ impl DenialStore {
             Ok(0)
         }
     }
+}
+
+fn redact_denial_input(mut record: DenialRecord) -> DenialRecord {
+    record.denied_input = match record.denied_input {
+        DeniedInput::Command { .. } => DeniedInput::Command {
+            command: "<redacted>".to_string(),
+            segments: Vec::new(),
+            working_dir: None,
+        },
+        DeniedInput::Content {
+            file_path,
+            content,
+            content_size,
+        } => DeniedInput::Content {
+            file_path,
+            content: "<redacted>".to_string(),
+            content_size: content.len().max(content_size),
+        },
+        DeniedInput::ContentBatch {
+            file_paths,
+            total_size,
+        } => DeniedInput::ContentBatch {
+            file_paths,
+            total_size,
+        },
+    };
+    record
 }
 
 /// Denial log statistics
@@ -859,6 +895,32 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].pack_id, "test-pack");
 
+        Ok(())
+    }
+
+    #[test]
+    fn redacts_payloads_when_full_content_logging_is_disabled() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let log_path = temp_dir.path().join("denials.jsonl");
+        let mut config = DenialLogConfig::default();
+        config.log_full_content = false;
+        let store = DenialStore::new(log_path.clone(), config)?;
+        store.record_denial(DenialRecord::new(
+            "secrets".to_string(),
+            "token".to_string(),
+            "security".to_string(),
+            DenialSeverity::Critical,
+            "secret was detected".to_string(),
+            DeniedInput::Command {
+                command: "echo super-secret-token".to_string(),
+                segments: vec!["echo".to_string(), "super-secret-token".to_string()],
+                working_dir: Some("/tmp".to_string()),
+            },
+        ))?;
+
+        let serialized = std::fs::read_to_string(log_path)?;
+        assert!(!serialized.contains("super-secret-token"));
+        assert!(serialized.contains("<redacted>"));
         Ok(())
     }
 

@@ -244,6 +244,10 @@ impl MetricsExporter {
 
     /// Export metrics in Prometheus text-based exposition format
     pub fn export_metrics(&self, snapshot: &MetricsSnapshot) -> Result<String> {
+        if !self.config.enabled {
+            return Ok(String::new());
+        }
+
         let mut output = String::new();
         let prefix = &self.config.metric_prefix;
 
@@ -372,7 +376,9 @@ impl MetricsExporter {
                 output.push_str(&format!("# TYPE {}pack_info info\n", prefix));
                 output.push_str(&format!(
                     "{}pack_info{{pack_id=\"{}\",version=\"{}\"}} 1\n",
-                    prefix, pack.pack_id, pack.pack_version
+                    prefix,
+                    escape_label(&pack.pack_id),
+                    escape_label(&pack.pack_version)
                 ));
                 output.push('\n');
 
@@ -402,7 +408,10 @@ impl MetricsExporter {
             for rule in &snapshot.rules {
                 output.push_str(&format!(
                     "{}rule_match_count{{pack_id=\"{}\",pattern_id=\"{}\"}} {}\n",
-                    prefix, rule.pack_id, rule.pattern_id, rule.match_count
+                    prefix,
+                    escape_label(&rule.pack_id),
+                    escape_label(&rule.pattern_id),
+                    rule.match_count
                 ));
             }
             output.push('\n');
@@ -413,7 +422,10 @@ impl MetricsExporter {
             for rule in &snapshot.rules {
                 output.push_str(&format!(
                     "{}rule_deny_count{{pack_id=\"{}\",pattern_id=\"{}\"}} {}\n",
-                    prefix, rule.pack_id, rule.pattern_id, rule.deny_count
+                    prefix,
+                    escape_label(&rule.pack_id),
+                    escape_label(&rule.pattern_id),
+                    rule.deny_count
                 ));
             }
             output.push('\n');
@@ -424,7 +436,10 @@ impl MetricsExporter {
             for rule in &snapshot.rules {
                 output.push_str(&format!(
                     "{}rule_deny_rate{{pack_id=\"{}\",pattern_id=\"{}\"}} {}\n",
-                    prefix, rule.pack_id, rule.pattern_id, rule.deny_rate
+                    prefix,
+                    escape_label(&rule.pack_id),
+                    escape_label(&rule.pattern_id),
+                    rule.deny_rate
                 ));
             }
             output.push('\n');
@@ -435,7 +450,10 @@ impl MetricsExporter {
             for rule in &snapshot.rules {
                 output.push_str(&format!(
                     "{}rule_enabled{{pack_id=\"{}\",pattern_id=\"{}\"}} {}\n",
-                    prefix, rule.pack_id, rule.pattern_id, rule.enabled
+                    prefix,
+                    escape_label(&rule.pack_id),
+                    escape_label(&rule.pattern_id),
+                    rule.enabled
                 ));
             }
             output.push('\n');
@@ -457,6 +475,13 @@ impl MetricsExporter {
             .with_context(|| format!("Failed to write metrics to {}", path.display()))?;
         Ok(())
     }
+}
+
+fn escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
 }
 
 impl Default for MetricsExporter {

@@ -261,23 +261,35 @@ Logs are persisted to `/var/cache/icg/denials.jsonl` and can be exported for inc
 
 ## Monitoring
 
-### Key Metrics
+### Scrape and alert integration
 
-1. **Denial Rate**: Percentage of commands denied vs. allowed
-2. **Rule Pack Version**: Which rule pack is active
-3. **Coverage**: Which tools are being guarded
-4. **Alerts**: Critical severity denials should trigger alerts
+Run the standalone monitor beside the guard or under the same supervisor:
 
-### Health Checks
-
-The builder image includes a health check:
-
-```yaml
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD icg --version || exit 1
+```bash
+icg monitor --host 0.0.0.0 --port 8080
 ```
 
-This ensures icg is functional before the workflow starts.
+It provides `GET /health/live`, `GET /health/ready`, and `GET /metrics`.
+The metrics endpoint combines durable health, rolling deny-rate telemetry,
+rule-pack load state, denial-log availability, and denial counts grouped by
+pack and pattern. Configure its files with `ICG_HEALTH_PATH`,
+`ICG_TELEMETRY_PATH`, `ICG_DENIAL_LOG`, and `ICG_RULE_PACK` when the defaults
+do not match the deployment.
+
+Use the checked-in integration assets:
+
+- `monitoring/prometheus/scrape.yml` — scrape job for the monitor.
+- `monitoring/prometheus/alerts.yml` — high deny-rate, crash/dead process,
+  rule-pack loading, denial-log, and critical-denial alerts.
+- `monitoring/grafana/icg-overview.json` — health, deny-rate, crash, pack,
+  and top-rule dashboard.
+- `monitoring/promtail/config.yml` — structured JSONL denial-log shipping to
+  Loki. Mount both `denials.jsonl` and rotated `denials*.jsonl` files.
+
+The hook writes denied operations to `/var/cache/icg/denials.jsonl` (or
+`ICG_DENIAL_LOG`). Payloads are redacted by default; set
+`ICG_LOG_FULL_CONTENT=true` only when the destination has an approved access
+policy. Alert labels use rule metadata rather than command contents.
 
 ## Related Documentation
 

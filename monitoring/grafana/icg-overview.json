@@ -1,0 +1,72 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Guard health",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "icg_health_status{job=\"icg\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"1": {"text": "Healthy", "color": "green"}, "2": {"text": "Recovering", "color": "yellow"}, "3": {"text": "Unstable", "color": "orange"}, "4": {"text": "Degraded", "color": "yellow"}, "5": {"text": "Dead", "color": "red"}}}]}, "overrides": []}
+    },
+    {
+      "type": "stat",
+      "title": "Deny rate",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "icg_current_deny_rate{job=\"icg\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 0.25}]}}, "overrides": []}
+    },
+    {
+      "type": "stat",
+      "title": "Recent denials",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "icg_denials_recent{job=\"icg\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "type": "stat",
+      "title": "Rule pack",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "icg_rule_pack_loaded{job=\"icg\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Load failed", "color": "red"}, "1": {"text": "Loaded", "color": "green"}}}]}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Deny rate versus baseline",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [
+        {"expr": "icg_current_deny_rate{job=\"icg\"}", "legendFormat": "current", "refId": "A"},
+        {"expr": "icg_baseline_mean{job=\"icg\"}", "legendFormat": "baseline", "refId": "B"},
+        {"expr": "icg_baseline_mean{job=\"icg\"} + 3 * icg_baseline_stddev{job=\"icg\"}", "legendFormat": "3σ threshold", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Guard crashes and uptime",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        {"expr": "icg_recent_crashes{job=\"icg\"}", "legendFormat": "crashes (1h)", "refId": "A"},
+        {"expr": "icg_uptime_seconds{job=\"icg\"}", "legendFormat": "uptime", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}
+    },
+    {
+      "type": "table",
+      "title": "Denied operations by rule",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 12},
+      "targets": [{"expr": "topk(20, icg_denials_by_rule_total{job=\"icg\"})", "format": "table", "instant": true, "refId": "A"}],
+      "fieldConfig": {"defaults": {}, "overrides": []}
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["icg", "guard", "security"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "ICG Guard Overview",
+  "uid": "icg-guard-overview",
+  "version": 1
+}
