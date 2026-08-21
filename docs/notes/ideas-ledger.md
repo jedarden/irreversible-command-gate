@@ -193,6 +193,15 @@ mitigation for Codex's confirmed-still-churning hook API specifically.
    - **First step:** Define the poison-pill health signal (what makes a release "bad") and wire the self-updater's trust pointer to automatically fall back to the last-known-good release when it fires.
    - **Strongest surviving objection:** Must work standalone, without depending on #8/`irrevers-aa1b828d`'s auto-generated tests existing yet — the kill pass explicitly rejected coupling the two into one deliverable.
 
+   **Measurement split:** The deny-rate measurement half is tracked separately
+   in `irrevers-b6579270`. It persists per-release evaluation and denial counts
+   in the state store, computes the baseline from prior retained releases, and
+   exposes the current signed deviation to this rollback consumer and
+   `irrevers-cd3f4c44`. The shared kill-pass safeguard is deliberately
+   conservative: a deviation is actionable only after enough current-release
+   observations, enough prior releases and baseline volume, a meaningful
+   absolute increase, and a sigma threshold are all satisfied.
+
 4. **Canary rollout via NEEDLE `--identifier`** (Lens 5, #56) — bead `irrevers-6de781f4`
    - **Pitch:** Roll a new release out to a named subset of hosts before it goes fleet-wide.
    - **Why it won:** Absorbed the fleet-health signals from hybrid H2 (`#56 × merged-59/61/62`, "canary-aware fleet health") — staleness heartbeat, split-brain version detection, graceful degradation — as a scope note rather than shipping those as separate finalists, making #56 the single concrete Layer 4 staged-rollout implementation.

@@ -534,7 +534,8 @@ GuardedPattern:
       `beads` pack now depends on). If ever pursued, it would be a
       heuristic, non-blocking `additionalContext` warning, not a `deny`.
 - [ ] **Phase 4 — from ideation (2026-08-13 `/plan-idea-gen` run).** Nine
-      finalists adopted, tracked as beads, full
+      original finalists adopted, tracked as beads, with the poison-pill
+      measurement split tracked alongside them; full
       dossiers and kill-pass objections in `docs/notes/ideas-ledger.md`.
       Deepens Phase 0's release-integrity/self-update work and Phase 1's
       rule coverage rather than opening new phases of its own:
@@ -542,6 +543,11 @@ GuardedPattern:
         curation step so the suite doesn't grow unbounded)
       - `irrevers-54b33e0c` — `icg new-pack` scaffolding tool
       - `irrevers-ff4f17da` — poison-pill auto-rollback (extends Phase 0's Layer 4)
+      - `irrevers-b6579270` — per-release deny-rate telemetry and a rolling
+        baseline in the durable state store. This is the measurement half of
+        the poison-pill split: it records release denominators and denials
+        across hook/wrapper invocations and exposes a conservative deviation
+        signal to rollback and guard-maturity consumers.
       - `irrevers-6de781f4` — canary rollout via NEEDLE `--identifier` (concrete
         Layer 4 staged-rollout implementation)
       - `irrevers-1cad33d2` — `icg status` with blind-spot self-report
@@ -577,9 +583,9 @@ GuardedPattern:
         network operation)
       - `irrevers-cd3f4c44` — graduated fail-open→fail-closed policy for guard
         crashes: fails open until the guard's reliability is validated
-        (tied to `irrevers-b6579270`'s deny-rate telemetry, the signal
-        `irrevers-ff4f17da`'s poison pill also consumes), then shifts to
-        fail-closed
+        (consuming the durable per-release deviation exposed by
+        `irrevers-b6579270`, alongside the signal
+        `irrevers-ff4f17da`'s poison pill consumes), then shifts to fail-closed
       - `irrevers-b8343704` — ReDoS check on submitted rule packs in `icg-ci`
       - `irrevers-012be0c8` — per-rule enable/disable feature flag, revised from a
         dedicated fast-path kill-switch to reuse the normal Layer 1/2

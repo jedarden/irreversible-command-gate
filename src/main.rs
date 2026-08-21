@@ -545,6 +545,21 @@ fn load_wrapper_engine() -> Result<Engine> {
         }
     }
 
+    // The wrapper is a separate process for every command, so attach the
+    // durable state store here as well as in hook mode. Telemetry is best
+    // effort; inability to open the cache must not prevent normal commands
+    // from reaching their real binary.
+    if let Ok(state_path) = state_store::StateStore::default_path() {
+        engine = engine.with_state_store(std::sync::Arc::new(
+            state_store::StateStore::new(state_path),
+        ));
+    }
+    if let Ok(trust_path) = TrustPointerStore::default_path() {
+        if let Ok(Some(pointer)) = TrustPointerStore::new(trust_path).load() {
+            engine = engine.with_release_ref(pointer.trusted_ref);
+        }
+    }
+
     Ok(engine)
 }
 
@@ -835,6 +850,11 @@ fn main() -> Result<()> {
                 .with_telemetry_store(telemetry_store.clone())
                 .with_session_id(session_id.clone())
                 .with_release_ref(release_ref.unwrap_or_else(|| "unknown".to_string()));
+            if let Ok(state_path) = state_store::StateStore::default_path() {
+                engine = engine.with_state_store(std::sync::Arc::new(
+                    state_store::StateStore::new(state_path),
+                ));
+            }
 
             // Retain the original tool input so an updatedInput response can
             // replace one field without dropping the other tool arguments.

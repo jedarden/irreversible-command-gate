@@ -1835,7 +1835,16 @@ impl Engine {
     pub fn evaluate_content_batch(&self, sources: &[ContentSource]) -> CheckResult {
         let mut result = CheckResult::Allowed;
         for source in sources {
-            result = self.most_severe_result(result, self.evaluate_content(source));
+            let file_result = match catch_unwind(AssertUnwindSafe(|| {
+                self.evaluate_content_inner(source)
+            })) {
+                Ok(result) => result,
+                Err(_) => {
+                    report_fail_open("content evaluation panicked");
+                    CheckResult::Allowed
+                }
+            };
+            result = self.most_severe_result(result, file_result);
             if matches!(result, CheckResult::Denied { .. }) {
                 break;
             }
@@ -2010,13 +2019,25 @@ impl Engine {
 
     /// Record a telemetry evaluation result if telemetry store is configured
     fn record_telemetry_result(&self, result: &CheckResult) {
+        let verdict = result.to_verdict();
+
         if let Some(telemetry_store) = &self.telemetry_store {
-            let verdict = result.to_verdict();
             let release_ref = self.release_ref().map(String::from);
             let session_id = self.session_id().map(String::from);
 
             if let Ok(mut store) = telemetry_store.lock() {
                 store.record_evaluation(verdict, release_ref, session_id);
+            }
+        }
+
+        // Release health is durable state, not just the in-process rolling
+        // evaluation window above. Keep this best-effort so a telemetry
+        // filesystem problem never changes the guard's allow/deny decision.
+        if let (Some(state_store), Some(release_ref)) =
+            (&self.state_store, self.release_ref.as_deref())
+        {
+            if release_ref != "unknown" {
+                let _ = state_store.record_release_evaluation(release_ref, verdict.is_deny());
             }
         }
     }

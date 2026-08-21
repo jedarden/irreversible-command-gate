@@ -4,7 +4,8 @@
 //! The trust-pointer file is a root-owned security boundary and remains the
 //! source of truth for what a host may load. This store records the runtime
 //! history needed by later enforcement components: session ordering markers,
-//! deny events, the previous trust reference, and rollback metadata.
+//! deny events, per-release deny-rate aggregates, the previous trust
+//! reference, and rollback metadata.
 //!
 //! The on-disk format is a versioned JSON document. JSON is sufficient here:
 //! the state is small, locally hosted, and does not need query-oriented
@@ -29,6 +30,35 @@ pub const STATE_SCHEMA_VERSION: u32 = 1;
 /// The history is diagnostic/telemetry state, not an unbounded audit log.
 /// Keeping a finite tail prevents a busy host from filling its filesystem.
 pub const DEFAULT_MAX_DENY_HISTORY: usize = 10_000;
+
+/// Maximum number of release aggregates retained by a default store.
+///
+/// Release aggregates, rather than individual command evaluations, are the
+/// rolling baseline. Keeping a bounded number of releases makes the baseline
+/// stable across process invocations without allowing telemetry to grow
+/// without limit.
+pub const DEFAULT_MAX_RELEASE_TELEMETRY: usize = 32;
+
+/// Minimum number of prior releases needed before a deny-rate deviation is
+/// suitable for an automated consumer such as poison-pill rollback.
+pub const DEFAULT_MIN_BASELINE_RELEASES: usize = 3;
+
+/// Minimum number of evaluations for the current release before its rate is
+/// treated as representative of the release rather than a small sample.
+pub const DEFAULT_MIN_CURRENT_EVALUATIONS: u64 = 100;
+
+/// Minimum total evaluations represented by prior releases before their
+/// aggregate is eligible as a baseline.
+pub const DEFAULT_MIN_BASELINE_EVALUATIONS: u64 = 300;
+
+/// Minimum absolute deny-rate increase required by the conservative default
+/// policy. This prevents a tiny baseline from turning ordinary noise into a
+/// release-health incident.
+pub const DEFAULT_MIN_ABSOLUTE_DEVIATION: f64 = 0.05;
+
+/// Number of baseline standard deviations required by the conservative
+/// default policy in addition to the absolute deviation floor.
+pub const DEFAULT_BASELINE_SIGMA_MULTIPLIER: f64 = 3.0;
 
 /// Trust-pointer information recorded in runtime state.
 ///
@@ -140,6 +170,197 @@ pub type DenyEvent = DenyHistoryEntry;
 /// Alias for callers that use record terminology.
 pub type DenyRecord = DenyHistoryEntry;
 
+/// Per-release aggregate of evaluation and denial counts.
+///
+/// A release record is updated transactionally for every evaluation. The
+/// aggregate is persisted in the state store, so a fresh hook process can
+/// continue the same release's denominator and compare it with prior releases.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReleaseTelemetryRecord {
+    /// Release reference loaded when the evaluation occurred.
+    pub release_ref: String,
+
+    /// UTC timestamp of the first evaluation observed for this release.
+    pub first_seen_at: String,
+
+    /// UTC timestamp of the most recent evaluation observed for this release.
+    pub last_seen_at: String,
+
+    /// Number of evaluations observed for this release.
+    #[serde(default)]
+    pub evaluation_count: u64,
+
+    /// Number of denied evaluations observed for this release.
+    #[serde(default)]
+    pub deny_count: u64,
+
+    /// Deny rate (`deny_count / evaluation_count`).
+    ///
+    /// This is stored as a convenience for consumers inspecting the JSON
+    /// state file. It is recomputed whenever the record is updated and when a
+    /// state file is loaded, so it cannot become stale through normal use.
+    #[serde(default)]
+    pub deny_rate: f64,
+}
+
+impl ReleaseTelemetryRecord {
+    fn new(release_ref: impl Into<String>, timestamp: String, denied: bool) -> Self {
+        let mut record = Self {
+            release_ref: release_ref.into(),
+            first_seen_at: timestamp.clone(),
+            last_seen_at: timestamp,
+            evaluation_count: 1,
+            deny_count: u64::from(denied),
+            deny_rate: 0.0,
+        };
+        record.recompute_rate();
+        record
+    }
+
+    fn recompute_rate(&mut self) {
+        self.deny_rate = if self.evaluation_count == 0 {
+            0.0
+        } else {
+            self.deny_count as f64 / self.evaluation_count as f64
+        };
+    }
+
+    /// Return this release's current deny rate.
+    pub fn rate(&self) -> f64 {
+        self.deny_rate
+    }
+}
+
+/// Statistics for the rolling baseline of release deny rates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RollingDenyRateBaseline {
+    /// Number of release aggregates included in the baseline.
+    pub release_count: usize,
+
+    /// Sum of evaluations represented by the baseline releases.
+    pub evaluation_count: u64,
+
+    /// Sum of denials represented by the baseline releases.
+    pub deny_count: u64,
+
+    /// Mean of the per-release deny rates. Each release contributes one rate,
+    /// so a high-volume release cannot drown out every smaller release.
+    pub mean_deny_rate: f64,
+
+    /// Population standard deviation of per-release deny rates.
+    pub std_dev: f64,
+
+    /// Lowest per-release deny rate in the baseline.
+    pub min_deny_rate: f64,
+
+    /// Highest per-release deny rate in the baseline.
+    pub max_deny_rate: f64,
+
+    /// First observation timestamp in the baseline.
+    pub window_start: Option<String>,
+
+    /// Most recent observation timestamp in the baseline.
+    pub window_end: Option<String>,
+}
+
+impl Default for RollingDenyRateBaseline {
+    fn default() -> Self {
+        Self {
+            release_count: 0,
+            evaluation_count: 0,
+            deny_count: 0,
+            mean_deny_rate: 0.0,
+            std_dev: 0.0,
+            min_deny_rate: 0.0,
+            max_deny_rate: 0.0,
+            window_start: None,
+            window_end: None,
+        }
+    }
+}
+
+/// The current release's signed deviation from its prior-release baseline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DenyRateDeviation {
+    /// Release whose current aggregate was compared.
+    pub release_ref: String,
+
+    /// Current release deny rate.
+    pub current_deny_rate: f64,
+
+    /// Current release evaluation count.
+    pub current_evaluation_count: u64,
+
+    /// Current release denial count.
+    pub current_deny_count: u64,
+
+    /// Baseline made from other retained releases.
+    pub baseline: RollingDenyRateBaseline,
+
+    /// Signed difference `current_deny_rate - baseline.mean_deny_rate`.
+    pub absolute_deviation: f64,
+
+    /// Signed relative difference where the baseline mean is non-zero.
+    /// `None` means the baseline mean is zero and a ratio would be undefined.
+    pub relative_deviation: Option<f64>,
+}
+
+impl DenyRateDeviation {
+    /// Return whether the baseline contains enough history to be considered.
+    pub fn has_minimum_baseline(&self, minimum_releases: usize) -> bool {
+        self.baseline.release_count >= minimum_releases
+    }
+
+    /// Apply a conservative poison-pill-style threshold.
+    ///
+    /// The check requires all of: enough current-release observations, enough
+    /// prior releases and baseline volume, a meaningful absolute increase, and
+    /// a rate above the baseline's sigma threshold. A single noisy day
+    /// therefore cannot trigger a release-health action by itself.
+    pub fn is_concerning(&self, policy: &DenyRatePolicy) -> bool {
+        self.current_evaluation_count >= policy.minimum_current_evaluations
+            && self.has_minimum_baseline(policy.minimum_baseline_releases)
+            && self.baseline.evaluation_count >= policy.minimum_baseline_evaluations
+            && self.absolute_deviation >= policy.minimum_absolute_deviation
+            && self.current_deny_rate
+                > self.baseline.mean_deny_rate
+                    + self.baseline.std_dev * policy.baseline_sigma_multiplier
+    }
+}
+
+/// Conservative policy for consumers deciding whether a deviation is
+/// significant enough to act on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DenyRatePolicy {
+    /// Minimum prior releases required for a baseline.
+    pub minimum_baseline_releases: usize,
+
+    /// Minimum current-release evaluations required for comparison.
+    pub minimum_current_evaluations: u64,
+
+    /// Minimum total evaluations represented by prior releases.
+    pub minimum_baseline_evaluations: u64,
+
+    /// Minimum absolute increase in deny rate (0.05 means five percentage
+    /// points).
+    pub minimum_absolute_deviation: f64,
+
+    /// Number of baseline standard deviations required above the mean.
+    pub baseline_sigma_multiplier: f64,
+}
+
+impl Default for DenyRatePolicy {
+    fn default() -> Self {
+        Self {
+            minimum_baseline_releases: DEFAULT_MIN_BASELINE_RELEASES,
+            minimum_current_evaluations: DEFAULT_MIN_CURRENT_EVALUATIONS,
+            minimum_baseline_evaluations: DEFAULT_MIN_BASELINE_EVALUATIONS,
+            minimum_absolute_deviation: DEFAULT_MIN_ABSOLUTE_DEVIATION,
+            baseline_sigma_multiplier: DEFAULT_BASELINE_SIGMA_MULTIPLIER,
+        }
+    }
+}
+
 /// Persistent metadata about rollback activity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RollbackState {
@@ -222,6 +443,11 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny_history: Vec<DenyHistoryEntry>,
 
+    /// Bounded per-release evaluation and denial aggregates used to build the
+    /// rolling release-health baseline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release_telemetry: Vec<ReleaseTelemetryRecord>,
+
     /// Rollback metadata for the current host.
     #[serde(default)]
     pub rollback: RollbackState,
@@ -241,6 +467,7 @@ impl SessionState {
             schema_version: STATE_SCHEMA_VERSION,
             trust_pointer: None,
             deny_history: Vec::new(),
+            release_telemetry: Vec::new(),
             rollback: RollbackState::default(),
         }
     }
@@ -300,6 +527,34 @@ impl SessionState {
         self.deny_history.push(entry);
     }
 
+    /// Record one evaluation for a release and return its updated aggregate.
+    pub fn record_release_evaluation(
+        &mut self,
+        release_ref: impl Into<String>,
+        denied: bool,
+    ) -> ReleaseTelemetryRecord {
+        let release_ref = release_ref.into();
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+
+        if let Some(record) = self
+            .release_telemetry
+            .iter_mut()
+            .find(|record| record.release_ref == release_ref)
+        {
+            record.last_seen_at = timestamp;
+            record.evaluation_count = record.evaluation_count.saturating_add(1);
+            if denied {
+                record.deny_count = record.deny_count.saturating_add(1);
+            }
+            record.recompute_rate();
+            return record.clone();
+        }
+
+        let record = ReleaseTelemetryRecord::new(release_ref, timestamp, denied);
+        self.release_telemetry.push(record.clone());
+        record
+    }
+
     /// Set rollback metadata exactly, useful when restoring a state snapshot.
     pub fn set_rollback(&mut self, rollback: RollbackState) {
         self.rollback = rollback;
@@ -342,6 +597,8 @@ pub struct StateStore {
     path: PathBuf,
     /// Maximum number of deny records retained by this store.
     max_deny_history: usize,
+    /// Maximum number of release aggregates retained by this store.
+    max_release_telemetry: usize,
 }
 
 impl StateStore {
@@ -350,6 +607,7 @@ impl StateStore {
         Self {
             path: path.as_ref().to_path_buf(),
             max_deny_history: DEFAULT_MAX_DENY_HISTORY,
+            max_release_telemetry: DEFAULT_MAX_RELEASE_TELEMETRY,
         }
     }
 
@@ -358,6 +616,21 @@ impl StateStore {
         Self {
             path: path.as_ref().to_path_buf(),
             max_deny_history: max_deny_history.max(1),
+            max_release_telemetry: DEFAULT_MAX_RELEASE_TELEMETRY,
+        }
+    }
+
+    /// Create a state store with explicit retention limits for both deny
+    /// events and per-release telemetry.
+    pub fn with_limits(
+        path: impl AsRef<Path>,
+        max_deny_history: usize,
+        max_release_telemetry: usize,
+    ) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+            max_deny_history: max_deny_history.max(1),
+            max_release_telemetry: max_release_telemetry.max(1),
         }
     }
 
@@ -369,6 +642,11 @@ impl StateStore {
     /// Return the configured deny-history retention limit.
     pub fn max_deny_history(&self) -> usize {
         self.max_deny_history
+    }
+
+    /// Return the configured per-release telemetry retention limit.
+    pub fn max_release_telemetry(&self) -> usize {
+        self.max_release_telemetry
     }
 
     /// Get the default state-store path.
@@ -451,6 +729,9 @@ impl StateStore {
         }
         if state.session_id.is_empty() {
             state.session_id = SessionState::generate_session_id();
+        }
+        for record in &mut state.release_telemetry {
+            record.recompute_rate();
         }
         Ok(())
     }
@@ -632,6 +913,106 @@ impl StateStore {
         ))
     }
 
+    /// Record one allow/deny evaluation for a release.
+    ///
+    /// Empty references are rejected because they cannot be attributed to a
+    /// release. Callers without a trusted release should omit telemetry rather
+    /// than creating an `unknown` bucket that would contaminate the baseline.
+    pub fn record_release_evaluation(
+        &self,
+        release_ref: &str,
+        denied: bool,
+    ) -> Result<ReleaseTelemetryRecord> {
+        if release_ref.trim().is_empty() {
+            bail!("release reference must not be empty");
+        }
+
+        let record = self.update(|state| {
+            state.record_release_evaluation(release_ref, denied);
+            if state.release_telemetry.len() > self.max_release_telemetry {
+                let oldest_index = state
+                    .release_telemetry
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, left), (_, right)| left.last_seen_at.cmp(&right.last_seen_at))
+                    .map(|(index, _)| index);
+                if let Some(index) = oldest_index {
+                    state.release_telemetry.remove(index);
+                }
+            }
+        })?;
+
+        record
+            .release_telemetry
+            .into_iter()
+            .find(|entry| entry.release_ref == release_ref)
+            .context("release telemetry record disappeared during update")
+    }
+
+    /// Return all retained per-release telemetry records in storage order.
+    pub fn release_telemetry(&self) -> Result<Vec<ReleaseTelemetryRecord>> {
+        Ok(self.load()?.release_telemetry)
+    }
+
+    /// Return the aggregate for one release, if it has been observed.
+    pub fn release_telemetry_for(
+        &self,
+        release_ref: &str,
+    ) -> Result<Option<ReleaseTelemetryRecord>> {
+        Ok(self
+            .release_telemetry()?
+            .into_iter()
+            .find(|record| record.release_ref == release_ref))
+    }
+
+    /// Compute a rolling baseline from the retained release aggregates.
+    pub fn rolling_deny_rate_baseline(&self) -> Result<RollingDenyRateBaseline> {
+        Ok(compute_release_baseline(&self.release_telemetry()?))
+    }
+
+    /// Compare one release with the rolling baseline made from all other
+    /// retained releases.
+    pub fn deny_rate_deviation_for(&self, release_ref: &str) -> Result<Option<DenyRateDeviation>> {
+        let records = self.release_telemetry()?;
+        let Some(current) = records
+            .iter()
+            .find(|record| record.release_ref == release_ref)
+        else {
+            return Ok(None);
+        };
+
+        let baseline_records = records
+            .iter()
+            .filter(|record| record.release_ref != release_ref)
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(Some(make_deviation(
+            current,
+            &compute_release_baseline(&baseline_records),
+        )))
+    }
+
+    /// Return the deviation for the most recently observed release.
+    pub fn current_deny_rate_deviation(&self) -> Result<Option<DenyRateDeviation>> {
+        let records = self.release_telemetry()?;
+        let Some(current) = records
+            .iter()
+            .max_by(|left, right| left.last_seen_at.cmp(&right.last_seen_at))
+        else {
+            return Ok(None);
+        };
+
+        let baseline_records = records
+            .iter()
+            .filter(|record| record.release_ref != current.release_ref)
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(Some(make_deviation(
+            current,
+            &compute_release_baseline(&baseline_records),
+        )))
+    }
+
     /// Return the retained deny history in chronological order.
     pub fn deny_history(&self) -> Result<Vec<DenyHistoryEntry>> {
         Ok(self.load()?.deny_history)
@@ -698,6 +1079,77 @@ impl StateStore {
     pub fn clear_last_rollback(&self) -> Result<()> {
         self.update(|state| state.rollback.clear_last_rollback())?;
         Ok(())
+    }
+}
+
+/// Compute rolling statistics from per-release telemetry records.
+pub fn compute_rolling_deny_rate_baseline(
+    records: &[ReleaseTelemetryRecord],
+) -> RollingDenyRateBaseline {
+    if records.is_empty() {
+        return RollingDenyRateBaseline::default();
+    }
+
+    let release_count = records.len();
+    let evaluation_count = records.iter().fold(0_u64, |total, record| {
+        total.saturating_add(record.evaluation_count)
+    });
+    let deny_count = records.iter().fold(0_u64, |total, record| {
+        total.saturating_add(record.deny_count)
+    });
+    let rates = records
+        .iter()
+        .map(ReleaseTelemetryRecord::rate)
+        .collect::<Vec<_>>();
+    let mean_deny_rate = rates.iter().sum::<f64>() / release_count as f64;
+    let variance = rates
+        .iter()
+        .map(|rate| {
+            let difference = rate - mean_deny_rate;
+            difference * difference
+        })
+        .sum::<f64>()
+        / release_count as f64;
+
+    RollingDenyRateBaseline {
+        release_count,
+        evaluation_count,
+        deny_count,
+        mean_deny_rate,
+        std_dev: variance.sqrt(),
+        min_deny_rate: rates.iter().copied().fold(f64::INFINITY, f64::min),
+        max_deny_rate: rates.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        window_start: records
+            .iter()
+            .map(|record| record.first_seen_at.clone())
+            .min(),
+        window_end: records
+            .iter()
+            .map(|record| record.last_seen_at.clone())
+            .max(),
+    }
+}
+
+fn compute_release_baseline(records: &[ReleaseTelemetryRecord]) -> RollingDenyRateBaseline {
+    compute_rolling_deny_rate_baseline(records)
+}
+
+fn make_deviation(
+    current: &ReleaseTelemetryRecord,
+    baseline: &RollingDenyRateBaseline,
+) -> DenyRateDeviation {
+    let absolute_deviation = current.deny_rate - baseline.mean_deny_rate;
+    let relative_deviation =
+        (baseline.mean_deny_rate > 0.0).then(|| absolute_deviation / baseline.mean_deny_rate);
+
+    DenyRateDeviation {
+        release_ref: current.release_ref.clone(),
+        current_deny_rate: current.deny_rate,
+        current_evaluation_count: current.evaluation_count,
+        current_deny_count: current.deny_count,
+        baseline: baseline.clone(),
+        absolute_deviation,
+        relative_deviation,
     }
 }
 
@@ -945,6 +1397,104 @@ mod tests {
         store.record_denial(Some("v2"), None, None, "blocked")?;
         assert_eq!(store.deny_count_since(since)?, 2);
         assert_eq!(store.deny_count_for_release_since("v1", since)?, 1);
+        Ok(())
+    }
+
+    fn record_release(store: &StateStore, release_ref: &str, total: u64, denials: u64) {
+        for index in 0..total {
+            store
+                .record_release_evaluation(release_ref, index < denials)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn release_telemetry_persists_counts_and_rate() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("session-state.json");
+        let store = StateStore::new(&path);
+
+        record_release(&store, "v1.2.3", 10, 2);
+
+        let reopened = StateStore::new(&path);
+        let record = reopened
+            .release_telemetry_for("v1.2.3")?
+            .expect("release record");
+        assert_eq!(record.evaluation_count, 10);
+        assert_eq!(record.deny_count, 2);
+        assert!((record.rate() - 0.2).abs() < f64::EPSILON);
+        assert_eq!(reopened.load()?.release_telemetry.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn release_telemetry_uses_prior_releases_for_deviation() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+
+        record_release(&store, "v1", 100, 1);
+        record_release(&store, "v2", 100, 2);
+        record_release(&store, "v3", 100, 1);
+        record_release(&store, "v4", 100, 20);
+
+        let deviation = store
+            .deny_rate_deviation_for("v4")?
+            .expect("current release deviation");
+        assert_eq!(deviation.baseline.release_count, 3);
+        assert_eq!(deviation.baseline.evaluation_count, 300);
+        assert_eq!(deviation.current_evaluation_count, 100);
+        assert!((deviation.current_deny_rate - 0.2).abs() < f64::EPSILON);
+        assert!(deviation.absolute_deviation > 0.18);
+        assert!(deviation.is_concerning(&DenyRatePolicy::default()));
+
+        let current = store
+            .current_deny_rate_deviation()?
+            .expect("latest release deviation");
+        assert_eq!(current.release_ref, "v4");
+
+        let baseline = store.rolling_deny_rate_baseline()?;
+        assert_eq!(baseline.release_count, 4);
+        assert_eq!(baseline.evaluation_count, 400);
+        Ok(())
+    }
+
+    #[test]
+    fn conservative_policy_rejects_small_samples_and_small_deltas() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+        record_release(&store, "v1", 100, 1);
+        record_release(&store, "v2", 100, 1);
+        record_release(&store, "v3", 100, 1);
+
+        record_release(&store, "small-sample", 10, 10);
+        let small_sample = store
+            .deny_rate_deviation_for("small-sample")?
+            .expect("small sample deviation");
+        assert!(!small_sample.is_concerning(&DenyRatePolicy::default()));
+
+        record_release(&store, "ordinary-noise", 100, 4);
+        let ordinary_noise = store
+            .deny_rate_deviation_for("ordinary-noise")?
+            .expect("ordinary noise deviation");
+        assert!(ordinary_noise.absolute_deviation < 0.05);
+        assert!(!ordinary_noise.is_concerning(&DenyRatePolicy::default()));
+        Ok(())
+    }
+
+    #[test]
+    fn release_telemetry_retention_is_bounded() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("session-state.json");
+        let store = StateStore::with_limits(&path, 10, 2);
+        record_release(&store, "v1", 1, 0);
+        record_release(&store, "v2", 1, 0);
+        record_release(&store, "v3", 1, 0);
+
+        let records = store.release_telemetry()?;
+        assert_eq!(records.len(), 2);
+        assert!(!records.iter().any(|record| record.release_ref == "v1"));
+        assert!(records.iter().any(|record| record.release_ref == "v2"));
+        assert!(records.iter().any(|record| record.release_ref == "v3"));
         Ok(())
     }
 }
