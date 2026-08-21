@@ -1,0 +1,50 @@
+{
+  "id": "docker",
+  "tool_keywords": ["docker"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "docker-system-prune-all",
+      "type": "command_regex",
+      "regex": "(?i)^docker\\s+system\\s+prune\\b[^\\n]*(?:\\s)(?:--all|-a|-af)(?:[=\\s]|$)",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "docker system prune --all removes every unused image, in addition to stopped containers, networks, and build cache; the broad cleanup is difficult to recover from.",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Broad Docker cleanup is blocked because 'docker system prune --all' removes all unused images and other resources. Inspect with 'docker system df' and remove only the identified resource with a human-approved command.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "docker-volume-rm",
+      "type": "command_regex",
+      "regex": "(?i)^docker\\s+volume\\s+(?:rm|remove)\\b",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Removing a Docker volume permanently deletes the data stored in it and cannot be undone by Docker.",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Docker volume removal is blocked because it permanently deletes the volume's data. Inspect the volume first and take an external backup before a human-approved removal.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "docker-image-rm-force",
+      "type": "command_regex",
+      "regex": "(?i)^docker\\s+(?:rmi|image\\s+(?:rm|remove))\\b[^\\n]*(?:\\s)(?:--force|-f)(?:[=\\s]|$)",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Forced image removal can delete a tagged image or an image still referenced by containers, breaking reproducible builds or running workloads.",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Forced Docker image removal is blocked because it can delete a tagged or in-use image. Inspect references with 'docker image ls' and 'docker ps -a', then use a human-approved non-forced removal after confirming the impact.",
+        "rewrite_template": null
+      }
+    }
+  ]
+}
