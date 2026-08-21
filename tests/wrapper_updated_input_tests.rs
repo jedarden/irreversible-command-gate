@@ -8,7 +8,6 @@
 #![cfg(unix)]
 
 use serde_json::json;
-use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
@@ -18,7 +17,7 @@ fn updated_input_rewrites_wrapper_argv_before_exec() {
     let tool_dir = temp.path().join("bin");
     std::fs::create_dir(&tool_dir).expect("tool directory should be created");
 
-    let tool = "icg-wrapper-rewrite-tool";
+    let tool = "git";
     let tool_path = tool_dir.join(tool);
     std::fs::write(
         &tool_path,
@@ -42,14 +41,16 @@ fn updated_input_rewrites_wrapper_argv_before_exec() {
             "guarded_patterns": [{
                 "id": "strip-force-flag",
                 "type": "command_regex",
-                "regex": format!(r"{tool} push.*--force(?:-with-lease)?"),
+                "regex": format!(
+                    r"^{tool}\s+push(?:\s+\S+)*\s+(?:--force-with-lease(?:=\S+)?|--force|-f)(?:\s|$)"
+                ),
                 "tier": "tier1",
                 "severity": "Critical",
                 "explanation": "Force-pushing can overwrite remote history",
                 "redirect": {
                     "channel": "updated_input",
                     "reason_template": "Stripped the force flag before execution",
-                    "rewrite_template": format!("{tool} push origin main")
+                    "rewrite_template": "{command_without_force}"
                 },
                 "destructive": true
             }]
@@ -64,33 +65,41 @@ fn updated_input_rewrites_wrapper_argv_before_exec() {
     }
     let path = std::env::join_paths(path_entries).expect("test PATH should be valid");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
-        .args(["wrapper", tool, "push", "--force", "origin", "main"])
-        .env("ICG_RULE_PACK", &pack_path)
-        .env("ICG_HEALTH_PATH", temp.path().join("health.json"))
-        .env("ICG_TELEMETRY_PATH", temp.path().join("telemetry.json"))
-        .env("HOME", temp.path())
-        .env("XDG_CACHE_HOME", temp.path().join("cache"))
-        .env("PATH", OsString::from(path))
-        .output()
-        .expect("wrapper should run");
+    for force_flag in ["--force", "-f", "--force-with-lease"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+            .args(["wrapper", tool, "push", force_flag, "origin", "main"])
+            .env("ICG_RULE_PACK", &pack_path)
+            .env(
+                "ICG_HEALTH_PATH",
+                temp.path().join(format!("health-{force_flag}.json")),
+            )
+            .env(
+                "ICG_TELEMETRY_PATH",
+                temp.path().join(format!("telemetry-{force_flag}.json")),
+            )
+            .env("HOME", temp.path())
+            .env("XDG_CACHE_HOME", temp.path().join("cache"))
+            .env("PATH", path.clone())
+            .output()
+            .expect("wrapper should run");
 
-    assert!(
-        output.status.success(),
-        "rewritten wrapper command should execute successfully: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "argv: [push] [origin] [main]\n",
-        "the real tool should receive rewritten argv without --force"
-    );
+        assert!(
+            output.status.success(),
+            "rewritten wrapper command should execute successfully for {force_flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "argv: [push] [origin] [main]\n",
+            "the real tool should receive rewritten argv without {force_flag}"
+        );
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(
-            "icg updated command: Stripped the force flag before execution [pack=wrapper-rewrite-pack, pattern=strip-force-flag]"
-        ),
-        "wrapper should explain the argv rewrite on stderr, got: {stderr}"
-    );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(
+                "icg updated command: Stripped the force flag before execution [pack=wrapper-rewrite-pack, pattern=strip-force-flag]"
+            ),
+            "wrapper should explain the argv rewrite on stderr for {force_flag}, got: {stderr}"
+        );
+    }
 }

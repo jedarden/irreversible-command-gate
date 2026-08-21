@@ -10,17 +10,18 @@ The incoming Bash calls are intentionally unsafe:
 
 ```text
 git push --force origin main
+git push -f origin main
 git push --force-with-lease origin main
 ```
 
-The focused test pack matches either force flag and configures the
+The focused test pack matches each force-push flag and configures the
 `updated_input` redirect as:
 
 ```json
 {
   "channel": "updated_input",
-  "reason_template": "Stripped --force flags because force-pushing can overwrite remote history and lose commits; a normal push is safer.",
-  "rewrite_template": "git push origin main"
+  "reason_template": "Stripped --force/-f/--force-with-lease flags because force-pushing can overwrite remote history and lose commits; a normal push is safer.",
+  "rewrite_template": "{command_without_force}"
 }
 ```
 
@@ -45,14 +46,17 @@ Both payload spellings must produce the same structured response:
       "timeout": 120000,
       "run_in_background": false
     },
-    "additionalContext": "Stripped --force flags because force-pushing can overwrite remote history and lose commits; a normal push is safer. [pack=git-force-push-updated-input, pattern=strip-force-push-flags]"
+    "additionalContext": "Stripped --force/-f/--force-with-lease flags because force-pushing can overwrite remote history and lose commits; a normal push is safer. [pack=git-force-push-updated-input, pattern=strip-force-push-flags]"
   }
 }
 ```
 
 The replacement is a complete tool-input object, so fields unrelated to the
-command remain present. The rewritten command contains no `--force` flag.
-The explanation says both what was removed and why it is unsafe.
+command remain present. The reserved rewrite marker removes only the
+force-push option, preserving the remote, refspec, and other push arguments.
+The rewritten command contains none of `--force`, `-f`, or
+`--force-with-lease`. The explanation says both what was removed and why it
+is unsafe.
 
 The explanation is emitted as `additionalContext`, not
 `permissionDecisionReason`: this is an allow-with-replacement response. A

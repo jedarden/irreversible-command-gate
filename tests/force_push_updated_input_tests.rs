@@ -1,10 +1,10 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-const REWRITE_REASON: &str = "Stripped --force flags because force-pushing can overwrite remote history and lose commits; a normal push is safer.";
+const REWRITE_REASON: &str = "Stripped --force/-f/--force-with-lease flags because force-pushing can overwrite remote history and lose commits; a normal push is safer.";
 const SANITIZED_COMMAND: &str = "git push origin main";
 
 fn force_push_pack(temp: &TempDir) -> PathBuf {
@@ -17,14 +17,14 @@ fn force_push_pack(temp: &TempDir) -> PathBuf {
         "guarded_patterns": [{
             "id": "strip-force-push-flags",
             "type": "command_regex",
-            "regex": "git push.*--force(?:-with-lease)?",
+            "regex": "^git\\s+push(?:\\s+\\S+)*\\s+(?:--force-with-lease(?:=\\S+)?|--force|-f)(?:\\s|$)",
             "tier": "tier1",
             "severity": "Critical",
             "explanation": "Force-pushing can overwrite remote history",
             "redirect": {
                 "channel": "updated_input",
                 "reason_template": REWRITE_REASON,
-                "rewrite_template": SANITIZED_COMMAND
+                "rewrite_template": "{command_without_force}"
             },
             "destructive": true
         }]
@@ -90,16 +90,18 @@ fn assert_force_push_rewrite(response: &Value, expected_input: &Value) {
 
     let hook_output = &response["hookSpecificOutput"];
     assert_eq!(hook_output["updatedInput"]["command"], SANITIZED_COMMAND);
-    assert!(!hook_output["updatedInput"]["command"]
-        .as_str()
-        .expect("rewritten command should be a string")
-        .contains("--force"));
+    assert!(
+        !hook_output["updatedInput"]["command"]
+            .as_str()
+            .expect("rewritten command should be a string")
+            .contains("--force")
+    );
     assert!(hook_output.get("permissionDecisionReason").is_none());
     assert_eq!(&hook_output["updatedInput"], expected_input);
     let explanation = hook_output["additionalContext"]
         .as_str()
         .expect("rewrite explanation should be a string");
-    assert!(explanation.contains("Stripped --force flags"));
+    assert!(explanation.contains("Stripped --force/-f/--force-with-lease flags"));
     assert!(explanation.contains("overwrite remote history and lose commits"));
 }
 
@@ -123,7 +125,20 @@ fn force_push_is_sanitized_in_updated_input_for_both_harness_payloads() {
             }),
         ),
         (
-            "Codex CLI snake_case payload",
+            "Codex CLI snake_case short flag payload",
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "git push -f origin main",
+                    "description": "Push reviewed changes",
+                    "timeout": 120000,
+                    "run_in_background": false
+                }
+            }),
+        ),
+        (
+            "Codex CLI snake_case lease flag payload",
             json!({
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Bash",

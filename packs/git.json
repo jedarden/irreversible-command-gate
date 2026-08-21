@@ -33,15 +33,15 @@
     {
       "id": "git-force-push",
       "type": "command_regex",
-      "regex": "git push.*--force",
+      "regex": "^git\\s+push(?:\\s+\\S+)*\\s+(?:--force-with-lease(?:=\\S+)?|--force|-f)(?:\\s|$)",
       "tier": "tier1",
       "severity": "Critical",
-      "explanation": "Force-push rewrites git history and can lose commits",
+      "explanation": "Force-push flags can rewrite git history and lose commits",
       "destructive": true,
       "redirect": {
-        "channel": "deny",
-        "reason_template": "Force-push rewrites git history and can lose commits. Use git push --force-with-lease instead.",
-        "rewrite_template": "git push --force-with-lease"
+        "channel": "updated_input",
+        "reason_template": "Removed --force/-f/--force-with-lease from git push; force-pushing can rewrite remote history and lose commits. Retrying as a normal push preserves the requested commits without rewriting the remote.",
+        "rewrite_template": "{command_without_force}"
       }
     },
     {

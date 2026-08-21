@@ -1937,11 +1937,10 @@ impl Engine {
                 pattern_id: pattern.id.clone(),
             },
             crate::rule_pack::Channel::UpdatedInput => {
-                let rewrite = pattern
-                    .redirect
-                    .rewrite_template
-                    .clone()
-                    .unwrap_or_else(|| command.to_string());
+                let rewrite = self.render_command_rewrite(
+                    pattern.redirect.rewrite_template.as_deref(),
+                    command,
+                );
                 CheckResult::Rewrite {
                     reason: render_reason(&pattern.redirect.reason_template, None, None),
                     rewrite,
@@ -1955,6 +1954,60 @@ impl Engine {
                 pattern_id: pattern.id.clone(),
             },
         }
+    }
+
+    /// Render a command-mode rewrite from a rule pack.
+    ///
+    /// Most rewrites are literal replacement strings. The force-push rule is
+    /// intentionally different: `{command_without_force}` is a small,
+    /// explicit transformation that preserves every push argument while
+    /// removing only the history-rewriting options. Keeping this in the
+    /// command engine lets the hook and PATH-wrapper front-ends share exactly
+    /// the same safe argv decision.
+    fn render_command_rewrite(&self, template: Option<&str>, command: &str) -> String {
+        match template {
+            Some("{command_without_force}") => self.strip_git_force_flags(command),
+            Some(template) => template.to_string(),
+            None => command.to_string(),
+        }
+    }
+
+    fn strip_git_force_flags(&self, command: &str) -> String {
+        let source = CommandSource::Hook(command.to_string());
+        let tokens = self.segment_command(&source);
+        let Some(token) = tokens.first() else {
+            return command.to_string();
+        };
+
+        if tokens.len() != 1
+            || token.executable != "git"
+            || token.args.first().map(String::as_str) != Some("push")
+        {
+            return command.to_string();
+        }
+
+        let mut options_ended = false;
+        let args = token
+            .args
+            .iter()
+            .filter(|arg| {
+                let is_force_flag = !options_ended
+                    && (arg.as_str() == "--force"
+                        || arg.as_str() == "-f"
+                        || arg.as_str() == "--force-with-lease"
+                        || arg.starts_with("--force-with-lease="));
+                if arg.as_str() == "--" {
+                    options_ended = true;
+                }
+                !is_force_flag
+            })
+            .cloned()
+            .collect();
+
+        render_command(&CommandToken {
+            executable: token.executable.clone(),
+            args,
+        })
     }
 
     /// Determine the most severe of two check results
