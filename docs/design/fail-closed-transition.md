@@ -207,12 +207,10 @@ Current integration points are:
 - `TelemetryStore` records evaluations with `EvaluationRecord.release_ref`.
   The graduation controller consumes per-release completion and trigger data,
   not a global deny count with no release identity.
-- The poison-pill detector's typed anomaly result (currently represented by
-  `AnomalyReport`) is the trigger input. The implementation should expose a
-  stable event identity, release reference, detection time, previous trusted
-  reference, and whether trust-pointer rollback succeeded. The controller
-  must not parse human-readable log lines.
-- `handle_rollback` / the trust-pointer store remains responsible for
+- The poison-pill detector's typed `DenyRateDeviation` is the trigger input,
+  and `rollback::check_and_rollback` returns typed rollback evidence. The
+  graduation controller must not parse human-readable log lines.
+- `rollback::check_and_rollback` / the trust-pointer store remains responsible for
   reverting a bad release. The controller observes the result and records the
   policy consequence: reset the clean streak in Fail-Open or Graduating;
   preserve Fail-Closed after a release rollback.

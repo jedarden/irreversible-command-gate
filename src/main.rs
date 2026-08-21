@@ -7,6 +7,7 @@ mod overrides;
 mod regex_safety;
 mod regression;
 mod rule_pack;
+mod rollback;
 mod state_store;
 mod telemetry;
 mod trust_pointer;
@@ -21,6 +22,7 @@ use engine::{Engine, InputSource};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{generate_regression_suite_from_manifest, write_regression_suite};
+use rollback::{check_and_rollback, PoisonPillConfig};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -461,49 +463,47 @@ fn updated_input_key(
 /// triggers automatic rollback if a deny-rate spike is detected.
 fn check_and_handle_anomaly(
     telemetry_store: &std::sync::Arc<std::sync::Mutex<telemetry::TelemetryStore>>,
-    trust_store_path: &PathBuf,
+    state_store: Option<&state_store::StateStore>,
+    trust_store_path: &Path,
 ) -> Result<()> {
-    // Lock the telemetry store and process results
-    let mut store = telemetry_store.lock().map_err(|e| {
+    // Preserve the legacy per-process telemetry file for status/diagnostics.
+    // The rollback decision below intentionally consumes the durable
+    // per-release state store instead; the two signals must not be mixed.
+    let store = telemetry_store.lock().map_err(|e| {
         anyhow::anyhow!("Failed to lock telemetry store: {}", e)
     })?;
-
-    // Create trust pointer store for rollback operations
-    let trust_store = TrustPointerStore::new(trust_store_path.clone());
-
-    // Process evaluation results and check for anomalies
-    match telemetry::process_evaluation_results(&mut store, &trust_store) {
-        Ok(Some(anomaly_report)) => {
-            // Anomaly was detected
-            eprintln!("🚨 Anomaly detected in deny-rate monitoring");
-            eprintln!("   Severity: {:?}", anomaly_report.severity);
-            eprintln!("   Current deny rate: {:.2}%", anomaly_report.current_deny_rate * 100.0);
-            eprintln!("   Baseline mean: {:.2}%", anomaly_report.baseline.mean * 100.0);
-            eprintln!("   Threshold: {:.2}%", anomaly_report.baseline.anomaly_threshold(store.config().spike_threshold) * 100.0);
-
-            if anomaly_report.rollback_triggered {
-                eprintln!("   ✅ Automatic rollback triggered");
-                eprintln!("   Rolled back from: {}", anomaly_report.rolled_back_release.as_deref().unwrap_or("unknown"));
-                eprintln!("   Rolled back to: {}", anomaly_report.previous_release.as_deref().unwrap_or("unknown"));
-            } else {
-                eprintln!("   ℹ️  Rollback not triggered (disabled or on cooldown)");
-            }
-        }
-        Ok(None) => {
-            // No anomaly - continue normally
-        }
-        Err(e) => {
-            // Log error but don't fail the hook - telemetry failures should be non-blocking
-            eprintln!("⚠️  Telemetry processing error: {}", e);
-        }
-    }
-
-    // Persist telemetry state
     if let Err(e) = store.persist() {
         eprintln!("⚠️  Failed to persist telemetry state: {}", e);
     }
+    drop(store);
+
+    let Some(state_store) = state_store else {
+        return Ok(());
+    };
+    let trust_store = TrustPointerStore::new(trust_store_path);
+    if let Err(error) = check_and_rollback(
+        state_store,
+        &trust_store,
+        &PoisonPillConfig::default(),
+    ) {
+        // Rollback failure is deliberately loud but does not rewrite the
+        // already-emitted allow/deny hook response. Operators must use the
+        // rollback runbook when this path cannot complete.
+        eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
+    }
 
     Ok(())
+}
+
+fn record_trust_pointer_observation(
+    state_store: Option<&state_store::StateStore>,
+    pointer: &TrustPointer,
+) {
+    if let Some(state_store) = state_store {
+        if let Err(error) = state_store.save_trust_pointer(pointer) {
+            eprintln!("⚠️  Failed to record trust-pointer history: {error:#}");
+        }
+    }
 }
 
 const DEFAULT_RULE_PACK_PATH: &str = "/etc/icg/rule-pack.json";
@@ -549,13 +549,15 @@ fn load_wrapper_engine() -> Result<Engine> {
     // durable state store here as well as in hook mode. Telemetry is best
     // effort; inability to open the cache must not prevent normal commands
     // from reaching their real binary.
-    if let Ok(state_path) = state_store::StateStore::default_path() {
-        engine = engine.with_state_store(std::sync::Arc::new(
-            state_store::StateStore::new(state_path),
-        ));
+    let durable_state_store = state_store::StateStore::default_path()
+        .ok()
+        .map(|path| std::sync::Arc::new(state_store::StateStore::new(path)));
+    if let Some(state_store) = &durable_state_store {
+        engine = engine.with_state_store(std::sync::Arc::clone(state_store));
     }
     if let Ok(trust_path) = TrustPointerStore::default_path() {
-        if let Ok(Some(pointer)) = TrustPointerStore::new(trust_path).load() {
+        if let Ok(Some(pointer)) = TrustPointerStore::new(&trust_path).load() {
+            record_trust_pointer_observation(durable_state_store.as_deref(), &pointer);
             engine = engine.with_release_ref(pointer.trusted_ref);
         }
     }
@@ -640,6 +642,19 @@ fn run_shadowed_tool(argv0: &OsStr, tool: &str, original_args: &[OsString]) -> R
     );
     let source = engine.read_from_argv(check_argv);
     let result = engine.evaluate_command(&source);
+
+    if let Ok(state_path) = state_store::StateStore::default_path() {
+        let state_store = state_store::StateStore::new(state_path);
+        if let Ok(trust_path) = TrustPointerStore::default_path() {
+            if let Err(error) = check_and_rollback(
+                &state_store,
+                &TrustPointerStore::new(trust_path),
+                &PoisonPillConfig::default(),
+            ) {
+                eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
+            }
+        }
+    }
 
     let exec_args = match result {
         engine::CheckResult::Allowed => original_args.to_vec(),
@@ -839,7 +854,11 @@ fn main() -> Result<()> {
 
             // Get the current release reference from the trust pointer if available
             let trust_store_path = TrustPointerStore::default_path()?;
+            let durable_state_store = state_store::StateStore::default_path()
+                .ok()
+                .map(|path| std::sync::Arc::new(state_store::StateStore::new(path)));
             let release_ref = if let Ok(Some(pointer)) = TrustPointerStore::new(&trust_store_path).load() {
+                record_trust_pointer_observation(durable_state_store.as_deref(), &pointer);
                 Some(pointer.trusted_ref)
             } else {
                 None
@@ -850,10 +869,8 @@ fn main() -> Result<()> {
                 .with_telemetry_store(telemetry_store.clone())
                 .with_session_id(session_id.clone())
                 .with_release_ref(release_ref.unwrap_or_else(|| "unknown".to_string()));
-            if let Ok(state_path) = state_store::StateStore::default_path() {
-                engine = engine.with_state_store(std::sync::Arc::new(
-                    state_store::StateStore::new(state_path),
-                ));
+            if let Some(state_store) = &durable_state_store {
+                engine = engine.with_state_store(std::sync::Arc::clone(state_store));
             }
 
             // Retain the original tool input so an updatedInput response can
@@ -889,7 +906,11 @@ fn main() -> Result<()> {
                     );
 
                     // Check for anomalies and trigger rollback if needed
-                    check_and_handle_anomaly(&telemetry_store, &trust_store_path)?;
+                    check_and_handle_anomaly(
+                        &telemetry_store,
+                        durable_state_store.as_deref(),
+                        &trust_store_path,
+                    )?;
 
                     Ok(())
                 }
@@ -908,7 +929,11 @@ fn main() -> Result<()> {
                     );
 
                     // Check for anomalies and trigger rollback if needed
-                    check_and_handle_anomaly(&telemetry_store, &trust_store_path)?;
+                    check_and_handle_anomaly(
+                        &telemetry_store,
+                        durable_state_store.as_deref(),
+                        &trust_store_path,
+                    )?;
 
                     Ok(())
                 }
@@ -930,7 +955,11 @@ fn main() -> Result<()> {
                     );
 
                     // Check for anomalies and trigger rollback if needed
-                    check_and_handle_anomaly(&telemetry_store, &trust_store_path)?;
+                    check_and_handle_anomaly(
+                        &telemetry_store,
+                        durable_state_store.as_deref(),
+                        &trust_store_path,
+                    )?;
 
                     Ok(())
                 }
@@ -1026,6 +1055,21 @@ fn main() -> Result<()> {
                     store.set_trusted_ref_with_justification(&trusted_ref, justification)?;
                 } else {
                     store.set_trusted_ref(&trusted_ref)?;
+                }
+
+                // Keep the exact previous reference in durable runtime state
+                // so the poison-pill reaction can roll back without guessing.
+                // Channel pointers have separate rollout histories and are
+                // intentionally left for their channel-specific integration.
+                if channel.is_none() {
+                    if let Ok(Some(pointer)) = store.load() {
+                        if let Ok(state_path) = state_store::StateStore::default_path() {
+                            record_trust_pointer_observation(
+                                Some(&state_store::StateStore::new(state_path)),
+                                &pointer,
+                            );
+                        }
+                    }
                 }
 
                 if let Some(ref ch) = channel {

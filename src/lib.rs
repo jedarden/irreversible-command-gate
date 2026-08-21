@@ -14,6 +14,7 @@ pub mod overrides;
 pub mod regression;
 pub mod regex_safety;
 pub mod rule_pack;
+pub mod rollback;
 pub mod state_store;
 pub mod telemetry;
 pub mod trust_pointer;

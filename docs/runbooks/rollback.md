@@ -14,16 +14,24 @@ after the pack is rolled back.
 
 ## Automatic trigger and invariants
 
-After each evaluation, telemetry records the verdict and, when available, the
-active release reference. Once the rolling window has enough samples, the
-anomaly detector compares the current deny rate with its baseline and configured
-spike threshold. On an armed anomaly it:
+After each evaluation, the durable state store records the verdict and, when
+available, the active release reference. The poison-pill consumer only arms for
+a fresh pointer target during its early observation window (the default maximum
+is 1,000 evaluations) and requires all of the following before it can act:
+
+- at least 100 current-release evaluations;
+- at least three prior releases and 300 prior-release evaluations;
+- at least a five-percentage-point increase over the prior-release mean; and
+- a current rate above the prior-release mean plus three baseline standard
+  deviations.
+
+On an armed anomaly it:
 
 1. reads the current trusted reference and its stored previous reference;
 2. checks that auto-rollback is enabled and not on cooldown;
 3. atomically writes the previous exact reference to the trust pointer;
 4. records the rollback time and anomaly evidence; and
-5. reports the current release, previous release, severity, rates, and whether
+5. reports the current release, previous release, rate evidence, and whether
    rollback succeeded.
 
 If auto-rollback is disabled, the detector is on cooldown, or no previous exact
