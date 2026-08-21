@@ -19,6 +19,7 @@ This document provides realistic, step-by-step scenarios demonstrating how icg w
    - Migrating from org-rule-guard.py
    - Setting up Multi-Harness Support
    - Configuring Repository Overrides
+4. [Coverage Audit](#coverage-audit)
 
 ---
 
@@ -96,25 +97,20 @@ echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}
   icg check --stdin
 
 # Expected output:
-{
-  "verdict": "deny",
-  "packId": "vault",
-  "patternId": "vault-kv-destroy",
-  "severity": "Critical",
-  "reason": "vault kv destroy is permanently destructive and cannot be undone",
-  "rewrite": null,
-  "telemetryId": "den-abc123"
-}
+# DENIED by icg
+# Reason: vault kv destroy is permanently destructive and cannot be undone
+# Pack: vault
+# Pattern: vault-kv-destroy
+# Severity: Critical
+# Explanation: vault kv destroy is permanently destructive and cannot be undone
+# Redirect: Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.
 
 # Test a safe command (should be allowed)
 echo '{"toolName":"Bash","toolInput":{"command":"vault kv get secret/test"}}' | \
   icg check --stdin
 
 # Expected output:
-{
-  "verdict": "allow",
-  "telemetryId": "all-def456"
-}
+# ALLOW: no configured rule matched
 ```
 
 #### Step 5: Review Setup
@@ -126,9 +122,9 @@ icg health --verbose
 # Output:
 # ✓ icg binary: /usr/local/bin/icg v0.1.0
 # ✓ Rule packs: 3 packs loaded
-#   - vault (8 patterns)
-#   - git (12 patterns)
-#   - image-tag (6 patterns)
+#   - git (1 patterns)
+#   - image-tag (1 patterns)
+#   - vault (1 patterns)
 # ✓ Claude Code hook: Configured
 # ✓ State store: /var/lib/icg/state.db
 # ✓ Denial log: /var/log/icg/denials.log
@@ -167,11 +163,9 @@ icg status --denials --pattern-summary --since 7d
 # ════════════════════════════════════════════════════════════════
 # Pattern ID                Count   % of Total   Trend
 # ───────────────────────────────────────────────────────────────────
-# vault-kv-destroy          23      31%          ↗ Increasing
-# git-force-push            18      24%          → Stable
-# latest-tag                15      20%          ↘ Decreasing
-# commit-without-pathspec   12      16%          → Stable
-# storage-class-ssd          7       9%          → Stable
+# git-force-push            1       33%          → Stable
+# latest-tag                1       33%          → Stable
+# vault-kv-destroy          1       33%          → Stable
 ```
 
 #### Step 3: Investigate Anomalies
@@ -284,7 +278,7 @@ icg status --health
 # Output:
 # ✓ icg is healthy and running
 # Recent denials: 3 in last 5m
-# Last denial: vault-policy-delete (Critical)
+# Last denial: vault-kv-destroy (Critical)
 ```
 
 #### Step 2: Document the Emergency
@@ -359,10 +353,13 @@ cat /tmp/icg-health-$(date +%Y%m%d).txt
 
 # Output:
 # ✓ Binary: /usr/local/bin/icg v0.1.0
-# ✓ Rule packs: 5 packs, all valid
-# ✓ State store: Healthy
-# ✓ Denial log: 1,234 entries
-# ✓ Disk space: 45MB used (limit: 500MB)
+# ✓ Rule packs: 3 packs loaded
+#   - git (1 patterns)
+#   - image-tag (1 patterns)
+#   - vault (1 patterns)
+# ✓ Claude Code hook: Configured
+# ✓ State store: /var/lib/icg/state.db
+# ✓ Denial log: /var/log/icg/denials.log
 ```
 
 #### Step 2: Monthly Review
@@ -376,7 +373,7 @@ icg status --denials --trend --since 30d
 # ════════════════════════════════════════════════════════════════
 # Week 1        Week 2        Week 3        Week 4
 # ─────────────────────────────────────────────────────────────────
-# 145 denials   132 denials   118 denials   126 denials
+# 3             3             3             3
 # Trend: ↘ Decreasing (good - users learning safe patterns)
 ```
 
@@ -1061,17 +1058,20 @@ echo '{"toolName":"apply_patch","toolInput":{"command":"*** Begin Patch\n*** Upd
 #### Step 4: Monitor Both Harnesses
 
 ```bash
-# Check denials by harness
-icg status --denials --by-harness --since 1d
+# Check recent denials from the shared hook telemetry
+icg status --denials --since 1d --format json
 
 # Output:
-# DENIALS BY HARNESS (last 1d)
-# ════════════════════════════════════════════════════════════════
-# Harness         Denials   % of Total
-# ────────────────────────────────────────────────────────────────
-# claude-code     45        68%
-# codex-cli       21        32%
+# [
+#   {"packId":"git","patternId":"git-force-push", ...},
+#   {"packId":"storage-class","patternId":"storage-class-ssd", ...}
+# ]
 ```
+
+The shared `hookSpecificOutput.permissionDecision` envelope is the stable
+cross-harness contract. Harness-specific counts should be grouped from the
+caller telemetry; `icg status` intentionally reports the shared denial log and
+does not provide a `--by-harness` flag.
 
 ---
 
@@ -1084,7 +1084,7 @@ icg status --denials --by-harness --since 1d
 ```bash
 # Repository: legacy-app
 # Issue: Uses bare git SHA in image tags (historical reason)
-# Rule: image-tag pack blocks "image: app@sha256:..."
+# Rule: image-tag pack blocks "image: ronaldraygun/legacy-app:<git-sha>"
 # Need: Override for this specific repo
 ```
 
@@ -1095,7 +1095,8 @@ icg status --denials --by-harness --since 1d
 icg override create \
   --repo /home/coding/legacy-app \
   --pattern-id "image-tag-bare-sha" \
-  --justification "Legacy app uses immutable SHA-based tags for audit compliance. SHA is sourced from build system and never manually specified. Approved by security@company.com."
+  --justification "Legacy app uses immutable SHA-based tags for audit compliance. SHA is sourced from build system and never manually specified. Approved by security@company.com." \
+  --output /tmp/override-request-legacy-app.json
 
 # Output:
 # Override request created: /tmp/override-request-legacy-app.json
@@ -1123,14 +1124,17 @@ cat /tmp/override-request-legacy-app.json | \
 icg override approve \
   --request /tmp/override-request-legacy-app.json \
   --approver security-team-lead \
-  --expiration 2026-12-31
+  --expiration 2026-12-31 \
+  --release-ref v0.1.0-integration-test \
+  --pack /etc/icg/packs/image-tag.json \
+  --output /etc/icg/overrides/legacy-app.toml
 
 # Output:
 # ✓ Override approved and installed
 # Repository: /home/coding/legacy-app
 # Pattern: image-tag-bare-sha
 # Expires: 2026-12-31
-# Stored in: /etc/icg/overrides/legacy-app-image-tag-bare-sha.json
+# Stored in: /etc/icg/overrides/legacy-app.toml
 ```
 
 #### Step 5: Verify Override
@@ -1141,20 +1145,25 @@ cd /home/coding/legacy-app
 cat deployment.yaml | grep "image:"
 
 # Output:
-# image: app@sha256:abc123...
+# image: ronaldraygun/legacy-app:0123456789abcdef0123456789abcdef01234567
 
-# Test if blocked
-icg check --file deployment.yaml
+# Test through the release-bound hook contract
+printf '%s\n' '{"toolName":"Write","toolInput":{"filePath":"deployment.yaml","content":"image: ronaldraygun/legacy-app:0123456789abcdef0123456789abcdef01234567\n"}}' | \
+  icg hook \
+    --rule-pack /etc/icg/packs/image-tag.json \
+    --override-file /etc/icg/overrides/legacy-app.toml \
+    --repository legacy-app \
+    --trusted-ref v0.1.0-integration-test
 
 # Output:
-# ALLOW: Repository override in effect (image-tag-bare-sha)
+# {"hookSpecificOutput":{"permissionDecision":"allow", ...}}
 
 # Test outside repository
-cd /tmp
-echo "image: app@sha256:abc123..." | icg check --file -
+printf '%s\n' '{"toolName":"Write","toolInput":{"filePath":"deployment.yaml","content":"image: ronaldraygun/legacy-app:0123456789abcdef0123456789abcdef01234567\n"}}' | \
+  icg hook --rule-pack /etc/icg/packs/image-tag.json
 
 # Output:
-# DENIED: image tag bare SHA is not allowed
+# {"hookSpecificOutput":{"permissionDecision":"deny", ...}}
 ```
 
 #### Step 6: Monitor and Review
@@ -1177,6 +1186,43 @@ echo "Override review scheduled: $(date -d '+3 months')" >> calendar.txt
 
 ---
 
+## Coverage Audit
+
+Audited 2026-08-21 against the executable examples suite. Every scenario below
+has a stable fixture or an explicit test input, a named scenario test, and a
+documented expected outcome. The links point to the exact fixture directory and
+test source so a future example change can be checked without guessing which
+test owns it.
+
+| Scenario | Fixture(s) | Scenario test | Expected outcome |
+|---|---|---|---|
+| 1. First-time Installation | [`installation.json`](../../tests/fixtures/operator-scenarios/installation.json), [`installation-packs/`](../../tests/fixtures/operator-scenarios/installation-packs/) | `first_time_installation_validates_documented_commands_and_outputs` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | Version and health checks pass; the Vault destroy request is denied with `vault-kv-destroy`; the safe get request is allowed; missing hook configuration fails. |
+| 2. Daily Operations | [`daily-operations.json`](../../tests/fixtures/operator-scenarios/daily-operations.json) | `daily_operations_queries_fixture_for_tables_json_and_reports` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | The 1-hour table, 7-day summary, JSON history, and `den-abc123` report match the fixture; an unknown denial ID fails. |
+| 3. Handling Denials | [`handling-denials.json`](../../tests/fixtures/operator-scenarios/handling-denials.json), [`handling-denials-pack.json`](../../tests/fixtures/operator-scenarios/handling-denials-pack.json) | `handling_denials_checks_format_redirect_and_safe_alternatives` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | The Vault destroy denial exposes severity, explanation, and redirect; `explain` finds the pattern; both safe alternatives allow; an unknown pattern fails. |
+| 4. Emergency Response | [`emergency-response.json`](../../tests/fixtures/operator-scenarios/emergency-response.json), [`daily-operations.json`](../../tests/fixtures/operator-scenarios/daily-operations.json) | `emergency_response_records_state_bypasses_once_and_restores_protection` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | The incident record is persisted; `ICG_DISABLED=1` allows once with a warning; protection denies again after removal; health and denial export succeed. |
+| 5. Maintenance Tasks | [`maintenance.json`](../../tests/fixtures/operator-scenarios/maintenance.json), [`installation-packs/`](../../tests/fixtures/operator-scenarios/installation-packs/) | `maintenance_commands_validate_health_trends_updates_and_backup` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | Verbose health, trend, update-check, backup creation, and backup verification succeed; a corrupt archive is rejected. |
+| 6. Creating a New Rule Pack | [`creating-rule-pack-new.json`](../../tests/fixtures/developer-scenarios/creating-rule-pack-new.json) | `scenario_6_new_pack_scaffold_and_local_validation` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | The scaffold is loadable; a safe `kubectl get` allows; PVC deletion denies; a duplicate scaffold refuses to overwrite. |
+| 7. Testing Pattern Changes | [`testing-pattern-changes-baseline.json`](../../tests/fixtures/developer-scenarios/testing-pattern-changes-baseline.json), [`testing-pattern-changes-updated.json`](../../tests/fixtures/developer-scenarios/testing-pattern-changes-updated.json), [`regression-suite-baseline.json`](../../tests/fixtures/developer-scenarios/regression-suite-baseline.json), [`regression-suite-updated.json`](../../tests/fixtures/developer-scenarios/regression-suite-updated.json) | `scenario_7_regression_generation_verification_and_coverage_diff` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | Regression suites verify; the narrowed diff is rejected without justification and accepted with one; missing cases and changed inputs fail verification. |
+| 8. Debugging False Positives | [`debugging-false-positives-overly-broad.json`](../../tests/fixtures/developer-scenarios/debugging-false-positives-overly-broad.json), [`debugging-false-positives-fixed.json`](../../tests/fixtures/developer-scenarios/debugging-false-positives-fixed.json) | `scenario_8_debug_trace_reproduce_fix_and_verify_false_positive` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | The broad rule denies all delete forms; the fixed rules allow pod/deployment deletion but still deny PVC deletion; debug and explain traces identify the guarded pattern; malformed packs fail. |
+| 9. Adding Custom Predicates | [`adding-custom-predicates.json`](../../tests/fixtures/developer-scenarios/adding-custom-predicates.json) | `scenario_9_custom_predicates_evaluate_shared_checkout_scope` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs), with predicate cases in [`custom_predicates_tests.rs`](../../tests/custom_predicates_tests.rs) | A `.beads/` write in the shared checkout denies, an unrelated write allows, and both decisions work through the stdin CLI path. |
+| 10. Migrating from org-rule-guard.py | [`scenario-10-migration.json`](../../tests/fixtures/integration-scenarios/scenario-10-migration.json) | `scenario_10_compares_org_guard_overlap_and_coverage_gaps` in [`integration_scenarios.rs`](../../tests/integration_scenarios.rs) | Overlapping latest-image decisions agree; org-only probes remain allowed by icg; the icg-only OpenBao destructive probe denies; the live org hook is compared when present. |
+| 11. Setting up Multi-Harness Support | [`scenario-11-multi-harness.json`](../../tests/fixtures/integration-scenarios/scenario-11-multi-harness.json) | `scenario_11_parses_and_runs_both_harness_wire_formats` in [`integration_scenarios.rs`](../../tests/integration_scenarios.rs) | CamelCase and snake_case payloads parse to the same decisions; `check --stdin` and native `hook` return the shared deny envelope with the expected pack and pattern. |
+| 12. Configuring Repository Overrides | [`scenario-12-repository-overrides.json`](../../tests/fixtures/integration-scenarios/scenario-12-repository-overrides.json) | `scenario_12_runs_override_request_approval_verification_and_expiry` in [`integration_scenarios.rs`](../../tests/integration_scenarios.rs) | Request/approval creates a release-bound TOML artifact; only the exact repository and release can use it; dangerous content is otherwise denied; listing shows fresh/expired status and expiry is enforced. |
+
+The suite intentionally does not execute external setup or coordination commands
+such as `wget`, `scp`, `ssh`, `gh`, Vault itself, or email. Those steps remain
+operator actions; the fixture-backed tests exercise every corresponding `icg`
+command, hook decision, and expected allow/deny boundary. Run the complete
+examples coverage with:
+
+```text
+cargo test --test operator_scenarios --test developer_scenarios \
+  --test developer_scenarios_cli_tests --test integration_scenarios \
+  --test examples_coverage
+```
+
+---
+
 ## Summary
 
 These scenarios cover the most common workflows for both operators and developers working with icg. Key takeaways:
@@ -1193,5 +1239,5 @@ For more information:
 ---
 
 **Example Scenarios Version**: 1.0
-**Last Updated**: 2026-08-16
+**Last Updated**: 2026-08-21
 **For**: icg v0.1.0+
