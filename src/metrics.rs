@@ -104,6 +104,30 @@ pub struct GuardMetrics {
     pub last_start_timestamp: Option<f64>,
 }
 
+impl GuardMetrics {
+    /// Convert the durable health snapshot into the metrics representation
+    /// used by the Prometheus exporter.
+    pub fn from_health_metrics(metrics: &crate::health::HealthMetrics) -> Self {
+        Self {
+            uptime_seconds: metrics
+                .current_uptime
+                .map(|uptime| uptime.as_secs_f64())
+                .unwrap_or(0.0),
+            total_crashes: metrics.total_crashes as u64,
+            recent_crashes: metrics.recent_crashes as u64,
+            crash_rate: metrics.crash_rate,
+            consecutive_clean_runs: metrics.consecutive_clean_runs as u64,
+            health_status: health_status_to_code(metrics.status),
+            is_stable: u8::from(metrics.is_stable),
+            time_since_stable_seconds: metrics
+                .time_since_stable
+                .map(|duration| duration.as_secs_f64()),
+            last_crash_timestamp: metrics.last_crash_at.map(|timestamp| timestamp.timestamp() as f64),
+            last_start_timestamp: metrics.last_start_at.map(|timestamp| timestamp.timestamp() as f64),
+        }
+    }
+}
+
 /// Telemetry metrics for deny-rate monitoring
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryMetrics {
@@ -648,5 +672,20 @@ mod tests {
         assert_eq!(health_status_to_code(HealthStatus::Unstable), 3);
         assert_eq!(health_status_to_code(HealthStatus::Degraded), 4);
         assert_eq!(health_status_to_code(HealthStatus::Dead), 5);
+    }
+
+    #[test]
+    fn test_guard_metrics_from_persisted_health() {
+        let mut state = crate::health::HealthState::new();
+        state.mark_start();
+        state.record_crash(crate::health::CrashRecord::new(
+            crate::health::CrashType::Abort,
+        ));
+        let health = state.compute_metrics();
+        let metrics = GuardMetrics::from_health_metrics(&health);
+
+        assert_eq!(metrics.total_crashes, 1);
+        assert_eq!(metrics.recent_crashes, 1);
+        assert_eq!(metrics.health_status, health_status_to_code(health.status));
     }
 }

@@ -776,6 +776,12 @@ fn record_trust_pointer_observation(
 const DEFAULT_RULE_PACK_PATH: &str = "/etc/icg/rule-pack.json";
 const DEFAULT_RULE_PACK_DIR: &str = "/etc/icg/packs";
 
+fn configured_health_path() -> PathBuf {
+    health::HealthStore::from_environment_or_default()
+        .map(|store| store.path().to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
+}
+
 /// Return the tool name when `icg` was invoked through a PATH-wrapper symlink.
 ///
 /// Administrative invocations use the basename `icg` and continue through
@@ -896,7 +902,12 @@ fn rewritten_wrapper_args(tool: &str, rewrite: &str) -> Result<Vec<OsString>> {
 }
 
 #[cfg(unix)]
-fn run_shadowed_tool(argv0: &OsStr, tool: &str, original_args: &[OsString]) -> Result<()> {
+fn run_shadowed_tool(
+    argv0: &OsStr,
+    tool: &str,
+    original_args: &[OsString],
+    mut lifecycle: Option<&mut health::GuardLifecycle>,
+) -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let engine = load_wrapper_engine()?;
@@ -965,6 +976,15 @@ fn run_shadowed_tool(argv0: &OsStr, tool: &str, original_args: &[OsString]) -> R
     };
 
     let real_binary = real_binary_in_path(tool, argv0)?;
+
+    // `exec` replaces this process, so the guard must close its own run
+    // marker before handing control to the real tool.  A failure to exec is
+    // still reported by the caller as an abnormal guard exit.
+    if let Some(run) = lifecycle.as_deref_mut() {
+        if let Err(error) = run.finish_clean() {
+            eprintln!("icg_health_event event=finish_failed error={error:#}");
+        }
+    }
     let error = Command::new(&real_binary)
         .arg0(argv0)
         .args(&exec_args)
@@ -976,7 +996,12 @@ fn run_shadowed_tool(argv0: &OsStr, tool: &str, original_args: &[OsString]) -> R
 }
 
 #[cfg(not(unix))]
-fn run_shadowed_tool(_argv0: &OsStr, _tool: &str, _original_args: &[OsString]) -> Result<()> {
+fn run_shadowed_tool(
+    _argv0: &OsStr,
+    _tool: &str,
+    _original_args: &[OsString],
+    _lifecycle: Option<&mut health::GuardLifecycle>,
+) -> Result<()> {
     anyhow::bail!("PATH-wrapper mode is only supported on Unix platforms")
 }
 
@@ -986,14 +1011,43 @@ fn main() -> Result<()> {
     let original_args: Vec<OsString> = argv.collect();
 
     if let Some(tool) = shadowed_tool_name(&argv0) {
-        return run_shadowed_tool(&argv0, &tool, &original_args);
+        let mut lifecycle = match health::GuardLifecycle::start() {
+            Ok(lifecycle) => Some(lifecycle),
+            Err(error) => {
+                eprintln!("icg_health_event event=start_failed error={error:#}");
+                None
+            }
+        };
+        let result = run_shadowed_tool(&argv0, &tool, &original_args, lifecycle.as_mut());
+        if let Some(run) = lifecycle.as_mut() {
+            run.finish_result(&result);
+        }
+        return result;
     }
 
     let cli = Cli::parse_from(
         std::iter::once(argv0.clone()).chain(original_args.iter().cloned()),
     );
 
-    match cli.command {
+    let tracks_lifecycle = matches!(
+        &cli.command,
+        Commands::Hook { .. } | Commands::Wrapper { .. }
+    );
+    let mut lifecycle = if tracks_lifecycle {
+        match health::GuardLifecycle::start() {
+            Ok(lifecycle) => Some(lifecycle),
+            Err(error) => {
+                // Health tracking is best effort and must not turn a guard
+                // availability problem into a fleet-wide outage.
+                eprintln!("icg_health_event event=start_failed error={error:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let result = match cli.command {
         Commands::Check(args) => documented_commands::run_check(args),
         Commands::Explain(args) => documented_commands::run_explain(args),
         Commands::Coverage(args) => documented_commands::run_coverage(args),
@@ -1301,7 +1355,7 @@ fn main() -> Result<()> {
                 .context("wrapper mode requires the shadowed tool name")?;
             let argv0 = OsString::from(tool);
             let args = args.iter().map(OsString::from).collect::<Vec<_>>();
-            run_shadowed_tool(&argv0, tool, &args)
+            run_shadowed_tool(&argv0, tool, &args, lifecycle.as_mut())
         }
         Commands::Install {
             dir,
@@ -2019,10 +2073,7 @@ fn main() -> Result<()> {
                 .context("a health subcommand or health check flag is required")?;
             match subcommand {
             HealthSubcommand::Status { path } => {
-                let health_path = path.unwrap_or_else(|| {
-                    health::HealthStore::default_path()
-                        .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
-                });
+                let health_path = path.unwrap_or_else(configured_health_path);
                 let store = health::HealthStore::new(health_path);
                 let metrics = store.health_metrics()?;
 
@@ -2065,10 +2116,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             HealthSubcommand::Reset { path, force } => {
-                let health_path = path.unwrap_or_else(|| {
-                    health::HealthStore::default_path()
-                        .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
-                });
+                let health_path = path.unwrap_or_else(configured_health_path);
 
                 if !force {
                     println!("⚠️  This will clear all health data and crash history.");
@@ -2089,10 +2137,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             HealthSubcommand::MarkStart { path } => {
-                let health_path = path.unwrap_or_else(|| {
-                    health::HealthStore::default_path()
-                        .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
-                });
+                let health_path = path.unwrap_or_else(configured_health_path);
                 let store = health::HealthStore::new(health_path);
                 store.mark_start()?;
 
@@ -2101,10 +2146,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             HealthSubcommand::MarkCleanExit { path } => {
-                let health_path = path.unwrap_or_else(|| {
-                    health::HealthStore::default_path()
-                        .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
-                });
+                let health_path = path.unwrap_or_else(configured_health_path);
                 let store = health::HealthStore::new(health_path);
                 store.mark_clean_exit()?;
 
@@ -2119,10 +2161,7 @@ fn main() -> Result<()> {
                 exit_code,
                 context,
             } => {
-                let health_path = path.unwrap_or_else(|| {
-                    health::HealthStore::default_path()
-                        .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
-                });
+                let health_path = path.unwrap_or_else(configured_health_path);
 
                 // Parse crash type from string
                 let crash_type_enum = match crash_type.to_lowercase().as_str() {
@@ -2160,5 +2199,10 @@ fn main() -> Result<()> {
             }
         }
         },
+    };
+
+    if let Some(run) = lifecycle.as_mut() {
+        run.finish_result(&result);
     }
+    result
 }

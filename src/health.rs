@@ -50,11 +50,18 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+
 /// Current on-disk health state schema version.
-pub const HEALTH_SCHEMA_VERSION: u32 = 1;
+pub const HEALTH_SCHEMA_VERSION: u32 = 2;
+
+const DEFAULT_CGROUP_MEMORY_EVENTS: &str = "/sys/fs/cgroup/memory.events";
 
 /// Health configuration thresholds and limits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +169,41 @@ impl CrashRecord {
         self.session_id = session_id;
         self
     }
+
+    /// Build a crash record from a child-process exit status.
+    ///
+    /// A signal is the most reliable evidence available to a supervisor for
+    /// segfaults, aborts, and similar fatal failures.  `oom_killed` must come
+    /// from the supervisor's cgroup/process accounting; exit code 137 alone
+    /// is not sufficient to claim OOM because SIGKILL has other valid causes.
+    pub fn from_exit_status(status: &ExitStatus, oom_killed: bool) -> Option<Self> {
+        if status.success() {
+            return None;
+        }
+
+        #[cfg(unix)]
+        if let Some(signal) = status.signal() {
+            let crash_type = if oom_killed {
+                CrashType::OutOfMemory
+            } else {
+                CrashType::from_signal(signal).unwrap_or(CrashType::Unknown)
+            };
+            return Some(Self::new(crash_type).with_signal(signal));
+        }
+
+        let exit_code = status.code();
+        let crash_type = if oom_killed {
+            CrashType::OutOfMemory
+        } else {
+            CrashType::ExitCodeError
+        };
+        Some(Self::new(crash_type).with_optional_exit_code(exit_code))
+    }
+
+    fn with_optional_exit_code(mut self, exit_code: Option<i32>) -> Self {
+        self.exit_code = exit_code;
+        self
+    }
 }
 
 /// Classification of crash types.
@@ -196,6 +238,85 @@ pub enum CrashType {
     ExitCodeError,
 }
 
+/// Crash evidence helper for supervisors and cgroup-aware deployments.
+///
+/// Signal-based failures are classified from `ExitStatus`. OOM is classified
+/// only when the caller supplies supervisor evidence or when the configured
+/// cgroup `memory.events` counter increased; this avoids mislabeling an
+/// arbitrary SIGKILL as an OOM kill.
+#[derive(Debug, Clone, Default)]
+pub struct CrashDetector {
+    oom_events_path: Option<PathBuf>,
+    baseline_oom_kill_count: Option<u64>,
+}
+
+impl CrashDetector {
+    /// Use the configured cgroup memory-events file, if one is available.
+    pub fn new() -> Self {
+        let path = std::env::var_os("ICG_CGROUP_MEMORY_EVENTS")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| Path::new(DEFAULT_CGROUP_MEMORY_EVENTS).is_file().then(|| {
+                PathBuf::from(DEFAULT_CGROUP_MEMORY_EVENTS)
+            }));
+        let baseline_oom_kill_count = path
+            .as_ref()
+            .and_then(|path| read_oom_kill_count(path).ok());
+        Self {
+            oom_events_path: path,
+            baseline_oom_kill_count,
+        }
+    }
+
+    /// Construct a detector using an explicit cgroup memory-events file.
+    pub fn with_oom_events_path(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let baseline_oom_kill_count = read_oom_kill_count(&path).ok();
+        Self {
+            oom_events_path: Some(path),
+            baseline_oom_kill_count,
+        }
+    }
+
+    /// Read the cgroup's cumulative OOM-kill count.
+    pub fn oom_kill_count(&self) -> Result<Option<u64>> {
+        let Some(path) = &self.oom_events_path else {
+            return Ok(None);
+        };
+        Ok(Some(read_oom_kill_count(path)?))
+    }
+
+    /// Return whether OOM evidence increased since a previously persisted
+    /// counter value.
+    pub fn oom_killed_since(&self, previous_count: Option<u64>) -> Result<bool> {
+        let current_count = self.oom_kill_count()?;
+        Ok(match (current_count, previous_count.or(self.baseline_oom_kill_count)) {
+            (Some(current), Some(previous)) => current > previous,
+            _ => false,
+        })
+    }
+
+    /// Classify an exit status, consulting cgroup evidence when available.
+    pub fn classify_exit_status(&self, status: &ExitStatus) -> Result<Option<CrashRecord>> {
+        let oom_killed = self.oom_killed_since(None)?;
+        Ok(CrashRecord::from_exit_status(status, oom_killed))
+    }
+}
+
+fn read_oom_kill_count(path: &Path) -> Result<u64> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read cgroup memory events from {}", path.display()))?;
+    content
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(char::is_whitespace)?;
+            (name == "oom_kill").then(|| value.trim().parse::<u64>())
+        })
+        .transpose()
+        .with_context(|| format!("Invalid oom_kill value in {}", path.display()))?
+        .context("cgroup memory.events did not contain oom_kill")
+}
+
 impl CrashType {
     /// Create a CrashType from a Unix signal number.
     #[cfg(unix)]
@@ -207,6 +328,11 @@ impl CrashType {
             libc::SIGFPE => Some(CrashType::FloatingPointException),
             _ => None,
         }
+    }
+
+    /// Classify an exit status without recording it.
+    pub fn from_exit_status(status: &ExitStatus, oom_killed: bool) -> Option<Self> {
+        CrashRecord::from_exit_status(status, oom_killed).map(|record| record.crash_type)
     }
 
     /// Get a human-readable description of the crash type.
@@ -263,6 +389,12 @@ pub enum HealthStatus {
 
     /// Unknown health state (no data yet).
     Unknown,
+}
+
+impl Default for HealthStatus {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 impl HealthStatus {
@@ -337,9 +469,37 @@ pub struct HealthState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_run_started_at: Option<DateTime<Utc>>,
 
+    /// Stable identifier for the currently running guard invocation.
+    ///
+    /// This marker is deliberately persisted before work begins.  If the
+    /// next invocation finds it still present, the previous invocation did
+    /// not reach its clean-exit path (including OOM kills and fatal signals).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_id: Option<String>,
+
+    /// PID associated with the current run marker, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_pid: Option<u32>,
+
+    /// Last heartbeat written for the current run marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_heartbeat_at: Option<DateTime<Utc>>,
+
+    /// Cumulative cgroup OOM-kill counter at run start, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_oom_kill_count: Option<u64>,
+
     /// Timestamp when the last successful run started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_start_at: Option<DateTime<Utc>>,
+
+    /// Cumulative uptime of completed and interrupted runs.
+    #[serde(default)]
+    pub total_uptime: Duration,
+
+    /// Timestamp of the most recent clean exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_clean_exit_at: Option<DateTime<Utc>>,
 
     /// History of crash records (bounded by HealthConfig::max_crash_history).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -363,7 +523,13 @@ impl HealthState {
             consecutive_clean_runs: 0,
             last_crash_at: None,
             current_run_started_at: None,
+            current_run_id: None,
+            current_run_pid: None,
+            current_run_heartbeat_at: None,
+            current_run_oom_kill_count: None,
             last_start_at: None,
+            total_uptime: Duration::ZERO,
+            last_clean_exit_at: None,
             crash_history: Vec::new(),
             config: HealthConfig::default(),
         }
@@ -381,26 +547,72 @@ impl HealthState {
     pub fn mark_start(&mut self) {
         let now = Utc::now();
         self.current_run_started_at = Some(now);
+        self.current_run_id = Some(new_run_id());
+        self.current_run_pid = Some(std::process::id());
+        self.current_run_heartbeat_at = Some(now);
+        self.current_run_oom_kill_count = CrashDetector::new()
+            .oom_kill_count()
+            .ok()
+            .flatten();
         self.last_start_at = Some(now);
+    }
+
+    /// Record a start using a caller-supplied run identifier.
+    pub fn mark_start_with_id(&mut self, run_id: impl Into<String>) {
+        self.mark_start();
+        self.current_run_id = Some(run_id.into());
     }
 
     /// Record a clean process exit.
     pub fn mark_clean_exit(&mut self) {
+        self.accumulate_current_uptime();
         self.consecutive_clean_runs = self.consecutive_clean_runs.saturating_add(1);
         self.current_run_started_at = None;
+        self.current_run_id = None;
+        self.current_run_pid = None;
+        self.current_run_heartbeat_at = None;
+        self.current_run_oom_kill_count = None;
+        self.last_clean_exit_at = Some(Utc::now());
     }
 
     /// Record a crash event.
     pub fn record_crash(&mut self, crash: CrashRecord) {
+        self.accumulate_current_uptime();
         self.total_crashes = self.total_crashes.saturating_add(1);
         self.consecutive_clean_runs = 0;
         self.last_crash_at = Some(crash.timestamp);
         self.current_run_started_at = None;
+        self.current_run_id = None;
+        self.current_run_pid = None;
+        self.current_run_heartbeat_at = None;
+        self.current_run_oom_kill_count = None;
 
         // Add to crash history, applying retention limit
         self.crash_history.push(crash);
         if self.crash_history.len() > self.config.max_crash_history {
             self.crash_history.remove(0);
+        }
+    }
+
+    /// Refresh the persisted heartbeat without changing run counters.
+    pub fn heartbeat(&mut self) {
+        if self.current_run_started_at.is_some() {
+            self.current_run_heartbeat_at = Some(Utc::now());
+        }
+    }
+
+    /// Return the current run identifier, if a run is active.
+    pub fn current_run_id(&self) -> Option<&str> {
+        self.current_run_id.as_deref()
+    }
+
+    fn accumulate_current_uptime(&mut self) {
+        if let Some(start) = self.current_run_started_at {
+            let elapsed = Utc::now()
+                .signed_duration_since(start)
+                .to_std()
+                .unwrap_or(Duration::ZERO);
+            self.total_uptime = self.total_uptime.saturating_add(elapsed);
         }
     }
 
@@ -436,19 +648,10 @@ impl HealthState {
             .count();
 
         // Calculate crash rate (crashes per hour)
-        let crash_rate = if !self.crash_history.is_empty() {
-            if let (Some(oldest), Some(newest)) = (
-                self.crash_history.first().map(|c| c.timestamp),
-                self.crash_history.last().map(|c| c.timestamp),
-            ) {
-                let duration_hours = (newest - oldest).num_seconds().max(1) as f64 / 3600.0;
-                self.crash_history.len() as f64 / duration_hours
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
+        // The operational threshold is explicitly a one-hour threshold.  A
+        // single crash must not become an infinite rate merely because two
+        // records have the same timestamp.
+        let crash_rate = recent_crashes as f64;
 
         // Determine if process is currently stable
         let is_stable = current_uptime
@@ -502,12 +705,139 @@ pub struct HealthStore {
     path: PathBuf,
 }
 
+impl Clone for HealthStore {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+        }
+    }
+}
+
+/// Guard process lifecycle handle.
+///
+/// Creating a handle persists an active run marker.  Callers must finish it
+/// explicitly; if the process is OOM-killed, segfaults, aborts, or otherwise
+/// disappears, the next `start_run` call converts the marker into an
+/// `Unknown` crash record.  A panic hook can provide the more precise
+/// `Panic` classification before termination.
+pub struct GuardLifecycle {
+    store: HealthStore,
+    finished: bool,
+}
+
+impl GuardLifecycle {
+    /// Start tracking one guard process invocation.
+    pub fn start() -> Result<Self> {
+        let store = HealthStore::from_environment_or_default()?;
+        store.start_run()?;
+        store.sync_telemetry_best_effort();
+
+        let panic_store = store.clone();
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let context = info
+                .payload()
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("panic without a string payload")
+                .to_string();
+            let crash = CrashRecord::new(CrashType::Panic).with_context(context);
+            let _ = panic_store.record_crash(crash);
+            previous_hook(info);
+        }));
+
+        Ok(Self {
+            store,
+            finished: false,
+        })
+    }
+
+    /// Mark the invocation as a clean exit.
+    pub fn finish_clean(&mut self) -> Result<()> {
+        if !self.finished {
+            self.store.mark_clean_exit()?;
+            self.store.sync_telemetry_best_effort();
+            self.finished = true;
+        }
+        Ok(())
+    }
+
+    /// Record a normal process error as an abnormal exit.
+    pub fn finish_error(&mut self, context: impl Into<String>) -> Result<()> {
+        if !self.finished {
+            let crash = CrashRecord::new(CrashType::ExitCodeError).with_context(context.into());
+            self.store.record_crash(crash)?;
+            self.store.sync_telemetry_best_effort();
+            self.finished = true;
+        }
+        Ok(())
+    }
+
+    /// Finish based on the result returned by the guard entry point.
+    pub fn finish_result(&mut self, result: &Result<()>) {
+        let outcome = match result {
+            Ok(()) => self.finish_clean(),
+            Err(error) => self.finish_error(format!("{error:#}")),
+        };
+        if let Err(error) = outcome {
+            eprintln!("icg_health_event event=finish_failed error={error:#}");
+        }
+    }
+
+    /// Return the backing store used by this lifecycle.
+    pub fn store(&self) -> &HealthStore {
+        &self.store
+    }
+}
+
+/// A small RAII-compatible owner for a cross-process health lock.
+struct HealthLock {
+    file: File,
+}
+
+impl Drop for HealthLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.file), libc::LOCK_UN);
+        }
+    }
+}
+
+fn new_run_id() -> String {
+    format!("run-{}-{}", Utc::now().timestamp_nanos_opt().unwrap_or_default(), std::process::id())
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    // `/proc/<pid>` avoids sending a signal to a process that may not belong
+    // to the guard.  It is sufficient to distinguish concurrent invocations
+    // from a stale marker on Linux hosts where the guard runs.
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    false
+}
+
 impl HealthStore {
     /// Create a health store at the specified path.
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
         }
+    }
+
+    /// Create a store from `ICG_HEALTH_PATH`, falling back to the platform
+    /// cache location.  The environment override keeps supervisors and tests
+    /// from needing write access to a system directory.
+    pub fn from_environment_or_default() -> Result<Self> {
+        if let Some(path) = std::env::var_os("ICG_HEALTH_PATH").filter(|path| !path.is_empty()) {
+            return Ok(Self::new(path));
+        }
+        Ok(Self::new(Self::default_path()?))
     }
 
     /// Return the path used by this store.
@@ -533,10 +863,45 @@ impl HealthStore {
         Ok(())
     }
 
-    /// Load health state from disk, or create new if file doesn't exist.
-    pub fn load_or_create(&self) -> Result<HealthState> {
-        self.ensure_parent_dir()?;
+    fn lock_path(&self) -> PathBuf {
+        let name = self
+            .path
+            .file_name()
+            .map(|name| format!(".{}.lock", name.to_string_lossy()))
+            .unwrap_or_else(|| ".health-state.lock".to_string());
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(name)
+    }
 
+    fn acquire_lock(&self) -> Result<HealthLock> {
+        self.ensure_parent_dir()?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(self.lock_path())
+            .with_context(|| format!("Failed to open health lock for {}", self.path.display()))?;
+
+        #[cfg(unix)]
+        {
+            let result = unsafe {
+                libc::flock(
+                    std::os::unix::io::AsRawFd::as_raw_fd(&file),
+                    libc::LOCK_EX,
+                )
+            };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| format!("Failed to lock health state {}", self.path.display()));
+            }
+        }
+
+        Ok(HealthLock { file })
+    }
+
+    fn load_unlocked(&self) -> Result<HealthState> {
         if self.path.exists() {
             let content = std::fs::read_to_string(&self.path)
                 .with_context(|| format!("Failed to read health state from {}", self.path.display()))?;
@@ -544,7 +909,6 @@ impl HealthStore {
             let mut state: HealthState = serde_json::from_str(&content)
                 .with_context(|| format!("Failed to parse health state from {}", self.path.display()))?;
 
-            // Schema migration and validation
             if state.schema_version > HEALTH_SCHEMA_VERSION {
                 anyhow::bail!(
                     "Health state schema version {} is newer than supported version {}",
@@ -553,24 +917,19 @@ impl HealthStore {
                 );
             }
             state.schema_version = HEALTH_SCHEMA_VERSION;
-
             Ok(state)
         } else {
             Ok(HealthState::new())
         }
     }
 
-    /// Persist health state to disk atomically.
-    pub fn persist(&self, state: &HealthState) -> Result<()> {
+    fn persist_unlocked(&self, state: &HealthState) -> Result<()> {
         self.ensure_parent_dir()?;
 
         let mut state = state.clone();
         state.schema_version = HEALTH_SCHEMA_VERSION;
+        let content = serde_json::to_vec_pretty(&state).context("Failed to serialize health state")?;
 
-        let content = serde_json::to_vec_pretty(&state)
-            .context("Failed to serialize health state")?;
-
-        // Atomic write: write to temp file, then rename
         let file_name = self
             .path
             .file_name()
@@ -582,7 +941,6 @@ impl HealthStore {
             .unwrap_or_else(|| Path::new("."))
             .join(format!(".{file_name}.tmp-{}", std::process::id()));
 
-        // Write temp file
         std::fs::write(&temp_path, content)
             .with_context(|| format!("Failed to write temporary health file {}", temp_path.display()))?;
 
@@ -593,25 +951,80 @@ impl HealthStore {
                 .context("Failed to set health file permissions")?;
         }
 
-        // Sync the temp file
-        let temp_file = std::fs::File::open(&temp_path)
+        let temp_file = File::open(&temp_path)
             .with_context(|| format!("Failed to open temp file for syncing {}", temp_path.display()))?;
-        temp_file.sync_all()
+        temp_file
+            .sync_all()
             .with_context(|| format!("Failed to sync temporary health file {}", temp_path.display()))?;
 
-        // Atomic rename
         std::fs::rename(&temp_path, &self.path)
             .with_context(|| format!("Failed to rename health file to {}", self.path.display()))?;
 
-        // Sync parent directory
         if let Some(parent) = self.path.parent() {
-            let parent_dir = std::fs::File::open(parent)
-                .with_context(|| format!("Failed to open parent directory for syncing {}", parent.display()))?;
-            parent_dir.sync_all()
-                .with_context(|| format!("Failed to sync parent directory {}", parent.display()))?;
+            File::open(parent)
+                .with_context(|| format!("Failed to open parent directory for syncing {}", parent.display()))?
+                .sync_all()
+                .with_context(|| format!("Failed to sync health directory {}", parent.display()))?;
         }
 
         Ok(())
+    }
+
+    /// Start a process run and persist its marker before the caller does work.
+    ///
+    /// A marker left by a dead prior process is converted into a single crash
+    /// record.  A marker owned by a still-live PID is treated as a concurrent
+    /// invocation and is not falsely counted as a crash.
+    pub fn start_run(&self) -> Result<String> {
+        let _lock = self.acquire_lock()?;
+        let mut state = self.load_unlocked()?;
+
+        if state.current_run_started_at.is_some() {
+            let previous_is_live = state
+                .current_run_pid
+                .map(process_is_alive)
+                .unwrap_or(false);
+            if !previous_is_live {
+                let detector = CrashDetector::new();
+                let oom_killed = detector
+                    .oom_killed_since(state.current_run_oom_kill_count)
+                    .unwrap_or(false);
+                let crash_type = if oom_killed {
+                    CrashType::OutOfMemory
+                } else {
+                    CrashType::Unknown
+                };
+                let reason = if oom_killed {
+                    "previous guard run was killed by its cgroup OOM monitor"
+                } else {
+                    "previous guard run exited without recording a clean exit"
+                };
+                let crash = CrashRecord::new(crash_type).with_context(reason.to_string());
+                state.record_crash(crash);
+                eprintln!(
+                    "icg_health_event event=crash_detected crash_type={:?} reason=stale_run_marker",
+                    crash_type
+                );
+            }
+        }
+
+        let run_id = new_run_id();
+        state.mark_start_with_id(run_id.clone());
+        self.persist_unlocked(&state)?;
+        eprintln!("icg_health_event event=run_started run_id={run_id}");
+        Ok(run_id)
+    }
+
+    /// Load health state from disk, or create new if file doesn't exist.
+    pub fn load_or_create(&self) -> Result<HealthState> {
+        let _lock = self.acquire_lock()?;
+        self.load_unlocked()
+    }
+
+    /// Persist health state to disk atomically.
+    pub fn persist(&self, state: &HealthState) -> Result<()> {
+        let _lock = self.acquire_lock()?;
+        self.persist_unlocked(state)
     }
 
     /// Update health state under one transaction.
@@ -619,9 +1032,10 @@ impl HealthStore {
     where
         F: FnOnce(&mut HealthState),
     {
-        let mut state = self.load_or_create()?;
+        let _lock = self.acquire_lock()?;
+        let mut state = self.load_unlocked()?;
         f(&mut state);
-        self.persist(&state)?;
+        self.persist_unlocked(&state)?;
         Ok(state)
     }
 
@@ -632,7 +1046,7 @@ impl HealthStore {
 
     /// Mark that the process has started.
     pub fn mark_start(&self) -> Result<()> {
-        self.update(HealthState::mark_start)?;
+        self.start_run()?;
         Ok(())
     }
 
@@ -644,14 +1058,60 @@ impl HealthStore {
 
     /// Record a crash event.
     pub fn record_crash(&self, crash: CrashRecord) -> Result<()> {
+        let crash_type = crash.crash_type;
+        let signal = crash.signal;
+        let exit_code = crash.exit_code;
         self.update(|state| state.record_crash(crash))?;
+        eprintln!(
+            "icg_health_event event=crash_recorded crash_type={:?} signal={signal:?} exit_code={exit_code:?}",
+            crash_type
+        );
         Ok(())
+    }
+
+    /// Record a child process's abnormal exit, including supervisor-provided
+    /// OOM evidence.
+    pub fn record_exit_status(&self, status: &ExitStatus, oom_killed: bool) -> Result<bool> {
+        let Some(crash) = CrashRecord::from_exit_status(status, oom_killed) else {
+            self.mark_clean_exit()?;
+            return Ok(false);
+        };
+        self.record_crash(crash)?;
+        Ok(true)
+    }
+
+    /// Persist a heartbeat for a running guard process.
+    pub fn heartbeat(&self) -> Result<()> {
+        self.update(|state| state.heartbeat())?;
+        Ok(())
+    }
+
+    /// Copy the latest health snapshot into the existing rolling telemetry
+    /// store.  Health tracking must never prevent the guard from making its
+    /// normal allow/deny decision, so callers use this best-effort helper at
+    /// lifecycle boundaries.
+    pub fn sync_telemetry_best_effort(&self) {
+        let telemetry_path = std::env::var_os("ICG_TELEMETRY_PATH")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+
+        let result = (|| -> Result<()> {
+            let metrics = self.health_metrics()?;
+            let mut telemetry = crate::telemetry::TelemetryStore::load_or_create(telemetry_path)?;
+            telemetry.record_health_metrics(&metrics);
+            telemetry.persist()
+        })();
+
+        if let Err(error) = result {
+            eprintln!("icg_health_event event=telemetry_sync_failed error={error:#}");
+        }
     }
 
     /// Clear all health data (useful for testing or reset).
     pub fn clear(&self) -> Result<()> {
-        let state = HealthState::new();
-        self.persist(&state)?;
+        let _lock = self.acquire_lock()?;
+        self.persist_unlocked(&HealthState::new())?;
         Ok(())
     }
 }
@@ -901,5 +1361,89 @@ mod tests {
         assert!(!HealthStatus::Unstable.is_healthy());
         assert!(!HealthStatus::Dead.is_healthy());
         assert!(!HealthStatus::Unknown.is_healthy());
+    }
+
+    #[test]
+    fn stale_run_marker_is_recorded_as_a_crash_on_next_start() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+        let mut state = HealthState::new();
+        state.mark_start();
+        // Use a PID that cannot be this test process. This models an OOM,
+        // SIGSEGV, or SIGABRT that prevented the clean-exit write.
+        state.current_run_pid = Some(u32::MAX);
+        store.persist(&state)?;
+
+        store.start_run()?;
+        let recovered = store.load_or_create()?;
+        assert_eq!(recovered.total_crashes, 1);
+        assert_eq!(recovered.crash_history[0].crash_type, CrashType::Unknown);
+        assert_eq!(recovered.consecutive_clean_runs, 0);
+        assert!(recovered.current_run_started_at.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn clean_exit_clears_durable_run_marker() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+
+        store.start_run()?;
+        assert!(store.load_or_create()?.current_run_id.is_some());
+        store.mark_clean_exit()?;
+
+        let state = store.load_or_create()?;
+        assert!(state.current_run_id.is_none());
+        assert!(state.current_run_heartbeat_at.is_none());
+        assert_eq!(state.consecutive_clean_runs, 1);
+        assert!(state.last_clean_exit_at.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn exit_status_classifies_signals_and_oom_separately() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+
+            let segfault = ExitStatus::from_raw(libc::SIGSEGV);
+            assert_eq!(
+                CrashType::from_exit_status(&segfault, false),
+                Some(CrashType::SegmentationFault)
+            );
+
+            let killed = ExitStatus::from_raw(libc::SIGKILL);
+            assert_eq!(
+                CrashType::from_exit_status(&killed, true),
+                Some(CrashType::OutOfMemory)
+            );
+            assert_eq!(
+                CrashType::from_exit_status(&killed, false),
+                Some(CrashType::Unknown)
+            );
+        }
+    }
+
+    #[test]
+    fn cgroup_oom_counter_provides_evidence_for_sigkill() -> Result<()> {
+        let dir = tempdir()?;
+        let events = dir.path().join("memory.events");
+        std::fs::write(&events, "low 0\nome 0\noom_kill 3\n")?;
+        let detector = CrashDetector::with_oom_events_path(&events);
+        assert_eq!(detector.oom_kill_count()?, Some(3));
+
+        std::fs::write(&events, "low 0\nome 0\noom_kill 4\n")?;
+        assert!(detector.oom_killed_since(Some(3))?);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            let killed = ExitStatus::from_raw(libc::SIGKILL);
+            assert_eq!(
+                detector.classify_exit_status(&killed)?.map(|record| record.crash_type),
+                Some(CrashType::OutOfMemory)
+            );
+        }
+        Ok(())
     }
 }

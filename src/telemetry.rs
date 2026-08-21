@@ -134,6 +134,23 @@ pub struct EvaluationWindow {
     capacity: usize,
 }
 
+/// Durable health counters carried alongside evaluation telemetry.
+///
+/// Health remains authoritative in `HealthStore`; this copy makes crash and
+/// uptime signals available to the same telemetry/status consumers that read
+/// deny-rate data.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HealthTelemetry {
+    pub total_crashes: u64,
+    pub consecutive_clean_runs: u64,
+    pub uptime_seconds: f64,
+    pub crash_rate: f64,
+    pub health_status: crate::health::HealthStatus,
+    pub last_crash_at: Option<DateTime<Utc>>,
+    pub last_start_at: Option<DateTime<Utc>>,
+}
+
 impl EvaluationWindow {
     /// Create a new empty window with specified capacity
     pub fn new(capacity: usize) -> Self {
@@ -295,6 +312,10 @@ pub struct TelemetryStore {
     /// Timestamp of last automatic rollback (for cooldown enforcement)
     last_rollback_at: Option<DateTime<Utc>>,
 
+    /// Most recent durable guard-health snapshot.
+    #[serde(default)]
+    health: HealthTelemetry,
+
     /// Path to telemetry file on disk
     store_path: PathBuf,
 }
@@ -306,6 +327,7 @@ impl TelemetryStore {
             window: EvaluationWindow::new(1000),
             config: TelemetryConfig::default(),
             last_rollback_at: None,
+            health: HealthTelemetry::default(),
             store_path,
         }
     }
@@ -321,6 +343,7 @@ impl TelemetryStore {
             window: EvaluationWindow::new(config.window_size),
             config,
             last_rollback_at: None,
+            health: HealthTelemetry::default(),
             store_path,
         }
     }
@@ -388,6 +411,27 @@ impl TelemetryStore {
     /// Get the telemetry configuration
     pub fn config(&self) -> &TelemetryConfig {
         &self.config
+    }
+
+    /// Return the latest health snapshot copied into telemetry.
+    pub fn health(&self) -> &HealthTelemetry {
+        &self.health
+    }
+
+    /// Record the current durable health metrics in the telemetry store.
+    pub fn record_health_metrics(&mut self, metrics: &crate::health::HealthMetrics) {
+        self.health = HealthTelemetry {
+            total_crashes: metrics.total_crashes as u64,
+            consecutive_clean_runs: metrics.consecutive_clean_runs as u64,
+            uptime_seconds: metrics
+                .current_uptime
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or(0.0),
+            crash_rate: metrics.crash_rate,
+            health_status: metrics.status,
+            last_crash_at: metrics.last_crash_at,
+            last_start_at: metrics.last_start_at,
+        };
     }
 
     /// Check if rollback is on cooldown
@@ -662,6 +706,28 @@ mod tests {
         assert!(!Verdict::Allowed.is_deny());
         assert!(!Verdict::Warning.is_deny());
         assert!(!Verdict::Rewrite.is_deny());
+    }
+
+    #[test]
+    fn health_snapshot_round_trips_with_telemetry() {
+        let mut telemetry = TelemetryStore::new(std::path::PathBuf::from("/tmp/icg-test-telemetry.json"));
+        let mut health = crate::health::HealthState::new();
+        health.mark_start();
+        health.record_crash(crate::health::CrashRecord::new(
+            crate::health::CrashType::OutOfMemory,
+        ));
+
+        telemetry.record_health_metrics(&health.compute_metrics());
+        assert_eq!(telemetry.health().total_crashes, 1);
+        assert_eq!(
+            telemetry.health().health_status,
+            crate::health::HealthStatus::Dead
+        );
+
+        let encoded = serde_json::to_string(&telemetry).unwrap();
+        let decoded: TelemetryStore = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.health().total_crashes, 1);
+        assert_eq!(decoded.health().crash_rate, 1.0);
     }
 
     #[test]

@@ -46,6 +46,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -233,6 +234,8 @@ impl HealthState {
 pub struct HealthServer {
     config: HealthServerConfig,
     state: Arc<Mutex<HealthState>>,
+    health_store: Option<crate::health::HealthStore>,
+    bound_address: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -242,8 +245,20 @@ impl HealthServer {
         Self {
             config,
             state: Arc::new(Mutex::new(HealthState::default())),
+            health_store: None,
+            bound_address: None,
             shutdown_tx: None,
         }
+    }
+
+    /// Construct a server backed by an explicit durable health store.
+    pub fn with_health_store(
+        config: HealthServerConfig,
+        health_store: crate::health::HealthStore,
+    ) -> Self {
+        let mut server = Self::new(config);
+        server.health_store = Some(health_store);
+        server
     }
 
     /// Get the current health state
@@ -260,11 +275,13 @@ impl HealthServer {
     pub async fn spawn_background_task(&mut self) -> Result<()> {
         let state = self.state.clone();
         let config = self.config.clone();
+        let health_store = self.health_store.clone();
         let bind_address = self.bind_address();
 
         let listener = TcpListener::bind(&bind_address)
             .await
             .with_context(|| format!("Failed to bind health server to {}", bind_address))?;
+        self.bound_address = Some(listener.local_addr()?);
 
         eprintln!("🩺 Health server listening on http://{}", bind_address);
 
@@ -281,9 +298,10 @@ impl HealthServer {
                             Ok((stream, addr)) => {
                                 let state = state.clone();
                                 let config = config.clone();
+                                let health_store = health_store.clone();
 
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_connection(stream, state, config).await {
+                                    if let Err(e) = handle_connection(stream, state, config, health_store).await {
                                         eprintln!("⚠️  Health server connection error from {}: {}", addr, e);
                                     }
                                 });
@@ -316,6 +334,12 @@ impl HealthServer {
     pub fn is_running(&self) -> bool {
         self.shutdown_tx.is_some()
     }
+
+    /// Return the actual bound address, including the assigned port when the
+    /// configuration requested port `0`.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.bound_address
+    }
 }
 
 /// Handle a single HTTP connection
@@ -323,9 +347,9 @@ async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     state: Arc<Mutex<HealthState>>,
     config: HealthServerConfig,
+    health_store: Option<crate::health::HealthStore>,
 ) -> Result<()> {
     // Read the HTTP request
-    let mut request_line = String::new();
     let mut reader = tokio::io::BufReader::new(&mut stream);
 
     let mut bytes = Vec::new();
@@ -362,14 +386,46 @@ async fn handle_connection(
         return send_response(&mut stream, 405, "Method Not Allowed", "text/plain", "Method not allowed").await;
     }
 
+    let durable_metrics = health_store
+        .as_ref()
+        .and_then(|store| store.health_metrics().ok());
+
+    let detailed_status = |metrics: Option<crate::health::HealthMetrics>, uptime: f64| {
+        let mut status = HealthStatus::healthy(uptime);
+        if let Some(ref metrics) = metrics {
+            status.status = serde_json::to_value(metrics.status)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| format!("{:?}", metrics.status).to_lowercase());
+            status.uptime_seconds = metrics
+                .current_uptime
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or(0.0);
+            status.details = Some(serde_json::json!({
+                "health_metrics": metrics,
+            }));
+        }
+        status
+    };
+
     // Route the request
     let (status_code, status_text, content_type, body) = match path {
-        "/" | "/health" => {
-            // Basic health check - always return 200 if server is running
-            let health = HealthStatus::healthy(
-                state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?.uptime_seconds()
-            );
-            (200, "OK", "application/json", serde_json::to_string_pretty(&health)?)
+        "/" | "/health" | "/health/status" => {
+            let local_uptime = state
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?
+                .uptime_seconds();
+            let health = detailed_status(durable_metrics.clone(), local_uptime);
+            let status_code = durable_metrics
+                .as_ref()
+                .map(|metrics| if metrics.status.is_running() { 200 } else { 503 })
+                .unwrap_or(200);
+            (
+                status_code,
+                if status_code == 200 { "OK" } else { "Service Unavailable" },
+                "application/json",
+                serde_json::to_string_pretty(&health)?,
+            )
         }
         "/health/ready" => {
             if !config.readiness_enabled {
@@ -378,12 +434,30 @@ async fn handle_connection(
                 let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
-                if state_guard.ready {
-                    let health = HealthStatus::healthy(uptime);
+                let ready = state_guard.ready
+                    && durable_metrics
+                        .as_ref()
+                        .map(|metrics| metrics.status.is_running())
+                        .unwrap_or(true);
+
+                if ready {
+                    let health = detailed_status(durable_metrics.clone(), uptime);
                     (200, "OK", "application/json", serde_json::to_string_pretty(&health)?)
                 } else {
-                    let reason = state_guard.not_ready_reason.clone().unwrap_or_else(|| "Unknown reason".to_string());
-                    let health = HealthStatus::not_ready(uptime, reason);
+                    let reason = state_guard
+                        .not_ready_reason
+                        .clone()
+                        .or_else(|| durable_metrics.as_ref().map(|metrics| format!("guard status: {:?}", metrics.status)))
+                        .unwrap_or_else(|| "Unknown reason".to_string());
+                    let mut health = HealthStatus::not_ready(uptime, reason);
+                    health.details = Some(serde_json::json!({
+                        "reason": health.details
+                            .as_ref()
+                            .and_then(|details| details.get("reason"))
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::Value::String("not ready".to_string())),
+                        "health_metrics": durable_metrics.clone(),
+                    }));
                     (503, "Service Unavailable", "application/json", serde_json::to_string_pretty(&health)?)
                 }
             }
@@ -395,12 +469,30 @@ async fn handle_connection(
                 let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
-                if state_guard.alive {
-                    let health = HealthStatus::healthy(uptime);
+                let alive = state_guard.alive
+                    && durable_metrics
+                        .as_ref()
+                        .map(|metrics| metrics.status.is_running())
+                        .unwrap_or(true);
+
+                if alive {
+                    let health = detailed_status(durable_metrics.clone(), uptime);
                     (200, "OK", "application/json", serde_json::to_string_pretty(&health)?)
                 } else {
-                    let reason = state_guard.not_alive_reason.as_ref().unwrap_or(&"Unknown reason".to_string()).clone();
-                    let health = HealthStatus::unhealthy(uptime, reason);
+                    let reason = state_guard
+                        .not_alive_reason
+                        .clone()
+                        .or_else(|| durable_metrics.as_ref().map(|metrics| format!("guard status: {:?}", metrics.status)))
+                        .unwrap_or_else(|| "Unknown reason".to_string());
+                    let mut health = HealthStatus::unhealthy(uptime, reason);
+                    health.details = Some(serde_json::json!({
+                        "reason": health.details
+                            .as_ref()
+                            .and_then(|details| details.get("reason"))
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::Value::String("not alive".to_string())),
+                        "health_metrics": durable_metrics.clone(),
+                    }));
                     (503, "Service Unavailable", "application/json", serde_json::to_string_pretty(&health)?)
                 }
             }
@@ -409,11 +501,10 @@ async fn handle_connection(
             if !config.metrics_enabled {
                 (404, "Not Found", "text/plain", "Metrics endpoint disabled".to_string())
             } else {
-                // Basic metrics - in a full implementation, this would call the MetricsExporter
                 let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
-                let metrics = format!(
+                let mut metrics = format!(
                     "# Health server metrics\n\
                     icg_health_server_uptime_seconds {}\n\
                     icg_health_server_ready {}\n\
@@ -422,6 +513,26 @@ async fn handle_connection(
                     if state_guard.ready { 1 } else { 0 },
                     if state_guard.alive { 1 } else { 0 }
                 );
+
+                if let Some(health) = durable_metrics {
+                    let guard_metrics = crate::metrics::GuardMetrics::from_health_metrics(&health);
+                    metrics.push_str(&format!(
+                        "icg_uptime_seconds {}\n\
+                        icg_total_crashes {}\n\
+                        icg_recent_crashes {}\n\
+                        icg_crash_rate {}\n\
+                        icg_consecutive_clean_runs {}\n\
+                        icg_health_status {}\n\
+                        icg_is_stable {}\n",
+                        guard_metrics.uptime_seconds,
+                        guard_metrics.total_crashes,
+                        guard_metrics.recent_crashes,
+                        guard_metrics.crash_rate,
+                        guard_metrics.consecutive_clean_runs,
+                        guard_metrics.health_status,
+                        guard_metrics.is_stable,
+                    ));
+                }
 
                 (200, "OK", "text/plain", metrics)
             }
@@ -579,6 +690,41 @@ mod tests {
             assert_eq!(guard.not_ready_reason, Some("initializing".to_string()));
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn persistent_health_endpoint_exposes_crash_metrics() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = crate::health::HealthStore::new(dir.path().join("health.json"));
+        store.record_crash(crate::health::CrashRecord::new(
+            crate::health::CrashType::SegmentationFault,
+        ))?;
+
+        let mut server = HealthServer::with_health_store(
+            HealthServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                ..Default::default()
+            },
+            store,
+        );
+        server.spawn_background_task().await?;
+        let address = server.local_addr().expect("server should have a local address");
+
+        let mut stream = tokio::net::TcpStream::connect(address).await?;
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await?;
+        let response = String::from_utf8(response)?;
+
+        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(response.contains("\"total_crashes\": 1"));
+        assert!(response.contains("\"status\": \"unknown\""));
+
+        server.shutdown().await?;
         Ok(())
     }
 }
