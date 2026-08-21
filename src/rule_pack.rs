@@ -134,8 +134,17 @@ pub enum Check {
     /// - Filesystem stat for beads .beads/ paths (combined with applies_to glob match)
     /// - Synchronous network lookup (e.g., irrevers-8cff8cf4's Tier 1 exception)
     /// - Phase 2's state-store-backed checks
+    ///
+    /// `data` is optional rule-pack data for predicates whose policy is
+    /// configuration rather than executable logic.  For example, the misc
+    /// pack's deprecated bead-CLI check stores its canonical and deprecated
+    /// names here so a cutover only changes the manifest data.
     #[serde(rename = "predicate")]
-    Predicate { predicate_name: String },
+    Predicate {
+        predicate_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
 }
 
 /// Deterministic-difficulty tier for a guarded pattern

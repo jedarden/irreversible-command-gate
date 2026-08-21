@@ -17,6 +17,24 @@
         "reason_template": "The `needle cleanup` command is blocked because it would SIGHUP live workers. Let workers finish naturally or wait until they are idle before cleaning up.",
         "rewrite_template": null
       }
+    },
+    {
+      "id": "deprecated-bead-cli",
+      "type": "predicate",
+      "predicate_name": "deprecated_command",
+      "data": {
+        "currently_canonical": "bf",
+        "deprecated": ["br"]
+      },
+      "tier": "tier1",
+      "severity": "Medium",
+      "explanation": "Invoking a deprecated bead CLI may produce incompatible state. The configured canonical and deprecated names are pack data; this check blocks deprecated invocations without translating commands between different CLI syntaxes.",
+      "destructive": false,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "This bead CLI is deprecated. Use the currently canonical bead CLI configured by the misc pack; this guard does not translate command syntax between CLIs.",
+        "rewrite_template": null
+      }
     }
   ]
 }

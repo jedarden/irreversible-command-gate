@@ -31,7 +31,7 @@ fn manifest_declares_a_tier_one_command_regex_deny_rule() {
     assert_eq!(pack.tool_keywords, ["needle"]);
     assert!(pack.applies_to.is_empty());
     assert!(pack.safe_patterns.is_empty());
-    assert_eq!(pack.guarded_patterns.len(), 1);
+    assert_eq!(pack.guarded_patterns.len(), 2);
 
     let rule = &pack.guarded_patterns[0];
     assert_eq!(rule.id, "needle-cleanup");

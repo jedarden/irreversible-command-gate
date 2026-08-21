@@ -447,7 +447,7 @@ fn print_check_definition(check: &Check) {
         Check::CommandRegex { regex } | Check::ContentRegex { regex } => {
             println!("Regex: {regex}")
         }
-        Check::Predicate { predicate_name } => println!("Predicate: {predicate_name}"),
+        Check::Predicate { predicate_name, .. } => println!("Predicate: {predicate_name}"),
     }
 }
 

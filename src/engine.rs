@@ -1272,17 +1272,19 @@ impl Engine {
         // a reload leaves stale IDs in the index and can evaluate a pack that
         // is no longer installed.
         if let Some(previous) = self.packs.get(&pack_id) {
-            for keyword in &previous.tool_keywords {
-                let keyword = executable_basename(keyword).to_string();
+            for keyword in pack_dispatch_keywords(previous) {
+                let keyword = executable_basename(&keyword).to_string();
                 if let Some(pack_ids) = self.keyword_index.get_mut(&keyword) {
                     pack_ids.retain(|id| id != &pack_id);
                 }
             }
         }
 
-        // Index tool_keywords for fast dispatch
-        for keyword in &pack.tool_keywords {
-            let keyword = executable_basename(keyword).to_string();
+        // Index tool_keywords and any data-driven deprecated executable names
+        // for fast dispatch. The latter keeps a manifest-only CLI cutover from
+        // requiring executable logic changes.
+        for keyword in pack_dispatch_keywords(&pack) {
+            let keyword = executable_basename(&keyword).to_string();
             self.keyword_index
                 .entry(keyword)
                 .or_insert_with(Vec::new)
@@ -1666,9 +1668,13 @@ impl Engine {
                 // Content regex doesn't apply to command-mode checks
                 Ok(false)
             }
-            crate::rule_pack::Check::Predicate { predicate_name } => {
-                // Evaluate state-aware predicates for Tier 2 rules
-                match self.evaluate_command_predicate(predicate_name, command) {
+            crate::rule_pack::Check::Predicate {
+                predicate_name,
+                data,
+            } => {
+                // Evaluate state-aware predicates for Tier 2 rules and
+                // data-driven predicates whose policy lives in the pack.
+                match self.evaluate_command_predicate(predicate_name, data.as_ref(), command) {
                     Ok(result) => Ok(result),
                     Err(_) => {
                         // Predicate evaluation error - fail open
@@ -1681,8 +1687,14 @@ impl Engine {
     }
 
     /// Evaluate a command-mode predicate against the current state
-    fn evaluate_command_predicate(&self, predicate_name: &str, command: &str) -> Result<bool> {
+    fn evaluate_command_predicate(
+        &self,
+        predicate_name: &str,
+        data: Option<&serde_json::Value>,
+        command: &str,
+    ) -> Result<bool> {
         match predicate_name {
+            "deprecated_command" => self.matches_deprecated_command(data, command),
             "requires_flush_first" => {
                 // Tier 2: Deny unless flush has already occurred in this session
                 // Returns true (pattern matches/deny) when flush has NOT occurred
@@ -1738,6 +1750,49 @@ impl Engine {
                 Ok(false)
             }
         }
+    }
+
+    /// Match a command against the deprecated executable names supplied by a
+    /// rule pack. The canonical name is data too: it is explicitly allowed,
+    /// while the predicate never rewrites one CLI's syntax into another's.
+    fn matches_deprecated_command(
+        &self,
+        data: Option<&serde_json::Value>,
+        command: &str,
+    ) -> Result<bool> {
+        let data = data.context("deprecated_command predicate is missing data")?;
+        let object = data
+            .as_object()
+            .context("deprecated_command predicate data must be an object")?;
+        let canonical = object
+            .get("currently_canonical")
+            .or_else(|| object.get("canonical"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| !name.is_empty())
+            .context("deprecated_command data needs a canonical name")?;
+        let deprecated = object
+            .get("deprecated")
+            .and_then(serde_json::Value::as_array)
+            .context("deprecated_command data needs a deprecated-name list")?;
+        let deprecated: Vec<&str> = deprecated
+            .iter()
+            .map(|name| {
+                name.as_str()
+                    .filter(|name| !name.is_empty())
+                    .context("deprecated_command data contains an invalid name")
+            })
+            .collect::<Result<_>>()?;
+
+        let Some(env_assign_pattern) = &self.env_assign_pattern else {
+            return Ok(false);
+        };
+
+        Ok(lex_shell_commands(command)
+            .into_iter()
+            .filter_map(|words| {
+                command_token_from_words(words, env_assign_pattern, &self.ignored_prefixes)
+            })
+            .any(|token| token.executable != canonical && deprecated.contains(&token.executable.as_str())))
     }
 
     /// Convert a GuardedPattern to a CheckResult
@@ -1990,7 +2045,10 @@ impl Engine {
                 // Command regex doesn't apply to content-mode checks
                 Ok(false)
             }
-            crate::rule_pack::Check::Predicate { predicate_name } => {
+            crate::rule_pack::Check::Predicate {
+                predicate_name,
+                ..
+            } => {
                 // Predicates are evaluated against the target path rather
                 // than the text being written. The beads pack's
                 // `is_shared_checkout` predicate is additionally scoped by
@@ -2078,6 +2136,47 @@ impl Engine {
             CheckResult::Allowed
         }
     }
+}
+
+/// Return every executable name that can cause a pack to be evaluated.
+///
+/// Most packs declare these names in `tool_keywords`. A data-driven
+/// deprecated-command predicate additionally contributes the deprecated names
+/// from its manifest data, so changing that list is sufficient to retarget the
+/// rule at a future CLI cutover.
+fn pack_dispatch_keywords(pack: &Pack) -> Vec<String> {
+    let mut keywords = pack.tool_keywords.clone();
+
+    for pattern in &pack.guarded_patterns {
+        let crate::rule_pack::Check::Predicate {
+            predicate_name,
+            data: Some(data),
+        } = &pattern.check
+        else {
+            continue;
+        };
+
+        if predicate_name != "deprecated_command" {
+            continue;
+        }
+
+        let Some(deprecated) = data
+            .as_object()
+            .and_then(|object| object.get("deprecated"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+
+        keywords.extend(
+            deprecated
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned),
+        );
+    }
+
+    keywords
 }
 
 fn validate_pack_regexes(pack: &Pack) -> Result<()> {
@@ -2267,6 +2366,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "is_shared_checkout".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier1,
                 severity: crate::rule_pack::Severity::Critical,
@@ -3697,6 +3797,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "requires_flush_first".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier2,
                 severity: crate::rule_pack::Severity::High,
@@ -3743,6 +3844,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "requires_flush_first".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier2,
                 severity: crate::rule_pack::Severity::High,
@@ -3787,6 +3889,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "requires_pull_first".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier2,
                 severity: crate::rule_pack::Severity::High,
@@ -3833,6 +3936,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "requires_pull_first".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier2,
                 severity: crate::rule_pack::Severity::High,
@@ -3877,6 +3981,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "unknown_predicate_xyz".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier2,
                 severity: crate::rule_pack::Severity::Medium,
@@ -3918,6 +4023,7 @@ mod tests {
                 enabled: true,
                 check: crate::rule_pack::Check::Predicate {
                     predicate_name: "requires_flush_first".to_string(),
+                    data: None,
                 },
                 tier: crate::rule_pack::Tier::Tier2,
                 severity: crate::rule_pack::Severity::High,

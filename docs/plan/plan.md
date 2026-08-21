@@ -114,15 +114,17 @@ changes. Modeled on
 domain," not "runtime-editable by anyone."
 
 **`misc` pack's deprecated-bead-CLI rule is data-driven by design, not
-hardcoded to one tool name.** `br` (beads_rust) is already deprecated in
-favor of `bf` (bead-forge) — but `bf` is itself being prepared for
-deprecation in favor of `bead-rs` (`~/bead-rs`, binary `bead`, a separate
-clean-room reimplementation, not the same lineage as `br` despite the
-similar name). The rule's actual policy is "don't invoke a deprecated bead
-CLI," which outlives any single tool's canonical status — the pack stores
-"currently canonical" and "deprecated" as data (a small list this rule
-reads), not as logic hardcoded to `bf` specifically, so the eventual
-`bf`→`bead` cutover is a one-line data change, not a rule rewrite. See
+hardcoded to one tool name.** `bf` (bead-forge) is currently canonical and
+`br` (beads_rust) is deprecated. `bf` is being prepared for deprecation in
+favor of `bead-rs` (`~/bead-rs`, binary `bead`, a separate clean-room
+reimplementation, not the same lineage as `br` despite the similar name).
+The rule's actual policy is "don't invoke a deprecated bead CLI," which
+outlives any single tool's canonical status — the pack stores "currently
+canonical" and "deprecated" as data (a small list this rule reads), not as
+logic hardcoded to `bf` specifically. When the cutover actually happens,
+updating that data to make `bead` canonical and `bf` deprecated is a one-line
+manifest change, not a rule rewrite. The CLIs are not syntax-compatible, so
+the rule denies deprecated invocations and does not translate commands. See
 Phase 1 and `irrevers-692a56c3`.
 
 **Deploy location: root-owned system directories, not user-writable
@@ -378,6 +380,9 @@ GuardedPattern:
                                   # with a .beads/ path match via applies_to, not the predicate
                                   # alone), irrevers-8cff8cf4's synchronous network lookup (the Tier 1
                                   # exception), and Phase 2's state-store-backed checks alike.
+                                  # Predicates may also carry optional pack data; the misc pack's
+                                  # deprecated-command check stores its canonical and deprecated
+                                  # executable names there.
   tier: 1 | 2 | 3                # deterministic-difficulty tier, see Implementation Phases
   severity: Critical | High | Medium
   explanation: string            # why this is dangerous
@@ -482,10 +487,10 @@ GuardedPattern:
       (path-under-`.beads/` **and**
       `.git` file-vs-directory check — see Components, both conditions
       required),
-      deprecated-bead-CLI usage (data-driven, `irrevers-692a56c3` — the
-      cutover has since happened: as of 2026-08-14 `bead` (bead-rs) is
-      canonical and both `br` and `bf` are deprecated, so the pack's data
-      should list both as deprecated rather than blessing `bf`), `needle cleanup`,
+      deprecated-bead-CLI usage (data-driven, `irrevers-692a56c3` — `bf` is
+      currently canonical and `br` is deprecated; when the cutover actually
+      happens, update the pack data to make `bead` canonical and add `bf` to
+      the deprecated list), `needle cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
       reason for all of these — skip `updatedInput`/`additionalContext`
       complexity for v1.

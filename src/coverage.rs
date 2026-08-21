@@ -412,7 +412,7 @@ fn extract_regex(check: &Check) -> String {
     match check {
         Check::CommandRegex { regex } => regex.clone(),
         Check::ContentRegex { regex } => regex.clone(),
-        Check::Predicate { predicate_name } => predicate_name.clone(),
+        Check::Predicate { predicate_name, .. } => predicate_name.clone(),
     }
 }
 
