@@ -762,6 +762,71 @@ fn reconcile_fail_closed_policy(
 
 }
 
+/// Consume a crash recovered by the lifecycle marker before evaluating the
+/// next operation.  The health store detects process disappearance on the
+/// next invocation; this boundary turns that durable evidence into the same
+/// idempotent poison-pill event used by policy reconciliation.
+///
+/// Returns true when the active policy requires this invocation to halt.  In
+/// fail-open mode the event is still logged and persisted, but evaluation is
+/// allowed to continue so the fleet retains the compatibility baseline.
+fn recovered_guard_crash_requires_halt(
+    engine: &Engine,
+    lifecycle: Option<&health::GuardLifecycle>,
+) -> bool {
+    let Some(crash) = lifecycle.and_then(health::GuardLifecycle::startup_crash) else {
+        return false;
+    };
+
+    let event_ref = format!("guard-crash:{}", crash.id);
+    let policy_store = PolicyStore::from_env();
+    match policy_store.record_poison_pill(&event_ref) {
+        Ok(transition) => eprintln!(
+            "⚠️  Recovered guard crash consumed as poison-pill event {event_ref}: {transition:?}"
+        ),
+        Err(error) => eprintln!(
+            "⚠️  Failed to persist recovered guard crash poison-pill {event_ref}: {error:#}"
+        ),
+    }
+
+    if engine.fail_closed() {
+        eprintln!(
+            "🚨 Fail-Closed enforcement: guard crash {event_ref} halts this operation"
+        );
+        true
+    } else {
+        eprintln!(
+            "⚠️  Fail-Open enforcement: guard crash {event_ref} recorded; allowing this operation"
+        );
+        false
+    }
+}
+
+fn guard_crash_result() -> engine::CheckResult {
+    engine::CheckResult::Denied {
+        reason: "Guard crash in fail-closed mode - rejecting all operations".to_string(),
+        pack_id: "fail-closed".to_string(),
+        pattern_id: "guard-crash".to_string(),
+    }
+}
+
+/// Record an in-process guard availability failure without treating ordinary
+/// rule denials as crashes.  Health persistence is best effort and never
+/// changes the already computed policy decision.
+fn record_engine_guard_failure(
+    lifecycle: Option<&mut health::GuardLifecycle>,
+    engine: &Engine,
+) {
+    if !engine.has_guard_failure() {
+        return;
+    }
+    if let Some(lifecycle) = lifecycle {
+        if let Err(error) = lifecycle.finish_error("guard availability failure during evaluation") {
+            eprintln!("icg_health_event event=guard_failure_record_failed error={error:#}");
+        }
+    }
+}
+
 fn record_trust_pointer_observation(
     state_store: Option<&state_store::StateStore>,
     pointer: &TrustPointer,
@@ -911,6 +976,10 @@ fn run_shadowed_tool(
     use std::os::unix::process::CommandExt;
 
     let engine = load_wrapper_engine()?;
+    let halt_for_recovered_crash = recovered_guard_crash_requires_halt(
+        &engine,
+        lifecycle.as_deref(),
+    );
     let mut check_argv = Vec::with_capacity(original_args.len() + 1);
     check_argv.push(tool.to_string());
     check_argv.extend(
@@ -919,7 +988,12 @@ fn run_shadowed_tool(
             .map(|arg| arg.to_string_lossy().into_owned()),
     );
     let source = engine.read_from_argv(check_argv);
-    let result = engine.evaluate_command(&source);
+    let result = if halt_for_recovered_crash {
+        guard_crash_result()
+    } else {
+        engine.evaluate_command(&source)
+    };
+    record_engine_guard_failure(lifecycle.as_deref_mut(), &engine);
 
     if let Ok(state_path) = state_store::StateStore::default_path() {
         let state_store = state_store::StateStore::new(state_path);
@@ -969,6 +1043,18 @@ fn run_shadowed_tool(
             pack_id,
             pattern_id,
         } => {
+            if let Some(run) = lifecycle.as_deref_mut() {
+                let finish = if halt_for_recovered_crash || engine.has_guard_failure() {
+                    run.finish_error("guard availability failure triggered fail-closed halt")
+                } else {
+                    // A normal rule denial is a successful guard decision,
+                    // not a crash or an unhealthy invocation.
+                    run.finish_clean()
+                };
+                if let Err(error) = finish {
+                    eprintln!("icg_health_event event=finish_failed error={error:#}");
+                }
+            }
             anyhow::bail!(
                 "command denied: {reason} [pack={pack_id}, pattern={pattern_id}]"
             )
@@ -981,6 +1067,11 @@ fn run_shadowed_tool(
     // marker before handing control to the real tool.  A failure to exec is
     // still reported by the caller as an abnormal guard exit.
     if let Some(run) = lifecycle.as_deref_mut() {
+        if halt_for_recovered_crash {
+            if let Err(error) = run.finish_error("recovered guard crash triggered fail-closed halt") {
+                eprintln!("icg_health_event event=finish_failed error={error:#}");
+            }
+        }
         if let Err(error) = run.finish_clean() {
             eprintln!("icg_health_event event=finish_failed error={error:#}");
         }
@@ -1228,6 +1319,11 @@ fn main() -> Result<()> {
                 engine = engine.with_state_store(std::sync::Arc::clone(state_store));
             }
 
+            let halt_for_recovered_crash = recovered_guard_crash_requires_halt(
+                &engine,
+                lifecycle.as_ref(),
+            );
+
             // Retain the original tool input so an updatedInput response can
             // replace one field without dropping the other tool arguments.
             let hook_payload = engine.read_pre_tool_use_payload_from_stdin()?;
@@ -1254,7 +1350,12 @@ fn main() -> Result<()> {
             match input_source {
                 Some(InputSource::Command(source)) => {
                     // Command-mode: Bash command
-                    let result = engine.evaluate_command(&source);
+                    let result = if halt_for_recovered_crash {
+                        guard_crash_result()
+                    } else {
+                        engine.evaluate_command(&source)
+                    };
+                    record_engine_guard_failure(lifecycle.as_mut(), &engine);
                     record_hook_denial(
                         record_as_test.as_deref(),
                         &InputSource::Command(source.clone()),
@@ -1277,7 +1378,12 @@ fn main() -> Result<()> {
                 Some(InputSource::Content(content)) => {
                     // Content-mode: Write/Edit operation
                     // Evaluate against content-mode packs (storage-class, image-tag, beads)
-                    let result = engine.evaluate_content(&content);
+                    let result = if halt_for_recovered_crash {
+                        guard_crash_result()
+                    } else {
+                        engine.evaluate_content(&content)
+                    };
+                    record_engine_guard_failure(lifecycle.as_mut(), &engine);
                     record_hook_denial(
                         record_as_test.as_deref(),
                         &InputSource::Content(content.clone()),
@@ -1303,7 +1409,12 @@ fn main() -> Result<()> {
                     Ok(())
                 }
                 Some(InputSource::ContentBatch(contents)) => {
-                    let result = engine.evaluate_content_batch(&contents);
+                    let result = if halt_for_recovered_crash {
+                        guard_crash_result()
+                    } else {
+                        engine.evaluate_content_batch(&contents)
+                    };
+                    record_engine_guard_failure(lifecycle.as_mut(), &engine);
                     record_hook_batch_denial(
                         record_as_test.as_deref(),
                         &engine,
@@ -1335,11 +1446,17 @@ fn main() -> Result<()> {
                     Ok(())
                 }
                 None => {
-                    // Unrecognized tool - allow by default (fail-open)
+                    // Unrecognized tools remain fail-open unless a previously
+                    // crashed guard has latched the fail-closed boundary.
+                    let result = if halt_for_recovered_crash {
+                        guard_crash_result()
+                    } else {
+                        engine::CheckResult::Allowed
+                    };
                     println!(
                         "{}",
                         render_hook_response(
-                            engine::CheckResult::Allowed,
+                            result,
                             original_input.as_ref(),
                             input_key,
                             None,

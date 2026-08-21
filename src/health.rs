@@ -723,13 +723,26 @@ impl Clone for HealthStore {
 pub struct GuardLifecycle {
     store: HealthStore,
     finished: bool,
+    startup_crash: Option<CrashRecord>,
+}
+
+/// Result of starting a tracked guard invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunStart {
+    /// Identifier persisted for the new invocation.
+    pub run_id: String,
+
+    /// Crash evidence recovered from a previous invocation, if its durable
+    /// run marker was left behind.  The record is returned so the enforcement
+    /// boundary can consume the event exactly once.
+    pub recovered_crash: Option<CrashRecord>,
 }
 
 impl GuardLifecycle {
     /// Start tracking one guard process invocation.
     pub fn start() -> Result<Self> {
         let store = HealthStore::from_environment_or_default()?;
-        store.start_run()?;
+        let started = store.start_run_with_detection()?;
         store.sync_telemetry_best_effort();
 
         let panic_store = store.clone();
@@ -750,7 +763,18 @@ impl GuardLifecycle {
         Ok(Self {
             store,
             finished: false,
+            startup_crash: started.recovered_crash,
         })
+    }
+
+    /// Return crash evidence recovered while starting this invocation.
+    pub fn startup_crash(&self) -> Option<&CrashRecord> {
+        self.startup_crash.as_ref()
+    }
+
+    /// Whether a prior invocation disappeared before recording a clean exit.
+    pub fn recovered_crash(&self) -> bool {
+        self.startup_crash.is_some()
     }
 
     /// Mark the invocation as a clean exit.
@@ -976,8 +1000,17 @@ impl HealthStore {
     /// record.  A marker owned by a still-live PID is treated as a concurrent
     /// invocation and is not falsely counted as a crash.
     pub fn start_run(&self) -> Result<String> {
+        Ok(self.start_run_with_detection()?.run_id)
+    }
+
+    /// Start a run and report whether a stale marker was converted into a
+    /// crash record.  The conversion and new marker write happen under one
+    /// lock, so callers can safely use the returned event as a poison-pill
+    /// identity without racing another invocation.
+    pub fn start_run_with_detection(&self) -> Result<RunStart> {
         let _lock = self.acquire_lock()?;
         let mut state = self.load_unlocked()?;
+        let mut recovered_crash = None;
 
         if state.current_run_started_at.is_some() {
             let previous_is_live = state
@@ -1001,6 +1034,7 @@ impl HealthStore {
                 };
                 let crash = CrashRecord::new(crash_type).with_context(reason.to_string());
                 state.record_crash(crash);
+                recovered_crash = state.crash_history.last().cloned();
                 eprintln!(
                     "icg_health_event event=crash_detected crash_type={:?} reason=stale_run_marker",
                     crash_type
@@ -1012,7 +1046,10 @@ impl HealthStore {
         state.mark_start_with_id(run_id.clone());
         self.persist_unlocked(&state)?;
         eprintln!("icg_health_event event=run_started run_id={run_id}");
-        Ok(run_id)
+        Ok(RunStart {
+            run_id,
+            recovered_crash,
+        })
     }
 
     /// Load health state from disk, or create new if file doesn't exist.

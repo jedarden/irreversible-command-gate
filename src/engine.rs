@@ -875,6 +875,14 @@ impl Engine {
         self.fail_closed
     }
 
+    /// Whether this engine observed an availability failure while loading or
+    /// evaluating the current invocation.  The hook boundary uses this signal
+    /// to record caught guard faults in the durable health store; a normal rule
+    /// denial does not set it.
+    pub fn has_guard_failure(&self) -> bool {
+        self.fail_open
+    }
+
     /// Get the current session ID
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
