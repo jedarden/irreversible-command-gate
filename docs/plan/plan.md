@@ -87,7 +87,7 @@ finalist needs to either accept the standing-daemon cost after all or be
 re-scoped.
 
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
-separate units for `vault`, `storage-class`, `image-tag` (extends
+separate units for `openbao`, `storage-class`, `image-tag` (extends
 `org-rule-guard.py`'s existing `:latest` check with the bare-SHA half),
 `git` (force-push, stale-HEAD-before-push, commit-without-pathspec — see
 Phase 1), `beads` (`.beads/` protection
@@ -112,6 +112,42 @@ changes. Modeled on
 `destructive_command_guard`'s per-vendor pack structure — see
 `docs/research/prior-art.md`. Modularity here means "one file per tool
 domain," not "runtime-editable by anyone."
+
+**`openbao` pack, scope resolved and expanded (2026-08-20).** Drafted above
+and in Phase 1 as a `vault`-named pack covering only destructive verbs, this
+shipped as `openbao` — `tool_keywords: ["bao", "vault"]`, so both binary
+names still get PATH-wrapper coverage — with three guarded patterns, not
+one:
+1. **`openbao-inline-secret-literal`** (new, `deny`) — a `kv put`/`kv patch`
+   whose data argument carries a literal value. The leak happens before the
+   write ever reaches OpenBao: argv lands in the agent transcript, shell
+   history, and `ps` output regardless of whether the destination store is
+   trusted.
+2. **`openbao-destructive-verb`** (`deny`) — the original motivating-gap
+   rule, now covering `kv destroy`, `kv metadata delete`, `secrets disable`,
+   `auth disable`, `policy delete`, `token revoke`, `operator rekey`, and
+   `lease revoke` — a superset of the verb list originally sketched in
+   Phase 1 below.
+3. **`openbao-kv-get-to-stdout`** (new, `additionalContext`, not `deny`) —
+   a non-blocking warning when a `kv get` prints a value to stdout, where it
+   enters the transcript the same way an inline literal would. This
+   deliberately does **not** follow Phase 1's "skip
+   updatedInput/additionalContext complexity for v1" simplification: by
+   2026-08-20 the hook front-end's `additionalContext` realization
+   (`irrevers-df96952a`) had already shipped independently and closed
+   (2026-08-17), so a pack authored after that point had no reason to
+   artificially restrict a read-only nudge to `deny`.
+
+Rules 1 and 3 are new surface beyond the pack originally scoped as `vault`.
+All three shipped in one commit (`01b5cf1`) the same day `~/CLAUDE.md`'s
+"OpenBao — Agent Read/Write Access" section reversed the standing
+no-agent-write-access policy and named this pack as the enforcement
+mechanism for that section's "never as an argument" / "never to stdout"
+requirements — see that section for the policy rationale this pack encodes.
+Tracked as `irrevers-b9e97cab` (destructive-verb rule only; the
+argv-literal-leak and stdout-warning rules shipped in the same commit
+without a dedicated bead of their own — a minor bead-graph gap, not a code
+gap).
 
 **`misc` pack's deprecated-bead-CLI rule is data-driven by design, not
 hardcoded to one tool name.** `bf` (bead-forge) is currently canonical and
@@ -153,7 +189,8 @@ the stricter deployment shape.
 choice between them. Two independent, complementary front-ends sharing one
 engine:
 - A **PATH-wrapper binary** shadowing whatever binaries the *currently
-  loaded* rule packs cover — `vault`/`bao`/`git` from Phase 1, `docker`
+  loaded* rule packs cover — `vault`/`bao` (the `openbao` pack) and `git`
+  from Phase 1, `docker`
   once Phase 4's `irrevers-54d477dd` pack ships (not before; shadowing a binary with
   no pack behind it yet is a pure no-op) — never `kubectl` (see
   Architecture's pack list). Harness-agnostic by construction, proven
@@ -205,9 +242,9 @@ for Codex is still maturing). Full reasoning in
   `org-rule-guard.py`'s `check_bash` does (splits on `;`/`&&`/`||`, skips
   `sudo`/env-assignment/wrapper prefixes), **basename-matches each token
   against `tool_keywords`** (strips directory components before
-  comparing, so `/usr/local/bin/vault kv destroy` matches the `vault` pack
+  comparing, so `/usr/local/bin/vault kv destroy` matches the `openbao` pack
   the same as a bare `vault kv destroy` would), and matches the resulting
-  tokens against loaded rule packs — what `vault`, `git`, `misc`, and
+  tokens against loaded rule packs — what `openbao`, `git`, `misc`, and
   `tmux` packs use. **`secrets` is the one command-mode pack that does NOT
   dispatch this way**: per Architecture above it scans the entire raw Bash
   command string regardless of which executable is invoked (`echo
@@ -342,9 +379,9 @@ chosen, this is the field set regardless of format:
 
 ```
 Pack:
-  id: string                     # "vault", "git", "storage-class", "beads", ...
-  tool_keywords: [string]        # command-mode packs (vault/git/misc/tmux):
-                                  # executables this pack inspects, e.g. ["vault", "bao"].
+  id: string                     # "openbao", "git", "storage-class", "beads", ...
+  tool_keywords: [string]        # command-mode packs (openbao/git/misc/tmux):
+                                  # executables this pack inspects, e.g. ["bao", "vault"].
                                   # Unused by content-mode packs, by beads, and by
                                   # secrets -- secrets scans the whole command string
                                   # unconditionally, with no tool_keywords match.
@@ -354,7 +391,7 @@ Pack:
                                   # ALSO used by beads (Predicate-type check) to scope its
                                   # .beads/ path match, even though beads isn't a content-mode
                                   # pack -- see Components for why it's a third, distinct case.
-                                  # Unused by pure command-mode packs (vault/git/secrets/misc/tmux).
+                                  # Unused by pure command-mode packs (openbao/git/secrets/misc/tmux).
   safe_patterns: [Pattern]       # explicitly-allowed shapes, checked first
   guarded_patterns: [GuardedPattern]
 
@@ -368,7 +405,7 @@ GuardedPattern:
   enabled: true | false           # whether this rule participates in evaluation;
                                   # omitted in older manifests means true
   check: CommandRegex | ContentRegex | Predicate
-                                  # CommandRegex: matched against shell tokens (vault/git/misc/tmux
+                                  # CommandRegex: matched against shell tokens (openbao/git/misc/tmux
                                   # packs, both front-ends; secrets pack also uses CommandRegex but
                                   # is hook-only despite the shared check type — see Architecture
                                   # for why). ContentRegex: matched against Write/Edit file
@@ -454,9 +491,11 @@ GuardedPattern:
       hook-only, per Architecture — not every rule reaches the wrapper.
       Rule set: Bash-channel secret-value scanning (reuse
       `org-rule-guard.py`'s existing regex machinery, currently only wired
-      to the Write/Edit path), Vault/OpenBao destructive verbs (the core
-      motivating gap — `kv destroy`, `secrets disable`, `policy delete`,
-      token/lease revoke), `ssd`/`ssd-large` storage class, **both halves**
+      to the Write/Edit path), OpenBao destructive verbs (the core
+      motivating gap — shipped as the `openbao` pack; see Architecture's
+      "`openbao` pack, scope resolved and expanded" paragraph for the actual
+      shipped scope, which grew beyond destructive verbs alone),
+      `ssd`/`ssd-large` storage class, **both halves**
       of image-tag pinning (`:latest` re-detection *and* bare-SHA — the
       `image-tag` pack fully absorbs this rule from `org-rule-guard.py` as
       of Phase 1, not just the bare-SHA gap; see Architecture and
@@ -567,7 +606,7 @@ GuardedPattern:
         directly rather than through a hook-response field either harness
         might drop.
       - `irrevers-54d477dd` — Docker destructive-ops pack (new Phase-1-shaped pack,
-        same architecture as `vault`)
+        same architecture as `openbao`)
 - [ ] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
       Like Phase 4, this isn't a new sequential build phase — its
       findings fold into earlier phases' actual scope (`irrevers-8cff8cf4` is a
