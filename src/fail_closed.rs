@@ -42,6 +42,12 @@ pub const POLICY_PATH_ENV: &str = "ICG_FAIL_CLOSED_POLICY";
 pub const LEGACY_FAIL_CLOSED_ENV: &str = "ICG_FAIL_CLOSED";
 
 const MAX_COUNTED_RELEASES: usize = 128;
+/// Maximum number of structured policy transition events retained locally.
+///
+/// The policy snapshot is also the graduation telemetry sink.  Keep a bounded
+/// event tail so repeated hook invocations cannot grow the administrator
+/// controlled file without limit.
+pub const MAX_POLICY_EVENTS: usize = 256;
 
 /// Fleet policy state loaded by each guard invocation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +57,42 @@ pub enum PolicyMode {
     FailOpen,
     /// Guard-availability failures deny the operation.
     FailClosed,
+}
+
+/// Structured policy events emitted for logging and telemetry consumers.
+///
+/// These events describe the policy decision only.  Poison-pill detection and
+/// rollback remain owned by [`crate::rollback`]; this module records the
+/// typed evidence it observes and never acknowledges or edits that source.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyEventType {
+    CleanRelease,
+    Graduated,
+    ManualGraduation,
+    PoisonPill,
+    QualificationInvalidated,
+    EmergencyDemotion,
+    ThresholdChanged,
+}
+
+/// One durable policy transition event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyEvent {
+    /// Unique local event identifier for log correlation.
+    pub event_id: String,
+    /// UTC time at which the transition was committed.
+    pub occurred_at: String,
+    pub event_type: PolicyEventType,
+    pub generation: u64,
+    pub mode: PolicyMode,
+    pub clean_release_streak: u32,
+    pub graduation_threshold: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poison_pill_event_ref: Option<String>,
+    pub reason: String,
 }
 
 impl Default for PolicyMode {
@@ -80,6 +122,8 @@ pub enum PolicyTransition {
         release_ref: String,
         generation: u64,
     },
+    /// An explicitly authorized operator graduation.
+    ForcedGraduation { generation: u64 },
     /// A poison-pill event invalidated qualification.
     PoisonPill {
         event_ref: String,
@@ -131,6 +175,10 @@ pub struct PolicyState {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_transition_reason: Option<String>,
+
+    /// Bounded, structured transition telemetry for audit and monitoring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<PolicyEvent>,
 }
 
 fn default_policy_schema_version() -> u32 {
@@ -165,6 +213,7 @@ impl PolicyState {
             last_processed_rollback_count: 0,
             last_transition_at: None,
             last_transition_reason: None,
+            events: Vec::new(),
         })
     }
 
@@ -194,13 +243,42 @@ impl PolicyState {
             let first = self.counted_releases.len() - MAX_COUNTED_RELEASES;
             self.counted_releases.drain(..first);
         }
+        if self.events.len() > MAX_POLICY_EVENTS {
+            let first = self.events.len() - MAX_POLICY_EVENTS;
+            self.events.drain(..first);
+        }
         Ok(())
     }
 
-    fn transition(&mut self, reason: impl Into<String>) {
+    fn transition(
+        &mut self,
+        event_type: PolicyEventType,
+        release_ref: Option<String>,
+        poison_pill_event_ref: Option<String>,
+        reason: impl Into<String>,
+    ) -> u64 {
+        let reason = reason.into();
         self.generation = self.generation.saturating_add(1);
-        self.last_transition_at = Some(Utc::now().to_rfc3339());
-        self.last_transition_reason = Some(reason.into());
+        let occurred_at = Utc::now().to_rfc3339();
+        self.last_transition_at = Some(occurred_at.clone());
+        self.last_transition_reason = Some(reason.clone());
+        self.events.push(PolicyEvent {
+            event_id: format!("policy-{}-{}", self.generation, std::process::id()),
+            occurred_at,
+            event_type,
+            generation: self.generation,
+            mode: self.mode,
+            clean_release_streak: self.clean_release_streak,
+            graduation_threshold: self.graduation_threshold,
+            release_ref,
+            poison_pill_event_ref,
+            reason,
+        });
+        if self.events.len() > MAX_POLICY_EVENTS {
+            let first = self.events.len() - MAX_POLICY_EVENTS;
+            self.events.drain(..first);
+        }
+        self.generation
     }
 
     /// Record one new eligible clean release.
@@ -234,18 +312,26 @@ impl PolicyState {
         self.clean_release_streak = self.clean_release_streak.saturating_add(1);
         if self.clean_release_streak >= self.graduation_threshold {
             self.mode = PolicyMode::FailClosed;
-            self.transition(format!(
-                "graduated after {} consecutive eligible clean releases; latest={release_ref}",
-                self.clean_release_streak
-            ));
+            let generation = self.transition(
+                PolicyEventType::Graduated,
+                Some(release_ref.clone()),
+                None,
+                format!(
+                    "graduated after {} consecutive eligible clean releases; latest={release_ref}",
+                    self.clean_release_streak
+                ),
+            );
             Ok(PolicyTransition::Graduated {
                 release_ref,
-                generation: self.generation,
+                generation,
             })
         } else {
-            self.transition(format!(
-                "eligible clean release counted; release={release_ref}"
-            ));
+            self.transition(
+                PolicyEventType::CleanRelease,
+                Some(release_ref.clone()),
+                None,
+                format!("eligible clean release counted; release={release_ref}"),
+            );
             Ok(PolicyTransition::CleanRelease {
                 release_ref,
                 clean_streak: self.clean_release_streak,
@@ -269,9 +355,14 @@ impl PolicyState {
 
         self.last_poison_pill_event = Some(event_ref.clone());
         if self.mode == PolicyMode::FailClosed {
-            self.transition(format!(
-                "poison-pill event consumed while preserving Fail-Closed mode; event={event_ref}"
-            ));
+            self.transition(
+                PolicyEventType::PoisonPill,
+                None,
+                Some(event_ref.clone()),
+                format!(
+                    "poison-pill event consumed while preserving Fail-Closed mode; event={event_ref}"
+                ),
+            );
             return Ok(PolicyTransition::PoisonPill {
                 event_ref,
                 clean_streak: self.clean_release_streak,
@@ -280,9 +371,12 @@ impl PolicyState {
 
         self.clean_release_streak = 0;
         self.counted_releases.clear();
-        self.transition(format!(
-            "poison-pill event reset qualification; event={event_ref}"
-        ));
+        self.transition(
+            PolicyEventType::PoisonPill,
+            None,
+            Some(event_ref.clone()),
+            format!("poison-pill event reset qualification; event={event_ref}"),
+        );
         Ok(PolicyTransition::PoisonPill {
             event_ref,
             clean_streak: 0,
@@ -294,10 +388,40 @@ impl PolicyState {
         self.mode = PolicyMode::FailOpen;
         self.clean_release_streak = 0;
         self.counted_releases.clear();
-        self.transition(format!("emergency demotion: {}", reason.into()));
+        self.transition(
+            PolicyEventType::EmergencyDemotion,
+            None,
+            None,
+            format!("emergency demotion: {}", reason.into()),
+        );
         PolicyTransition::EmergencyDemotion {
             generation: self.generation,
         }
+    }
+
+    /// Explicitly force Fail-Closed from the administrator control plane.
+    ///
+    /// This is intentionally separate from automatic graduation and leaves
+    /// the observed streak intact for audit.  It is an out-of-band override;
+    /// callers must supply an incident/change reason and should use it only
+    /// after the deployment gates described in the transition design have
+    /// been satisfied.
+    pub fn force_graduate(&mut self, reason: impl Into<String>) -> Result<PolicyTransition> {
+        let reason = reason.into();
+        if reason.trim().is_empty() {
+            bail!("forced graduation requires a non-empty reason");
+        }
+        if self.mode == PolicyMode::FailClosed {
+            return Ok(PolicyTransition::NoChange);
+        }
+        self.mode = PolicyMode::FailClosed;
+        let generation = self.transition(
+            PolicyEventType::ManualGraduation,
+            None,
+            None,
+            format!("manual force graduation: {reason}"),
+        );
+        Ok(PolicyTransition::ForcedGraduation { generation })
     }
 
     /// Reset qualification without pretending that an invalid/incomplete
@@ -313,7 +437,12 @@ impl PolicyState {
             return PolicyTransition::NoChange;
         }
         if self.mode == PolicyMode::FailClosed {
-            self.transition(closed_reason);
+            self.transition(
+                PolicyEventType::QualificationInvalidated,
+                None,
+                None,
+                closed_reason,
+            );
             return PolicyTransition::Invalidated {
                 clean_streak: self.clean_release_streak,
             };
@@ -321,7 +450,12 @@ impl PolicyState {
 
         self.clean_release_streak = 0;
         self.counted_releases.clear();
-        self.transition(open_reason);
+        self.transition(
+            PolicyEventType::QualificationInvalidated,
+            None,
+            None,
+            open_reason,
+        );
         PolicyTransition::Invalidated { clean_streak: 0 }
     }
 
@@ -337,9 +471,19 @@ impl PolicyState {
             self.graduation_threshold = threshold;
             self.clean_release_streak = 0;
             self.counted_releases.clear();
-            self.transition(format!("graduation threshold changed to {threshold}"));
+            self.transition(
+                PolicyEventType::ThresholdChanged,
+                None,
+                None,
+                format!("graduation threshold changed to {threshold}"),
+            );
         }
         Ok(())
+    }
+
+    /// Return the structured policy telemetry retained in this snapshot.
+    pub fn events(&self) -> &[PolicyEvent] {
+        &self.events
     }
 }
 
@@ -547,6 +691,16 @@ impl PolicyStore {
 
     pub fn emergency_demote(&self, reason: impl Into<String>) -> Result<PolicyTransition> {
         self.update(|state| Ok(state.emergency_demote(reason)))
+    }
+
+    /// Explicitly force the administrator-controlled policy to Fail-Closed.
+    pub fn force_graduate(&self, reason: impl Into<String>) -> Result<PolicyTransition> {
+        self.update(|state| state.force_graduate(reason))
+    }
+
+    /// Alias for the operator-facing force-revert control.
+    pub fn force_revert(&self, reason: impl Into<String>) -> Result<PolicyTransition> {
+        self.emergency_demote(reason)
     }
 
     pub fn set_threshold(&self, threshold: u32) -> Result<()> {
@@ -764,6 +918,44 @@ mod tests {
         state.record_poison_pill("rollback:1")?;
         assert!(state.is_fail_closed());
         assert_eq!(state.clean_release_streak, 2);
+        assert_eq!(state.events.len(), 3);
+        assert_eq!(state.events[1].event_type, PolicyEventType::Graduated);
+        assert_eq!(state.events[2].event_type, PolicyEventType::PoisonPill);
+        Ok(())
+    }
+
+    #[test]
+    fn force_controls_are_audited_and_revert_requires_requalification() -> Result<()> {
+        let mut state = PolicyState::new(3)?;
+        assert!(matches!(
+            state.force_graduate("approved emergency change")?,
+            PolicyTransition::ForcedGraduation { generation: 1 }
+        ));
+        assert!(state.is_fail_closed());
+        assert_eq!(
+            state.events.last().unwrap().event_type,
+            PolicyEventType::ManualGraduation
+        );
+
+        assert_eq!(
+            state.emergency_demote("guard incident"),
+            PolicyTransition::EmergencyDemotion { generation: 2 }
+        );
+        assert_eq!(state.mode, PolicyMode::FailOpen);
+        assert_eq!(state.clean_release_streak, 0);
+        assert_eq!(
+            state.events.last().unwrap().event_type,
+            PolicyEventType::EmergencyDemotion
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn force_graduate_requires_an_audit_reason() -> Result<()> {
+        let mut state = PolicyState::new(3)?;
+        assert!(state.force_graduate(" ").is_err());
+        assert_eq!(state.mode, PolicyMode::FailOpen);
+        assert!(state.events.is_empty());
         Ok(())
     }
 

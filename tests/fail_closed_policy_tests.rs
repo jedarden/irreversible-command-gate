@@ -1,4 +1,6 @@
-use icg::fail_closed::{PolicyMode, PolicyStore, PolicyTransition, ReconcileOutcome};
+use icg::fail_closed::{
+    PolicyEventType, PolicyMode, PolicyStore, PolicyTransition, ReconcileOutcome,
+};
 use icg::rollback::PoisonPillConfig;
 use icg::state_store::{DenyRatePolicy, StateStore};
 use icg::trust_pointer::{TrustPointer, TrustPointerStore};
@@ -80,6 +82,16 @@ fn policy_reconciles_unique_clean_releases_and_graduates() {
         policy.load().expect("policy should load").mode,
         PolicyMode::FailClosed
     );
+    assert_eq!(
+        policy
+            .load()
+            .expect("policy telemetry should load")
+            .events
+            .last()
+            .unwrap()
+            .event_type,
+        PolicyEventType::Graduated
+    );
 }
 
 #[test]
@@ -119,6 +131,52 @@ fn poison_pill_resets_open_policy_without_editing_telemetry() {
         runtime.release_telemetry().expect("telemetry should load"),
         telemetry_before,
         "policy reconciliation must not mutate poison-pill telemetry"
+    );
+    assert_eq!(
+        policy
+            .load()
+            .expect("policy telemetry should load")
+            .events
+            .last()
+            .unwrap()
+            .event_type,
+        PolicyEventType::PoisonPill
+    );
+}
+
+#[test]
+fn operator_force_graduate_and_force_revert_are_durable() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let policy = PolicyStore::new(directory.path().join("policy.json"));
+
+    assert!(matches!(
+        policy
+            .force_graduate("approved fail-closed rollout")
+            .expect("force graduation should succeed"),
+        PolicyTransition::ForcedGraduation { .. }
+    ));
+    assert_eq!(
+        policy.load().expect("policy should load").mode,
+        PolicyMode::FailClosed
+    );
+
+    assert!(matches!(
+        policy
+            .force_revert("guard incident")
+            .expect("force revert should succeed"),
+        PolicyTransition::EmergencyDemotion { .. }
+    ));
+    let state = policy.load().expect("policy should reload");
+    assert_eq!(state.mode, PolicyMode::FailOpen);
+    assert_eq!(state.clean_release_streak, 0);
+    assert_eq!(state.events.len(), 2);
+    assert_eq!(
+        state.events[0].event_type,
+        PolicyEventType::ManualGraduation
+    );
+    assert_eq!(
+        state.events[1].event_type,
+        PolicyEventType::EmergencyDemotion
     );
 }
 

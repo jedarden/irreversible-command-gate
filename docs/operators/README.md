@@ -36,7 +36,7 @@ icg trust show|set|check
 icg update
 icg health status|reset|mark-start|mark-clean-exit|record-crash
 icg telemetry status|reset|configure
-icg policy status|reconcile|configure|demote
+icg policy status|reconcile|configure|demote|force-graduate|force-revert
 icg check --command|--stdin|--file
 icg explain --pattern|--denial
 icg coverage --list
@@ -78,7 +78,11 @@ The default graduation threshold is three releases and can be changed with
 pill resets open-mode qualification, while a poison pill after graduation does
 not silently demote Fail-Closed. Use `icg policy demote --reason "..."` only as
 an authenticated, out-of-band emergency action; requalification is then
-required.
+required. `icg policy force-graduate --reason "..."` and
+`icg policy force-revert --reason "..."` are similarly authenticated manual
+controls. Every clean-release observation, poison-pill reset, graduation, and
+manual override is retained as bounded structured event telemetry in the
+policy snapshot and exposed by `icg policy status`.
 
 ## Rule packs and release safety
 

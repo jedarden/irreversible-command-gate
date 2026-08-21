@@ -20,7 +20,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use coverage::*;
 use engine::{Engine, InputSource};
-use fail_closed::{PolicyStore, ReconcileOutcome};
+use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{
@@ -340,6 +340,26 @@ enum PolicySubcommand {
     /// Explicitly demote Fail-Closed to Fail-Open during an incident
     Demote {
         /// Incident reason recorded in the policy state
+        #[arg(long)]
+        reason: String,
+        /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+    /// Force Fail-Open to Fail-Closed through the administrator control plane
+    #[command(alias = "graduate")]
+    ForceGraduate {
+        /// Change or incident reason recorded in the policy event telemetry
+        #[arg(long)]
+        reason: String,
+        /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+    /// Force Fail-Closed back to Fail-Open during an incident
+    #[command(alias = "revert")]
+    ForceRevert {
+        /// Incident reason recorded in the policy event telemetry
         #[arg(long)]
         reason: String,
         /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
@@ -740,6 +760,15 @@ fn reconcile_fail_closed_policy(
     let policy_store = PolicyStore::from_env();
     match policy_store.reconcile_release_health(state_store, trust_store, poison_pill_config) {
         Ok(ReconcileOutcome::Clean(transition)) => {
+            if let PolicyTransition::Graduated {
+                ref release_ref,
+                generation,
+            } = transition
+            {
+                eprintln!(
+                    "🚀 FAIL-CLOSED GRADUATION: release `{release_ref}` reached the clean-release threshold; policy generation {generation} is now Fail-Closed"
+                );
+            }
             eprintln!("ℹ️  Fail-closed policy reconciliation: {transition:?}");
         }
         Ok(ReconcileOutcome::PoisonPill(transition)) => {
@@ -2044,6 +2073,12 @@ fn main() -> Result<()> {
                 if let Some(reason) = state.last_transition_reason {
                     println!("**Last Transition:** {}", reason);
                 }
+                if let Some(event) = state.events.last() {
+                    println!(
+                        "**Last Event:** {:?} (generation {})",
+                        event.event_type, event.generation
+                    );
+                }
                 Ok(())
             }
             PolicySubcommand::Reconcile {
@@ -2090,6 +2125,22 @@ fn main() -> Result<()> {
                     .unwrap_or_else(PolicyStore::from_env);
                 let transition = store.emergency_demote(reason)?;
                 println!("Fail-closed policy demoted: {transition:?}");
+                Ok(())
+            }
+            PolicySubcommand::ForceGraduate { reason, path } => {
+                let store = path
+                    .map(PolicyStore::new)
+                    .unwrap_or_else(PolicyStore::from_env);
+                let transition = store.force_graduate(reason)?;
+                println!("Fail-closed policy force-graduated: {transition:?}");
+                Ok(())
+            }
+            PolicySubcommand::ForceRevert { reason, path } => {
+                let store = path
+                    .map(PolicyStore::new)
+                    .unwrap_or_else(PolicyStore::from_env);
+                let transition = store.force_revert(reason)?;
+                println!("Fail-closed policy force-reverted: {transition:?}");
                 Ok(())
             }
         },
