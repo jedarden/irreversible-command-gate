@@ -72,7 +72,7 @@
       "id": "openbao-kv-get-to-stdout",
       "type": "command_regex",
       "regex": "(?i)\\b(bao|vault)\\s+kv\\s+get\\b",
-      "tier": "tier2",
+      "tier": "tier1",
       "severity": "Medium",
       "explanation": "Reading a secret to stdout puts its value in the agent transcript and any log capturing it. Reads should land in a destination, not the terminal.",
       "destructive": false,
