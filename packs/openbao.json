@@ -57,7 +57,7 @@
     {
       "id": "openbao-destructive-verb",
       "type": "command_regex",
-      "regex": "(?i)\\b(bao|vault)\\s+(kv\\s+destroy|kv\\s+metadata\\s+delete|secrets\\s+disable|auth\\s+disable|policy\\s+delete|operator\\s+rekey|lease\\s+revoke)\\b",
+      "regex": "(?i)\\b(bao|vault)\\s+(kv\\s+destroy|kv\\s+metadata\\s+delete|secrets\\s+disable|auth\\s+disable|policy\\s+delete|token\\s+revoke|operator\\s+rekey|lease\\s+revoke)\\b",
       "tier": "tier1",
       "severity": "Critical",
       "explanation": "Permanently destroys secret data, an auth mount, a policy, or the unseal shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that is not written back leaves the instance unable to unseal.",
