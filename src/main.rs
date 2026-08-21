@@ -272,6 +272,9 @@ enum TelemetrySubcommand {
         /// Path to telemetry file (defaults to /var/cache/icg/telemetry.json)
         #[arg(short, long)]
         path: Option<PathBuf>,
+        /// Path to the durable per-release state store (defaults to the ICG cache)
+        #[arg(long)]
+        state_store_path: Option<PathBuf>,
     },
     /// Reset all telemetry data (clear baseline history)
     Reset {
@@ -664,6 +667,7 @@ fn check_and_handle_anomaly(
     let store = telemetry_store.lock().map_err(|e| {
         anyhow::anyhow!("Failed to lock telemetry store: {}", e)
     })?;
+    let poison_pill_config = poison_pill_config_from_telemetry(store.config());
     if let Err(e) = store.persist() {
         eprintln!("⚠️  Failed to persist telemetry state: {}", e);
     }
@@ -673,7 +677,6 @@ fn check_and_handle_anomaly(
         return Ok(());
     };
     let trust_store = TrustPointerStore::new(trust_store_path);
-    let poison_pill_config = PoisonPillConfig::default();
     if let Err(error) = check_and_rollback(
         state_store,
         &trust_store,
@@ -688,6 +691,42 @@ fn check_and_handle_anomaly(
     reconcile_fail_closed_policy(state_store, &trust_store, &poison_pill_config);
 
     Ok(())
+}
+
+/// Keep the operator-facing telemetry configuration connected to the durable
+/// poison-pill reaction.  The release-count, baseline-volume, absolute-delta,
+/// and early-window safeguards remain fixed conservative defaults; the legacy
+/// names map only to their compatible reaction controls.
+fn poison_pill_config_from_telemetry(
+    config: &telemetry::TelemetryConfig,
+) -> PoisonPillConfig {
+    let mut poison_pill_config = PoisonPillConfig::default();
+    poison_pill_config.enabled = config.auto_rollback_enabled;
+    poison_pill_config.cooldown = config.rollback_cooldown;
+    poison_pill_config.policy.minimum_current_evaluations = config.minimum_samples as u64;
+    poison_pill_config.policy.minimum_baseline_evaluations = (config.minimum_samples as u64)
+        .saturating_mul(poison_pill_config.policy.minimum_baseline_releases as u64);
+    if config.spike_threshold.is_finite() && config.spike_threshold > 0.0 {
+        poison_pill_config.policy.baseline_sigma_multiplier = config.spike_threshold;
+    }
+    poison_pill_config
+}
+
+/// Load the configured reaction policy for wrapper invocations, which do not
+/// otherwise need to keep the legacy telemetry window in memory.
+fn configured_poison_pill_config() -> PoisonPillConfig {
+    let telemetry_path = std::env::var_os("ICG_TELEMETRY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+    match telemetry::TelemetryStore::load_or_create(telemetry_path) {
+        Ok(store) => poison_pill_config_from_telemetry(store.config()),
+        Err(error) => {
+            eprintln!(
+                "⚠️  Using default poison-pill configuration; telemetry configuration unavailable: {error:#}"
+            );
+            PoisonPillConfig::default()
+        }
+    }
 }
 
 /// Reconcile policy state after the poison-pill reaction for either hook or
@@ -875,17 +914,18 @@ fn run_shadowed_tool(argv0: &OsStr, tool: &str, original_args: &[OsString]) -> R
         let state_store = state_store::StateStore::new(state_path);
         if let Ok(trust_path) = TrustPointerStore::default_path() {
             let trust_store = TrustPointerStore::new(&trust_path);
+            let poison_pill_config = configured_poison_pill_config();
             if let Err(error) = check_and_rollback(
                 &state_store,
                 &trust_store,
-                &PoisonPillConfig::default(),
+                &poison_pill_config,
             ) {
                 eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
             }
             reconcile_fail_closed_policy(
                 &state_store,
                 &trust_store,
-                &PoisonPillConfig::default(),
+                &poison_pill_config,
             );
         }
     }
@@ -1622,7 +1662,10 @@ fn main() -> Result<()> {
             }
         }
         Commands::Telemetry(subcommand) => match subcommand {
-            TelemetrySubcommand::Status { path } => {
+            TelemetrySubcommand::Status {
+                path,
+                state_store_path,
+            } => {
                 let telemetry_path = path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
                 let store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
 
@@ -1652,6 +1695,69 @@ fn main() -> Result<()> {
                 }
                 if let Some(end) = baseline.window_end {
                     println!("**Window End:** {}", end);
+                }
+
+                // Poison-pill rollback consumes the durable per-release state
+                // store, not the legacy invocation window above. Show both so
+                // operators can inspect the exact signal used by rollback.
+                let state_path = match state_store_path {
+                    Some(path) => path,
+                    None => state_store::StateStore::default_path()?,
+                };
+                let durable_store = state_store::StateStore::new(&state_path);
+                let durable_baseline = durable_store.rolling_deny_rate_baseline()?;
+
+                println!();
+                println!("## Durable Release Baseline");
+                println!("**State Store:** {}", durable_store.path().display());
+                println!("**Retained Releases:** {}", durable_baseline.release_count);
+                println!("**Total Evaluations:** {}", durable_baseline.evaluation_count);
+                println!("**Deny Count:** {}", durable_baseline.deny_count);
+                println!(
+                    "**Mean Deny Rate:** {:.2}%",
+                    durable_baseline.mean_deny_rate * 100.0
+                );
+                println!("**Std Dev:** {:.4}", durable_baseline.std_dev);
+                println!(
+                    "**Range:** {:.2}%–{:.2}%",
+                    durable_baseline.min_deny_rate * 100.0,
+                    durable_baseline.max_deny_rate * 100.0
+                );
+
+                if let Some(deviation) = durable_store.current_deny_rate_deviation()? {
+                    println!();
+                    println!("### Current Release Signal");
+                    println!("**Release:** {}", deviation.release_ref);
+                    println!(
+                        "**Current Deny Rate:** {:.2}%",
+                        deviation.current_deny_rate * 100.0
+                    );
+                    println!(
+                        "**Absolute Deviation:** {:.2} percentage points",
+                        deviation.absolute_deviation * 100.0
+                    );
+                    println!(
+                        "**Baseline Releases:** {}",
+                        deviation.baseline.release_count
+                    );
+                    println!(
+                        "**Current Evaluations:** {}",
+                        deviation.current_evaluation_count
+                    );
+                } else {
+                    println!("**Current Release Signal:** unavailable (no release telemetry)");
+                }
+
+                let rollback = durable_store.rollback_state()?;
+                println!();
+                println!("## Durable Rollback Status");
+                println!("**Rollback Count:** {}", rollback.rollback_count);
+                println!(
+                    "**Last Rollback:** {}",
+                    rollback.last_rollback_at.as_deref().unwrap_or("(none)")
+                );
+                if let Some(reason) = rollback.last_rollback_reason {
+                    println!("**Last Rollback Reason:** {}", reason);
                 }
 
                 println!();
