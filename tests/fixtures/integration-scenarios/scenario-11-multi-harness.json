@@ -1,0 +1,88 @@
+{
+  "scenario": 11,
+  "title": "Setting up Multi-Harness Support",
+  "harnesses": [
+    {
+      "name": "claude-code",
+      "wire_format": "camelCase",
+      "pack": "packs/git.json",
+      "payload": {
+        "toolName": "Bash",
+        "toolInput": {
+          "command": "git push --force origin main"
+        }
+      },
+      "source": "command",
+      "expected_decision": "deny",
+      "expected_pack": "git",
+      "expected_pattern": "git-force-push"
+    },
+    {
+      "name": "codex-cli",
+      "wire_format": "snake_case",
+      "pack": "packs/git.json",
+      "payload": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "git push --force origin main"
+        }
+      },
+      "source": "command",
+      "expected_decision": "deny",
+      "expected_pack": "git",
+      "expected_pattern": "git-force-push"
+    },
+    {
+      "name": "claude-code",
+      "wire_format": "camelCase",
+      "pack": "packs/storage-class.json",
+      "payload": {
+        "toolName": "Write",
+        "toolInput": {
+          "filePath": "deploy/claim.yaml",
+          "content": "storageClassName: ssd\n"
+        }
+      },
+      "source": "content",
+      "expected_decision": "deny",
+      "expected_pack": "storage-class",
+      "expected_pattern": "storage-class-ssd"
+    },
+    {
+      "name": "codex-cli",
+      "wire_format": "snake_case",
+      "pack": "packs/image-tag.json",
+      "payload": {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "tool_input": {
+          "command": "*** Begin Patch\n*** Add File: deploy/app.yaml\n+image: ronaldraygun/example:latest\n*** End Patch\n"
+        }
+      },
+      "source": "content",
+      "expected_decision": "deny",
+      "expected_pack": "image-tag",
+      "expected_pattern": "image-tag-latest"
+    }
+  ],
+  "format_differences": [
+    {
+      "harness": "claude-code",
+      "tool_name_key": "toolName",
+      "tool_input_key": "toolInput",
+      "file_path_key": "filePath"
+    },
+    {
+      "harness": "codex-cli",
+      "tool_name_key": "tool_name",
+      "tool_input_key": "tool_input",
+      "file_path_key": "file_path"
+    }
+  ],
+  "shared_response": {
+    "root_key": "hookSpecificOutput",
+    "decision_key": "permissionDecision",
+    "deny_value": "deny"
+  }
+}

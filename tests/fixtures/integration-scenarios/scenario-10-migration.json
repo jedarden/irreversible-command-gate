@@ -1,0 +1,80 @@
+{
+  "scenario": 10,
+  "title": "Migrating from org-rule-guard.py",
+  "org_guard": "org-rule-guard.py",
+  "overlap_probes": [
+    {
+      "name": "latest image tag",
+      "tool_name": "Write",
+      "tool_input": {
+        "file_path": "deploy/app.yaml",
+        "content": "image: ronaldraygun/example:latest\n"
+      },
+      "org_guard_denies": true,
+      "icg_denies": true,
+      "icg_pack": "image-tag",
+      "icg_pattern": "image-tag-latest"
+    },
+    {
+      "name": "pinned image tag",
+      "tool_name": "Write",
+      "tool_input": {
+        "file_path": "deploy/app.yaml",
+        "content": "image: ronaldraygun/example:v1.2.3\n"
+      },
+      "org_guard_denies": false,
+      "icg_denies": false,
+      "icg_pack": null,
+      "icg_pattern": null
+    }
+  ],
+  "org_guard_only_probes": [
+    {
+      "name": "GitHub Actions workflow",
+      "tool_name": "Write",
+      "tool_input": {
+        "file_path": ".github/workflows/ci.yaml",
+        "content": "name: CI\non: [push]\n"
+      },
+      "org_guard_denies": true,
+      "icg_denies": false
+    },
+    {
+      "name": "Kubernetes Job manifest",
+      "tool_name": "Write",
+      "tool_input": {
+        "file_path": "deploy/job.yaml",
+        "content": "kind: Job\nmetadata:\n  name: one-shot\n"
+      },
+      "org_guard_denies": true,
+      "icg_denies": false
+    },
+    {
+      "name": "mutating kubectl command",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "kubectl apply -f deploy.yaml"
+      },
+      "org_guard_denies": true,
+      "icg_denies": false
+    }
+  ],
+  "icg_only_probes": [
+    {
+      "name": "OpenBao destructive command",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "vault kv destroy secret/app/api-key"
+      },
+      "org_guard_denies": false,
+      "icg_denies": true,
+      "icg_pack": "openbao",
+      "icg_pattern": "openbao-destructive-verb"
+    }
+  ],
+  "migration_phases": [
+    "coexistence",
+    "migrate-overlapping-rules",
+    "retain-org-only-rules"
+  ]
+}

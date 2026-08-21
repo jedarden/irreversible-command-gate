@@ -1,0 +1,24 @@
+{
+  "scenario": 12,
+  "title": "Configuring Repository Overrides",
+  "repository_path": "/home/coding/legacy-app",
+  "repository_id": "legacy-app",
+  "pattern_id": "image-tag-bare-sha",
+  "pack": "packs/image-tag.json",
+  "release_ref": "v0.1.0-integration-test",
+  "expiration": "2099-12-31",
+  "expired_on": "2000-01-01",
+  "justification": "Legacy app consumes immutable build-produced image digests while migration work is scheduled.",
+  "approver": "security-team-lead",
+  "probe_file": "deployment.yaml",
+  "probe_content": "image: ronaldraygun/legacy-app:0123456789abcdef0123456789abcdef01234567\n",
+  "safe_content": "image: ronaldraygun/legacy-app:v1.2.3\n",
+  "workflow": [
+    "identify",
+    "request",
+    "approve",
+    "verify",
+    "monitor",
+    "expire"
+  ]
+}
