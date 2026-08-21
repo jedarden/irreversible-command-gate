@@ -6,6 +6,7 @@
 //! the rule-pack representation makes it suitable for CI artifacts as well as
 //! for an in-process test runner.
 
+use crate::engine::ContentSource;
 use crate::rule_pack::{Channel, Check, GuardedPattern, Pack};
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -321,10 +322,35 @@ pub fn record_denial_as_test_with_limit<P: AsRef<Path>>(
 /// is intended to become part of a release. Files are kept in their original
 /// order so the first observed representative wins.
 pub fn prune_recorded_cases<P: AsRef<Path>>(directory: P, limit: usize) -> Result<PruneReport> {
+    prune_recorded_cases_internal(directory.as_ref(), None, limit)
+}
+
+/// Curate pack-local traffic corpora against the current rule-pack manifests.
+///
+/// A case is retained only when its input is still denied by an enabled
+/// `guarded_pattern` in the matching current pack. This removes cases for
+/// deleted or disabled rules and cases whose command/content no longer reaches
+/// a deny rule. If a rule was renamed but still denies the observed input, the
+/// case is reassigned to the current rule ID before deduplication. This is the
+/// form release maintainers should use periodically; the pack-agnostic helper
+/// remains useful for a structural cleanup when the current manifests are not
+/// available.
+pub fn prune_recorded_cases_against_packs<P: AsRef<Path>>(
+    directory: P,
+    packs: &[Pack],
+    limit: usize,
+) -> Result<PruneReport> {
+    prune_recorded_cases_internal(directory.as_ref(), Some(packs), limit)
+}
+
+fn prune_recorded_cases_internal(
+    directory: &Path,
+    packs: Option<&[Pack]>,
+    limit: usize,
+) -> Result<PruneReport> {
     if limit == 0 {
         bail!("pruned regression case limit must be greater than zero");
     }
-    let directory = directory.as_ref();
     let paths = recorded_case_files(directory)?;
     let mut report = PruneReport::default();
 
@@ -332,7 +358,10 @@ pub fn prune_recorded_cases<P: AsRef<Path>>(directory: P, limit: usize) -> Resul
         let original = read_recorded_cases(&path)?;
         let original_count = original.len();
         let mut retained = Vec::with_capacity(original.len().min(limit));
-        for case in original {
+        for case in original.iter().cloned() {
+            let Some(case) = curate_case(case, packs)? else {
+                continue;
+            };
             if retained.iter().any(|previous| previous == &case) {
                 continue;
             }
@@ -342,7 +371,8 @@ pub fn prune_recorded_cases<P: AsRef<Path>>(directory: P, limit: usize) -> Resul
         }
 
         let removed = original_count.saturating_sub(retained.len());
-        if removed == 0 {
+        let changed = removed > 0 || retained != original;
+        if !changed {
             continue;
         }
 
@@ -367,6 +397,213 @@ pub fn prune_recorded_cases<P: AsRef<Path>>(directory: P, limit: usize) -> Resul
     }
 
     Ok(report)
+}
+
+/// Return the current representation of a recorded case, or `None` when no
+/// current deny rule can reach it. With no pack set, this performs only the
+/// structural checks shared by the legacy pack-agnostic pruning command.
+fn curate_case(
+    case: RegressionTestCase,
+    packs: Option<&[Pack]>,
+) -> Result<Option<RegressionTestCase>> {
+    let Some(packs) = packs else {
+        return Ok(Some(case));
+    };
+
+    if case.expected != ExpectedVerdict::Deny {
+        return Ok(None);
+    }
+    let Some(pack) = packs.iter().find(|pack| pack.id == case.pack_id) else {
+        return Ok(None);
+    };
+    let Some(pattern) = reachable_deny_pattern(pack, &case)? else {
+        return Ok(None);
+    };
+
+    let mut curated = case;
+    curated.pattern_id = pattern.id.clone();
+    Ok(Some(curated))
+}
+
+/// Find the first current deny pattern that would reach a recorded input.
+/// Regexes are compiled here rather than treating a malformed manifest as a
+/// non-match, so a curation run cannot silently discard evidence because of a
+/// broken rule pack.
+fn reachable_deny_pattern<'a>(
+    pack: &'a Pack,
+    case: &RegressionTestCase,
+) -> Result<Option<&'a GuardedPattern>> {
+    let input = match (&case.file_path, &case.content) {
+        (Some(file_path), Some(content)) => RegressionInput::Content {
+            file_path: file_path.clone(),
+            content: content.clone(),
+        },
+        (None, None) => RegressionInput::Command(case.command.clone()),
+        _ => return Ok(None),
+    };
+
+    match input {
+        RegressionInput::Command(command) => {
+            reachable_command_pattern(pack, &command, &case.pattern_id)
+        }
+        RegressionInput::Content { file_path, content } => {
+            reachable_content_pattern(pack, &file_path, &content, &case.pattern_id)
+        }
+    }
+}
+
+fn reachable_command_pattern<'a>(
+    pack: &'a Pack,
+    command: &str,
+    recorded_pattern_id: &str,
+) -> Result<Option<&'a GuardedPattern>> {
+    if pack.tool_keywords.is_empty() {
+        if command_matches_safe_pattern(pack, command)? {
+            return Ok(None);
+        }
+        for pattern in &pack.guarded_patterns {
+            if !pattern.enabled || pattern.redirect.channel != Channel::Deny {
+                continue;
+            }
+            match &pattern.check {
+                Check::CommandRegex { regex } => {
+                    if Regex::new(regex)
+                        .with_context(|| {
+                            format!(
+                                "invalid regex for guarded pattern '{}': {regex}",
+                                pattern.id
+                            )
+                        })?
+                        .is_match(command)
+                    {
+                        return Ok(Some(pattern));
+                    }
+                }
+                Check::Predicate { .. } if pattern.id == recorded_pattern_id => {
+                    // Predicate reachability depends on runtime state and
+                    // cannot be reconstructed safely from a corpus case. A
+                    // same-ID predicate is still a live owner for the case.
+                    return Ok(Some(pattern));
+                }
+                Check::ContentRegex { .. } | Check::Predicate { .. } => {}
+            }
+        }
+        return Ok(None);
+    }
+
+    for segment in command_segments(command) {
+        let executable = segment.split_whitespace().next().unwrap_or_default();
+        if !pack
+            .tool_keywords
+            .iter()
+            .any(|keyword| keyword == executable)
+        {
+            continue;
+        }
+
+        if command_matches_safe_pattern(pack, &segment)? {
+            continue;
+        }
+
+        for pattern in &pack.guarded_patterns {
+            if !pattern.enabled || pattern.redirect.channel != Channel::Deny {
+                continue;
+            }
+            match &pattern.check {
+                Check::CommandRegex { regex } => {
+                    if Regex::new(regex)
+                        .with_context(|| {
+                            format!(
+                                "invalid regex for guarded pattern '{}': {regex}",
+                                pattern.id
+                            )
+                        })?
+                        .is_match(&segment)
+                    {
+                        return Ok(Some(pattern));
+                    }
+                }
+                Check::Predicate { .. } if pattern.id == recorded_pattern_id => {
+                    return Ok(Some(pattern));
+                }
+                Check::ContentRegex { .. } | Check::Predicate { .. } => {}
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn command_matches_safe_pattern(pack: &Pack, command: &str) -> Result<bool> {
+    for pattern in &pack.safe_patterns {
+        let Check::CommandRegex { regex } = &pattern.check else {
+            continue;
+        };
+        if Regex::new(regex)
+            .with_context(|| format!("invalid regex for safe pattern '{}': {regex}", pattern.id))?
+            .is_match(command)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn reachable_content_pattern<'a>(
+    pack: &'a Pack,
+    file_path: &str,
+    content: &str,
+    recorded_pattern_id: &str,
+) -> Result<Option<&'a GuardedPattern>> {
+    if pack.applies_to.is_empty()
+        || !pack.applies_to.iter().any(|glob| {
+            matches!(glob.as_str(), "Write" | "Edit")
+                || ContentSource::Write {
+                    file_path: file_path.to_owned(),
+                    content: content.to_owned(),
+                }
+                .matches_glob(glob)
+        })
+    {
+        return Ok(None);
+    }
+
+    for pattern in &pack.safe_patterns {
+        let Check::ContentRegex { regex } = &pattern.check else {
+            continue;
+        };
+        if Regex::new(regex)
+            .with_context(|| format!("invalid regex for safe pattern '{}': {regex}", pattern.id))?
+            .is_match(content)
+        {
+            return Ok(None);
+        }
+    }
+
+    for pattern in &pack.guarded_patterns {
+        if !pattern.enabled || pattern.redirect.channel != Channel::Deny {
+            continue;
+        }
+        match &pattern.check {
+            Check::ContentRegex { regex } => {
+                if Regex::new(regex)
+                    .with_context(|| {
+                        format!(
+                            "invalid regex for guarded pattern '{}': {regex}",
+                            pattern.id
+                        )
+                    })?
+                    .is_match(content)
+                {
+                    return Ok(Some(pattern));
+                }
+            }
+            Check::Predicate { .. } if pattern.id == recorded_pattern_id => {
+                return Ok(Some(pattern));
+            }
+            Check::CommandRegex { .. } | Check::Predicate { .. } => {}
+        }
+    }
+    Ok(None)
 }
 
 fn recorded_cases_path(directory: &Path, pack_id: &str) -> Result<PathBuf> {

@@ -24,9 +24,9 @@ use fail_closed::{PolicyStore, ReconcileOutcome};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{
-    generate_regression_suite_from_manifest, prune_recorded_cases, record_denial_as_test,
-    write_regression_suite, ExpectedVerdict, RecordOutcome, RegressionTestCase,
-    DEFAULT_RECORDED_CASE_LIMIT,
+    generate_regression_suite_from_manifest, prune_recorded_cases,
+    prune_recorded_cases_against_packs, record_denial_as_test, write_regression_suite,
+    ExpectedVerdict, RecordOutcome, RegressionTestCase, DEFAULT_RECORDED_CASE_LIMIT,
 };
 use rollback::{check_and_rollback, PoisonPillConfig};
 use std::ffi::{OsStr, OsString};
@@ -99,6 +99,10 @@ enum Commands {
         /// Directory containing `<pack-id>.cases` files.
         #[arg(short, long, default_value = "tests/regression")]
         path: PathBuf,
+        /// Current rule-pack manifest(s) used to remove unreachable cases.
+        /// Repeat the option once for each pack represented in the corpus.
+        #[arg(long = "rule-pack", alias = "manifest", value_name = "PATH")]
+        rule_packs: Vec<PathBuf>,
         /// Maximum number of unique cases to retain in each pack corpus.
         #[arg(long, default_value_t = DEFAULT_RECORDED_CASE_LIMIT)]
         max_cases: usize,
@@ -1048,8 +1052,24 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::RegressionPrune { path, max_cases } => {
-            let report = prune_recorded_cases(&path, max_cases)?;
+        Commands::RegressionPrune {
+            path,
+            rule_packs,
+            max_cases,
+        } => {
+            let packs = rule_packs
+                .iter()
+                .map(|path| {
+                    load_rule_pack(path.clone()).with_context(|| {
+                        format!("failed to load curation rule pack {}", path.display())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let report = if packs.is_empty() {
+                prune_recorded_cases(&path, max_cases)?
+            } else {
+                prune_recorded_cases_against_packs(&path, &packs, max_cases)?
+            };
             println!(
                 "Curated {} regression corpus file(s), removed {} case(s)",
                 report.files_rewritten, report.cases_removed

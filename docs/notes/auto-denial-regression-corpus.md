@@ -12,11 +12,22 @@ remove noisy or redundant entries, and run the explicit curation pass when
 needed:
 
 ```text
-icg regression-prune --path tests/regression --max-cases 256
+icg regression-prune \
+  --path tests/regression \
+  --rule-pack packs/git.json \
+  --rule-pack packs/openbao.json \
+  --max-cases 256
 ```
 
-The pruning command removes exact duplicates and trims files to the requested
-bound, preserving first-observed order. It does not turn the traffic corpus
-into the release gate automatically: curated cases still need the normal
-review and fixed-suite generation workflow before they become release-bound
-tests.
+Pass every current manifest represented in the corpus. Pack-aware pruning
+drops cases whose pack or enabled deny `guarded_pattern` no longer exists, and
+drops inputs that no longer match a current deny pattern. If a rule was
+renamed but still denies the observed input, the case is reassigned to the
+current pattern ID. It then removes exact duplicates and trims each file to
+the requested bound, preserving first-observed order.
+
+Without `--rule-pack`, the command performs only the structural duplicate and
+bound pass; this is useful when manifests are unavailable but does not remove
+stale rule references. The traffic corpus never becomes the release gate
+automatically: curated cases still need normal review and fixed-suite
+generation before they become release-bound tests.
