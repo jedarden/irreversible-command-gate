@@ -647,6 +647,26 @@ fn option_name(token: &str) -> &str {
     token.split_once('=').map_or(token, |(name, _)| name)
 }
 
+/// Render a normalized command token for regex matching without losing the
+/// boundary between an argument containing whitespace and a following
+/// argument. Shell lexing has already removed the original quotes, so add a
+/// minimal unambiguous representation back for command-regex consumers.
+fn render_command_word(word: &str) -> String {
+    if word.chars().any(char::is_whitespace) || word.is_empty() {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    } else {
+        word.to_string()
+    }
+}
+
+fn render_command(token: &CommandToken) -> String {
+    std::iter::once(token.executable.as_str())
+        .chain(token.args.iter().map(String::as_str))
+        .map(render_command_word)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn skip_options(tokens: &[String], mut index: usize, options_with_values: &[&str]) -> usize {
     while index < tokens.len() {
         let token = tokens[index].as_str();
@@ -1370,7 +1390,7 @@ impl Engine {
         let executable = &token.executable;
 
         // Reconstruct the full command string for regex matching
-        let full_command = format!("{} {}", executable, token.args.join(" "));
+        let full_command = render_command(token);
 
         // Find packs that match this executable via tool_keywords
         let mut matching_pack_ids = Vec::new();

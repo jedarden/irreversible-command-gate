@@ -1,0 +1,62 @@
+{
+  "id": "git",
+  "tool_keywords": ["git"],
+  "applies_to": [],
+  "safe_patterns": [
+    {
+      "id": "safe-git-status",
+      "type": "command_regex",
+      "regex": "^git status"
+    },
+    {
+      "id": "safe-git-fetch",
+      "type": "command_regex",
+      "regex": "^git fetch"
+    },
+    {
+      "id": "safe-git-pull",
+      "type": "command_regex",
+      "regex": "^git pull"
+    },
+    {
+      "id": "safe-git-log",
+      "type": "command_regex",
+      "regex": "^git (log|show|diff)"
+    },
+    {
+      "id": "safe-git-branch",
+      "type": "command_regex",
+      "regex": "^git branch"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "git-force-push",
+      "type": "command_regex",
+      "regex": "git push.*--force",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Force-push rewrites git history and can lose commits",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Force-push rewrites git history and can lose commits. Use git push --force-with-lease instead.",
+        "rewrite_template": "git push --force-with-lease"
+      }
+    },
+    {
+      "id": "git-commit-without-pathspec",
+      "type": "command_regex",
+      "regex": "^(?:git\\s+commit(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^\\s'\"]+))*\\s+(?:-a[a-zA-Z]*|--all(?:=[^\\s]*)?)(?:\\s|$)|git\\s+commit(?:\\s+(?:--?[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\\s]*)?|-[A-Za-z0-9]+))*\\s+(?:-m(?:=|\\s+)|--message(?:=|\\s+))(?:'[^']*'|\"[^\"]*\"|[^\\s'\"]+)(?:\\s+(?:--?[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\\s]*)?|-[A-Za-z0-9]+))*$)",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "A git commit without an explicit pathspec commits the entire staged index, which may include unrelated pre-staged changes",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "git commit without a pathspec can sweep unrelated staged changes into the commit. Pass the same file paths to git commit that you passed to git add -- git commit <paths> -m \"...\".",
+        "rewrite_template": null
+      }
+    }
+  ]
+}
