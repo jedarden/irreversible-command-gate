@@ -127,11 +127,16 @@ fn test_wrapper_deny_flow() {
 
     // 4. Only exec real binary if not denied
     // The exec call should be after the match, not inside Denied case
-    let deny_section = main_rs.split("CheckResult::Denied").nth(1).unwrap_or("");
-    let exec_after_deny = main_rs.split("CheckResult::Denied").nth(2).unwrap_or("");
+    let wrapper_section = main_rs.split("fn run_shadowed_tool").nth(1).unwrap_or("");
+    let deny_position = wrapper_section
+        .find("CheckResult::Denied")
+        .expect("wrapper should contain a denied result branch");
+    let exec_position = wrapper_section
+        .find(".exec()")
+        .expect("wrapper should exec the real binary");
 
     assert!(
-        exec_after_deny.contains("real_binary_in_path") || exec_after_deny.contains(".exec()"),
+        exec_position > deny_position,
         "exec should come after the match block (after all result handling)"
     );
 }
