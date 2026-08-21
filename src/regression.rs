@@ -11,10 +11,18 @@ use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const SUITE_VERSION: u32 = 1;
+
+/// Default upper bound for the opt-in, traffic-derived corpus in one pack.
+///
+/// The recorder is intentionally bounded in addition to deduplicating exact
+/// repeats. A curation pass can raise or lower this limit deliberately; the
+/// hook must not grow a permanent unbounded CI dependency by accident.
+pub const DEFAULT_RECORDED_CASE_LIMIT: usize = 256;
 
 /// The verdict expected from every fixed regression case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +58,26 @@ pub struct RegressionSuite {
     pub version: u32,
     /// One case for every enabled guarded pattern in the source pack.
     pub cases: Vec<RegressionTestCase>,
+}
+
+/// Result of attempting to add one traffic-derived regression case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordOutcome {
+    /// A new JSONL case was appended.
+    Added,
+    /// An identical case was already present in the pack corpus.
+    Duplicate,
+    /// The bounded corpus is full and needs explicit curation.
+    CapacityReached,
+}
+
+/// Summary returned by the explicit curation/pruning pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneReport {
+    /// Number of `.cases` files inspected and rewritten.
+    pub files_rewritten: usize,
+    /// Number of duplicate or over-limit cases removed.
+    pub cases_removed: usize,
 }
 
 impl RegressionSuite {
@@ -219,6 +247,201 @@ pub fn write_regression_suite<P: AsRef<Path>>(suite: &RegressionSuite, path: P) 
     fs::write(path, suite.to_json()?)
         .with_context(|| format!("failed to write regression suite to {}", path.display()))?;
     Ok(())
+}
+
+/// Append a deny observed by the opt-in hook recorder to a pack-local corpus.
+///
+/// The corpus is newline-delimited JSON so each deny can be appended without
+/// rewriting the existing file. Exact duplicate cases are ignored, and a
+/// bounded per-file limit prevents unattended traffic from creating an
+/// unbounded CI artifact. The resulting file is intentionally separate from
+/// the generated one-case-per-rule `RegressionSuite`; it is evidence for a
+/// later curation pass, not an automatic release gate by itself.
+pub fn record_denial_as_test<P: AsRef<Path>>(
+    directory: P,
+    case: RegressionTestCase,
+) -> Result<RecordOutcome> {
+    record_denial_as_test_with_limit(directory, case, DEFAULT_RECORDED_CASE_LIMIT)
+}
+
+/// Variant of [`record_denial_as_test`] with an explicit bound for tests and
+/// maintenance tooling.
+pub fn record_denial_as_test_with_limit<P: AsRef<Path>>(
+    directory: P,
+    case: RegressionTestCase,
+    limit: usize,
+) -> Result<RecordOutcome> {
+    if limit == 0 {
+        bail!("recorded regression case limit must be greater than zero");
+    }
+    let path = recorded_cases_path(directory.as_ref(), &case.pack_id)?;
+    let existing = read_recorded_cases(&path)?;
+
+    if existing.iter().any(|previous| previous == &case) {
+        return Ok(RecordOutcome::Duplicate);
+    }
+    if existing.len() >= limit {
+        return Ok(RecordOutcome::CapacityReached);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("failed to create regression directory {}", parent.display())
+        })?;
+    }
+
+    let line =
+        serde_json::to_string(&case).context("failed to serialize recorded regression case")?;
+    let needs_separator = fs::metadata(&path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+        && !fs::read(&path)
+            .with_context(|| format!("failed to read regression corpus {}", path.display()))?
+            .ends_with(b"\n");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open regression corpus {}", path.display()))?;
+    if needs_separator {
+        file.write_all(b"\n")
+            .with_context(|| format!("failed to append to regression corpus {}", path.display()))?;
+    }
+    file.write_all(line.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .with_context(|| format!("failed to append to regression corpus {}", path.display()))?;
+
+    Ok(RecordOutcome::Added)
+}
+
+/// Remove exact duplicates and trim pack-local traffic corpora to `limit`.
+///
+/// This operation is deliberately explicit: operators or pack authors should
+/// review the cases before running it, then commit the curated result when it
+/// is intended to become part of a release. Files are kept in their original
+/// order so the first observed representative wins.
+pub fn prune_recorded_cases<P: AsRef<Path>>(directory: P, limit: usize) -> Result<PruneReport> {
+    if limit == 0 {
+        bail!("pruned regression case limit must be greater than zero");
+    }
+    let directory = directory.as_ref();
+    let paths = recorded_case_files(directory)?;
+    let mut report = PruneReport::default();
+
+    for path in paths {
+        let original = read_recorded_cases(&path)?;
+        let original_count = original.len();
+        let mut retained = Vec::with_capacity(original.len().min(limit));
+        for case in original {
+            if retained.iter().any(|previous| previous == &case) {
+                continue;
+            }
+            if retained.len() < limit {
+                retained.push(case);
+            }
+        }
+
+        let removed = original_count.saturating_sub(retained.len());
+        if removed == 0 {
+            continue;
+        }
+
+        let contents = retained
+            .iter()
+            .map(|case| serde_json::to_string(case))
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n");
+        let contents = if contents.is_empty() {
+            String::new()
+        } else {
+            format!("{contents}\n")
+        };
+        fs::write(&path, contents).with_context(|| {
+            format!(
+                "failed to write curated regression corpus {}",
+                path.display()
+            )
+        })?;
+        report.files_rewritten += 1;
+        report.cases_removed += removed;
+    }
+
+    Ok(report)
+}
+
+fn recorded_cases_path(directory: &Path, pack_id: &str) -> Result<PathBuf> {
+    if pack_id.is_empty()
+        || pack_id == "."
+        || pack_id == ".."
+        || !pack_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        bail!("invalid pack id for regression corpus path: '{pack_id}'");
+    }
+
+    // Accept an explicit .cases file as a convenience for one-pack tooling;
+    // the normal hook form supplies the corpus directory.
+    if directory
+        .extension()
+        .and_then(|extension| extension.to_str())
+        == Some("cases")
+    {
+        return Ok(directory.to_path_buf());
+    }
+    Ok(directory.join(format!("{pack_id}.cases")))
+}
+
+fn recorded_case_files(directory: &Path) -> Result<Vec<PathBuf>> {
+    if directory
+        .extension()
+        .and_then(|extension| extension.to_str())
+        == Some("cases")
+    {
+        return if directory.exists() {
+            Ok(vec![directory.to_path_buf()])
+        } else {
+            Ok(Vec::new())
+        };
+    }
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = fs::read_dir(directory)
+        .with_context(|| {
+            format!(
+                "failed to read regression directory {}",
+                directory.display()
+            )
+        })?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.retain(|path| path.extension().and_then(|extension| extension.to_str()) == Some("cases"));
+    paths.sort();
+    Ok(paths)
+}
+
+fn read_recorded_cases(path: &Path) -> Result<Vec<RegressionTestCase>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read regression corpus {}", path.display()))?;
+    contents
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| {
+            serde_json::from_str(line).with_context(|| {
+                format!(
+                    "failed to parse regression corpus {} line {}",
+                    path.display(),
+                    index + 1
+                )
+            })
+        })
+        .collect()
 }
 
 fn generate_regression_suite_with_examples(

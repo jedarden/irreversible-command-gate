@@ -23,7 +23,11 @@ use engine::{Engine, InputSource};
 use fail_closed::{PolicyStore, ReconcileOutcome};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
-use regression::{generate_regression_suite_from_manifest, write_regression_suite};
+use regression::{
+    generate_regression_suite_from_manifest, prune_recorded_cases, record_denial_as_test,
+    write_regression_suite, ExpectedVerdict, RecordOutcome, RegressionTestCase,
+    DEFAULT_RECORDED_CASE_LIMIT,
+};
 use rollback::{check_and_rollback, PoisonPillConfig};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -89,6 +93,15 @@ enum Commands {
         /// Exact release reference trusted by Layer 4
         #[arg(long)]
         trusted_ref: Option<String>,
+    },
+    /// Curate and bound traffic-derived deny regression cases.
+    RegressionPrune {
+        /// Directory containing `<pack-id>.cases` files.
+        #[arg(short, long, default_value = "tests/regression")]
+        path: PathBuf,
+        /// Maximum number of unique cases to retain in each pack corpus.
+        #[arg(long, default_value_t = DEFAULT_RECORDED_CASE_LIMIT)]
+        max_cases: usize,
     },
     /// Trust pointer management (Layer 4 minimal form)
     #[command(subcommand)]
@@ -167,6 +180,15 @@ enum Commands {
         /// Exact trusted release reference for the override
         #[arg(long)]
         trusted_ref: Option<String>,
+        /// Record denied hook inputs as JSONL cases under this directory.
+        /// Supplying the flag without a value uses tests/regression.
+        #[arg(
+            long,
+            value_name = "DIR",
+            num_args = 0..=1,
+            default_missing_value = "tests/regression",
+        )]
+        record_as_test: Option<PathBuf>,
     },
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
     #[command(hide = true)]
@@ -480,6 +502,127 @@ fn render_hook_response(
             serde_json::json!({"hookSpecificOutput": hook_output})
         }
     }
+}
+
+/// Best-effort persistence for the explicitly enabled traffic recorder.
+/// Recording is auxiliary evidence and must never change the deny response or
+/// make a hook fail open when its filesystem is unavailable.
+fn record_hook_denial(
+    directory: Option<&Path>,
+    source: &InputSource,
+    result: &engine::CheckResult,
+) {
+    let Some(directory) = directory else {
+        return;
+    };
+    let engine::CheckResult::Denied {
+        pack_id,
+        pattern_id,
+        ..
+    } = result
+    else {
+        return;
+    };
+
+    let case = match source {
+        InputSource::Command(engine::CommandSource::Hook(command)) => RegressionTestCase {
+            pack_id: pack_id.clone(),
+            pattern_id: pattern_id.clone(),
+            command: command.clone(),
+            file_path: None,
+            content: None,
+            expected: ExpectedVerdict::Deny,
+        },
+        InputSource::Command(engine::CommandSource::Argv(arguments)) => RegressionTestCase {
+            pack_id: pack_id.clone(),
+            pattern_id: pattern_id.clone(),
+            command: arguments.join(" "),
+            file_path: None,
+            content: None,
+            expected: ExpectedVerdict::Deny,
+        },
+        InputSource::Content(content) => RegressionTestCase {
+            pack_id: pack_id.clone(),
+            pattern_id: pattern_id.clone(),
+            command: String::new(),
+            file_path: Some(content.file_path().to_string()),
+            content: Some(content.new_content().to_string()),
+            expected: ExpectedVerdict::Deny,
+        },
+        // A batch is resolved by the caller with the source that produced the
+        // aggregate deny. This fallback still records a fail-closed denial if
+        // no individual source can be re-evaluated.
+        InputSource::ContentBatch(contents) => {
+            let Some(content) = contents.first() else {
+                return;
+            };
+            RegressionTestCase {
+                pack_id: pack_id.clone(),
+                pattern_id: pattern_id.clone(),
+                command: String::new(),
+                file_path: Some(content.file_path().to_string()),
+                content: Some(content.new_content().to_string()),
+                expected: ExpectedVerdict::Deny,
+            }
+        }
+    };
+
+    match record_denial_as_test(directory, case) {
+        Ok(RecordOutcome::Added) | Ok(RecordOutcome::Duplicate) => {}
+        Ok(RecordOutcome::CapacityReached) => eprintln!(
+            "icg: regression corpus for pack '{pack_id}' is full; run `icg regression-prune --path {}`",
+            directory.display()
+        ),
+        Err(error) => eprintln!(
+            "icg: could not record deny as a regression case in {}: {error:#}",
+            directory.display()
+        ),
+    }
+}
+
+/// Locate the content source responsible for a multi-file patch's aggregate
+/// denial before recording it. The engine intentionally returns only the most
+/// severe result, so this small re-evaluation preserves the actual file and
+/// content rather than recording an unrelated file from the same patch.
+fn record_hook_batch_denial(
+    directory: Option<&Path>,
+    engine: &Engine,
+    contents: &[engine::ContentSource],
+    result: &engine::CheckResult,
+) {
+    let engine::CheckResult::Denied {
+        pack_id,
+        pattern_id,
+        ..
+    } = result
+    else {
+        return;
+    };
+
+    for content in contents {
+        let candidate = engine.evaluate_content(content);
+        if matches!(
+            candidate,
+            engine::CheckResult::Denied {
+                pack_id: ref candidate_pack,
+                pattern_id: ref candidate_pattern,
+                ..
+            } if candidate_pack == pack_id && candidate_pattern == pattern_id
+        ) {
+            record_hook_denial(
+                directory,
+                &InputSource::Content(content.clone()),
+                &candidate,
+            );
+            return;
+        }
+    }
+
+    record_hook_denial(
+        directory,
+        &InputSource::ContentBatch(contents.to_vec()),
+        result,
+    );
 }
 
 fn updated_input_key(
@@ -905,11 +1048,20 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::RegressionPrune { path, max_cases } => {
+            let report = prune_recorded_cases(&path, max_cases)?;
+            println!(
+                "Curated {} regression corpus file(s), removed {} case(s)",
+                report.files_rewritten, report.cases_removed
+            );
+            Ok(())
+        }
         Commands::Hook {
             rule_pack,
             override_file,
             repository,
             trusted_ref,
+            record_as_test,
         } => {
             // Hook mode: read PreToolUse JSON from stdin, route to appropriate engine, and return decision
             let mut engine = Engine::new();
@@ -931,9 +1083,11 @@ fn main() -> Result<()> {
             // If no pack exists, we'll fail-open (allow everything)
 
             // Initialize telemetry store for rolling baseline monitoring
-            let telemetry_path = PathBuf::from("/var/cache/icg/telemetry.json");
+            let telemetry_path = std::env::var_os("ICG_TELEMETRY_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
             let telemetry_store = std::sync::Arc::new(std::sync::Mutex::new(
-                telemetry::TelemetryStore::load_or_create(telemetry_path)?
+                telemetry::TelemetryStore::load_or_create(telemetry_path)?,
             ));
 
             // Generate session ID for this evaluation
@@ -987,6 +1141,11 @@ fn main() -> Result<()> {
                 Some(InputSource::Command(source)) => {
                     // Command-mode: Bash command
                     let result = engine.evaluate_command(&source);
+                    record_hook_denial(
+                        record_as_test.as_deref(),
+                        &InputSource::Command(source.clone()),
+                        &result,
+                    );
                     println!(
                         "{}",
                         render_hook_response(result, original_input.as_ref(), input_key, None)
@@ -1005,6 +1164,11 @@ fn main() -> Result<()> {
                     // Content-mode: Write/Edit operation
                     // Evaluate against content-mode packs (storage-class, image-tag, beads)
                     let result = engine.evaluate_content(&content);
+                    record_hook_denial(
+                        record_as_test.as_deref(),
+                        &InputSource::Content(content.clone()),
+                        &result,
+                    );
                     println!(
                         "{}",
                         render_hook_response(
@@ -1026,6 +1190,12 @@ fn main() -> Result<()> {
                 }
                 Some(InputSource::ContentBatch(contents)) => {
                     let result = engine.evaluate_content_batch(&contents);
+                    record_hook_batch_denial(
+                        record_as_test.as_deref(),
+                        &engine,
+                        &contents,
+                        &result,
+                    );
                     let files = contents
                         .iter()
                         .map(|content| content.file_path())
