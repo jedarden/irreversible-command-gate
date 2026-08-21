@@ -9,6 +9,7 @@ deny, rewrite, warning, or allow decision before the call executes.
 - New installation or deployment: [Installation and deployment guide](deployment-guide.md)
 - Fail-closed activation and operations: [Fail-Closed mode guide](fail-closed-mode.md)
 - Installation and hook failures: [Troubleshooting](troubleshooting.md)
+- Observing would-be denials safely: [Practice mode](practice-mode.md)
 - Moving from the existing Python hook: [Migration guide](migration-from-org-rule-guard.md)
 - Interpreting a denial: [Deny-message guide](deny-messages.md)
 

@@ -29,6 +29,11 @@ The accepted fields inside `hookSpecificOutput` are:
 | `updatedInput` | JSON object | Complete replacement for the pending tool's input arguments. It is not a patch and must not be nested under another `input` field. |
 | `additionalContext` | string | Non-blocking context for the model. It does not change the tool arguments. |
 
+Codex also accepts the top-level `systemMessage` common output field for a
+user-visible warning. Practice mode uses that field for its per-check active
+banner and would-be-denial report; it deliberately does not put that report
+in `additionalContext`.
+
 The common response constraints are:
 
 1. `hookEventName` is always `PreToolUse`.

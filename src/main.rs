@@ -194,6 +194,9 @@ enum Commands {
         /// Optional rule-pack file (defaults to /etc/icg/rule-pack.json)
         #[arg(long)]
         rule_pack: Option<PathBuf>,
+        /// Practice mode: report denials without blocking the tool call.
+        #[arg(long)]
+        practice: bool,
         /// Release-bound per-repository override; requires repository and trusted-ref
         #[arg(long)]
         override_file: Option<PathBuf>,
@@ -216,6 +219,9 @@ enum Commands {
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
     #[command(hide = true)]
     Wrapper {
+        /// Practice mode: report denials without blocking the real binary.
+        #[arg(long)]
+        practice: bool,
         /// Command arguments (shadowed executable invocation)
         #[arg(required = true, trailing_var_arg = true)]
         args: Vec<String>,
@@ -459,6 +465,54 @@ fn load_rule_pack(path: PathBuf) -> Result<crate::rule_pack::Pack> {
     crate::rule_pack::load_pack(&path)
 }
 
+const PRACTICE_MODE_ENV: &str = "ICG_PRACTICE";
+const PRACTICE_MODE_BANNER: &str =
+    "ICG PRACTICE MODE ACTIVE — ENFORCEMENT IS DISABLED for this check.";
+
+fn practice_mode_enabled(cli_flag: bool) -> bool {
+    cli_flag
+        || std::env::var(PRACTICE_MODE_ENV)
+            .map(|value| {
+                value == "1"
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false)
+}
+
+fn practice_denial_report(result: &engine::CheckResult, context: Option<&str>) -> Option<String> {
+    let engine::CheckResult::Denied {
+        reason,
+        pack_id,
+        pattern_id,
+    } = result
+    else {
+        return None;
+    };
+
+    let suffix = context
+        .map(|value| format!(", file={value}"))
+        .unwrap_or_default();
+    Some(format!(
+        "WOULD DENY: {reason} [pack={pack_id}, pattern={pattern_id}{suffix}]"
+    ))
+}
+
+fn practice_response_result(
+    result: engine::CheckResult,
+    practice_mode: bool,
+) -> engine::CheckResult {
+    if !practice_mode {
+        return result;
+    }
+
+    match result {
+        engine::CheckResult::Denied { .. } => engine::CheckResult::Allowed,
+        other => other,
+    }
+}
+
 /// Render the native Codex/Claude PreToolUse response envelope. Both hook
 /// protocols consume the hook-specific decision under `hookSpecificOutput`;
 /// Codex additionally requires `hookEventName` to identify the event.
@@ -467,6 +521,7 @@ fn render_hook_response(
     original_input: Option<&serde_json::Value>,
     updated_input_key: &str,
     context: Option<&str>,
+    practice_mode: bool,
 ) -> serde_json::Value {
     let details = |reason: &str, pack_id: &str, pattern_id: &str| {
         let suffix = context
@@ -475,13 +530,20 @@ fn render_hook_response(
         format!("{reason} [pack={pack_id}, pattern={pattern_id}{suffix}]")
     };
 
+    let practice_message = practice_mode.then(|| {
+        practice_denial_report(&result, context)
+            .map(|report| format!("{PRACTICE_MODE_BANNER} {report}"))
+            .unwrap_or_else(|| PRACTICE_MODE_BANNER.to_string())
+    });
+    let result = practice_response_result(result, practice_mode);
+
     let mut hook_output = serde_json::Map::new();
     hook_output.insert(
         "hookEventName".to_string(),
         serde_json::Value::String("PreToolUse".to_string()),
     );
 
-    match result {
+    let mut response = match result {
         engine::CheckResult::Allowed => {
             hook_output.insert(
                 "permissionDecision".to_string(),
@@ -547,7 +609,13 @@ fn render_hook_response(
             );
             serde_json::json!({"hookSpecificOutput": hook_output})
         }
+    };
+
+    if let Some(message) = practice_message {
+        response["systemMessage"] = serde_json::Value::String(message);
     }
+
+    response
 }
 
 /// Best-effort persistence for the explicitly enabled traffic recorder.
@@ -1124,9 +1192,14 @@ fn run_shadowed_tool(
     argv0: &OsStr,
     tool: &str,
     original_args: &[OsString],
+    practice_mode: bool,
     mut lifecycle: Option<&mut health::GuardLifecycle>,
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
+
+    if practice_mode {
+        eprintln!("{PRACTICE_MODE_BANNER}");
+    }
 
     let engine = load_wrapper_engine()?;
     let halt_for_recovered_crash = recovered_guard_crash_requires_halt(
@@ -1148,6 +1221,14 @@ fn run_shadowed_tool(
     };
     record_engine_guard_failure(lifecycle.as_deref_mut(), &engine);
     record_operational_denial(&InputSource::Command(source.clone()), &result);
+
+    if practice_mode {
+        if let Some(report) = practice_denial_report(&result, None) {
+            eprintln!("icg practice: {report}");
+        }
+    }
+
+    let result = practice_response_result(result, practice_mode);
 
     if let Ok(state_path) = state_store::StateStore::default_path() {
         let state_store = state_store::StateStore::new(state_path);
@@ -1295,6 +1376,7 @@ fn run_shadowed_tool(
     _argv0: &OsStr,
     _tool: &str,
     _original_args: &[OsString],
+    _practice_mode: bool,
     _lifecycle: Option<&mut health::GuardLifecycle>,
 ) -> Result<()> {
     anyhow::bail!("PATH-wrapper mode is only supported on Unix platforms")
@@ -1313,7 +1395,13 @@ fn main() -> Result<()> {
                 None
             }
         };
-        let result = run_shadowed_tool(&argv0, &tool, &original_args, lifecycle.as_mut());
+        let result = run_shadowed_tool(
+            &argv0,
+            &tool,
+            &original_args,
+            practice_mode_enabled(false),
+            lifecycle.as_mut(),
+        );
         if let Some(run) = lifecycle.as_mut() {
             run.finish_result(&result);
         }
@@ -1467,12 +1555,14 @@ fn main() -> Result<()> {
         }
         Commands::Hook {
             rule_pack,
+            practice,
             override_file,
             repository,
             trusted_ref,
             record_as_test,
         } => {
             // Hook mode: read PreToolUse JSON from stdin, route to appropriate engine, and return decision
+            let practice_mode = practice_mode_enabled(practice);
             let mut engine = Engine::new();
 
             // Load rule packs from the default path
@@ -1568,7 +1658,13 @@ fn main() -> Result<()> {
                     record_operational_denial(&InputSource::Command(source.clone()), &result);
                     println!(
                         "{}",
-                        render_hook_response(result, original_input.as_ref(), input_key, None)
+                        render_hook_response(
+                            result,
+                            original_input.as_ref(),
+                            input_key,
+                            None,
+                            practice_mode,
+                        )
                     );
 
                     // Check for anomalies and trigger rollback if needed
@@ -1602,6 +1698,7 @@ fn main() -> Result<()> {
                             original_input.as_ref(),
                             input_key,
                             Some(content.file_path()),
+                            practice_mode,
                         )
                     );
 
@@ -1640,6 +1737,7 @@ fn main() -> Result<()> {
                             original_input.as_ref(),
                             input_key,
                             Some(&files),
+                            practice_mode,
                         )
                     );
 
@@ -1667,19 +1765,26 @@ fn main() -> Result<()> {
                             original_input.as_ref(),
                             input_key,
                             None,
+                            practice_mode,
                         )
                     );
                     Ok(())
                 }
             }
         }
-        Commands::Wrapper { args } => {
+        Commands::Wrapper { practice, args } => {
             let (tool, args) = args
                 .split_first()
                 .context("wrapper mode requires the shadowed tool name")?;
             let argv0 = OsString::from(tool);
             let args = args.iter().map(OsString::from).collect::<Vec<_>>();
-            run_shadowed_tool(&argv0, tool, &args, lifecycle.as_mut())
+            run_shadowed_tool(
+                &argv0,
+                tool,
+                &args,
+                practice_mode_enabled(practice),
+                lifecycle.as_mut(),
+            )
         }
         Commands::Install {
             dir,
