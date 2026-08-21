@@ -6,6 +6,7 @@ pub mod alerting;
 pub mod coverage;
 pub mod denial_log;
 pub mod engine;
+pub mod fail_closed;
 pub mod health;
 pub mod health_server;
 pub mod metrics;

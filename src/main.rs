@@ -1,6 +1,7 @@
 mod coverage;
 mod documented_commands;
 mod engine;
+mod fail_closed;
 mod health;
 mod new_pack;
 mod overrides;
@@ -19,6 +20,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use coverage::*;
 use engine::{Engine, InputSource};
+use fail_closed::{PolicyStore, ReconcileOutcome};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{generate_regression_suite_from_manifest, write_regression_suite};
@@ -143,6 +145,9 @@ enum Commands {
     /// Telemetry management (rolling baseline monitoring and auto-rollback)
     #[command(subcommand)]
     Telemetry(TelemetrySubcommand),
+    /// Graduated fail-open to fail-closed guard-availability policy
+    #[command(subcommand)]
+    Policy(PolicySubcommand),
     /// Health monitoring and crash tracking
     Health {
         #[command(flatten)]
@@ -271,6 +276,46 @@ enum TelemetrySubcommand {
         /// Enable or disable automatic rollback
         #[arg(long)]
         auto_rollback: Option<bool>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicySubcommand {
+    /// Show the durable graduation policy state
+    Status {
+        /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+    /// Reconcile per-release telemetry and poison-pill rollback evidence
+    Reconcile {
+        /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        /// Path to the per-release runtime state store
+        #[arg(long)]
+        state_store_path: Option<PathBuf>,
+        /// Path to the administrator-controlled trust pointer
+        #[arg(long)]
+        trust_pointer_path: Option<PathBuf>,
+    },
+    /// Change the clean-release threshold and restart qualification
+    Configure {
+        /// New positive number of consecutive clean releases
+        #[arg(long)]
+        threshold: u32,
+        /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
+    /// Explicitly demote Fail-Closed to Fail-Open during an incident
+    Demote {
+        /// Incident reason recorded in the policy state
+        #[arg(long)]
+        reason: String,
+        /// Path to policy state (defaults to /etc/icg/fail-closed-policy.json)
+        #[arg(short, long)]
+        path: Option<PathBuf>,
     },
 }
 
@@ -481,10 +526,11 @@ fn check_and_handle_anomaly(
         return Ok(());
     };
     let trust_store = TrustPointerStore::new(trust_store_path);
+    let poison_pill_config = PoisonPillConfig::default();
     if let Err(error) = check_and_rollback(
         state_store,
         &trust_store,
-        &PoisonPillConfig::default(),
+        &poison_pill_config,
     ) {
         // Rollback failure is deliberately loud but does not rewrite the
         // already-emitted allow/deny hook response. Operators must use the
@@ -492,7 +538,42 @@ fn check_and_handle_anomaly(
         eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
     }
 
+    reconcile_fail_closed_policy(state_store, &trust_store, &poison_pill_config);
+
     Ok(())
+}
+
+/// Reconcile policy state after the poison-pill reaction for either hook or
+/// wrapper front-ends. Policy-store failures are operational alerts, not a
+/// reason to rewrite an already-emitted operation decision.
+fn reconcile_fail_closed_policy(
+    state_store: &state_store::StateStore,
+    trust_store: &TrustPointerStore,
+    poison_pill_config: &PoisonPillConfig,
+) {
+    let policy_store = PolicyStore::from_env();
+    match policy_store.reconcile_release_health(state_store, trust_store, poison_pill_config) {
+        Ok(ReconcileOutcome::Clean(transition)) => {
+            eprintln!("ℹ️  Fail-closed policy reconciliation: {transition:?}");
+        }
+        Ok(ReconcileOutcome::PoisonPill(transition)) => {
+            eprintln!("⚠️  Fail-closed graduation reset by poison-pill evidence: {transition:?}");
+        }
+        Ok(ReconcileOutcome::Invalidated(transition)) => {
+            eprintln!("⚠️  Fail-closed graduation evidence invalidated: {transition:?}");
+        }
+        Ok(ReconcileOutcome::Pending { reason }) => {
+            eprintln!("ℹ️  Fail-closed graduation pending: {reason}");
+        }
+        Ok(ReconcileOutcome::NoChange) => {}
+        Err(error) => {
+            eprintln!(
+                "⚠️  Failed to reconcile fail-closed graduation policy {}: {error:#}",
+                policy_store.path().display()
+            );
+        }
+    }
+
 }
 
 fn record_trust_pointer_observation(
@@ -646,13 +727,19 @@ fn run_shadowed_tool(argv0: &OsStr, tool: &str, original_args: &[OsString]) -> R
     if let Ok(state_path) = state_store::StateStore::default_path() {
         let state_store = state_store::StateStore::new(state_path);
         if let Ok(trust_path) = TrustPointerStore::default_path() {
+            let trust_store = TrustPointerStore::new(&trust_path);
             if let Err(error) = check_and_rollback(
                 &state_store,
-                &TrustPointerStore::new(trust_path),
+                &trust_store,
                 &PoisonPillConfig::default(),
             ) {
                 eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
             }
+            reconcile_fail_closed_policy(
+                &state_store,
+                &trust_store,
+                &PoisonPillConfig::default(),
+            );
         }
     }
 
@@ -1465,6 +1552,77 @@ fn main() -> Result<()> {
 
                 println!("✅ Telemetry configuration updated successfully.");
 
+                Ok(())
+            }
+        },
+        Commands::Policy(subcommand) => match subcommand {
+            PolicySubcommand::Status { path } => {
+                let store = path
+                    .map(PolicyStore::new)
+                    .unwrap_or_else(PolicyStore::from_env);
+                let state = store.load()?;
+                println!("# Fail-Closed Policy\n");
+                println!("**Path:** {}", store.path().display());
+                println!("**Generation:** {}", state.generation);
+                println!("**Mode:** {:?}", state.mode);
+                println!(
+                    "**Clean Release Streak:** {}/{}",
+                    state.clean_release_streak, state.graduation_threshold
+                );
+                println!("**Counted Releases:** {}", state.counted_releases.len());
+                println!(
+                    "**Last Poison-Pill Event:** {}",
+                    state.last_poison_pill_event.as_deref().unwrap_or("(none)")
+                );
+                if let Some(reason) = state.last_transition_reason {
+                    println!("**Last Transition:** {}", reason);
+                }
+                Ok(())
+            }
+            PolicySubcommand::Reconcile {
+                path,
+                state_store_path,
+                trust_pointer_path,
+            } => {
+                let policy_store = path
+                    .map(PolicyStore::new)
+                    .unwrap_or_else(PolicyStore::from_env);
+                let state_path = match state_store_path {
+                    Some(path) => path,
+                    None => state_store::StateStore::default_path()?,
+                };
+                let trust_path = match trust_pointer_path {
+                    Some(path) => path,
+                    None => TrustPointerStore::default_path()?,
+                };
+                let runtime_store = state_store::StateStore::new(state_path);
+                let trust_store = TrustPointerStore::new(trust_path);
+                let outcome = policy_store.reconcile_release_health(
+                    &runtime_store,
+                    &trust_store,
+                    &PoisonPillConfig::default(),
+                )?;
+                println!("Fail-closed policy reconciliation: {outcome:?}");
+                Ok(())
+            }
+            PolicySubcommand::Configure { threshold, path } => {
+                let store = path
+                    .map(PolicyStore::new)
+                    .unwrap_or_else(PolicyStore::from_env);
+                store.set_threshold(threshold)?;
+                println!(
+                    "Configured fail-closed graduation threshold to {} at {}",
+                    threshold,
+                    store.path().display()
+                );
+                Ok(())
+            }
+            PolicySubcommand::Demote { reason, path } => {
+                let store = path
+                    .map(PolicyStore::new)
+                    .unwrap_or_else(PolicyStore::from_env);
+                let transition = store.emergency_demote(reason)?;
+                println!("Fail-closed policy demoted: {transition:?}");
                 Ok(())
             }
         },

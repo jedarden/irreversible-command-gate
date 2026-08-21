@@ -36,6 +36,7 @@ icg trust show|set|check
 icg update
 icg health status|reset|mark-start|mark-clean-exit|record-crash
 icg telemetry status|reset|configure
+icg policy status|reconcile|configure|demote
 icg check --command|--stdin|--file
 icg explain --pattern|--denial
 icg coverage --list
@@ -62,11 +63,22 @@ Production artifacts belong in administrator-controlled locations:
 /etc/icg/rule-pack.json
 /etc/icg/trust-pointer.json
 /etc/icg/last-update-check.json
+/etc/icg/fail-closed-policy.json
 ```
 
 The binary and policy artifacts should be root-owned and not writable by the
 guarded agent. Hook telemetry is auxiliary state under `/var/cache/icg` and
 must not be confused with the trusted rule-pack or release pointer.
+
+The fail-closed policy starts in Fail-Open. `icg policy reconcile` consumes the
+same per-release deny-rate and rollback state used by poison-pill auto-rollback;
+each uniquely observed release can advance the persisted clean streak once.
+The default graduation threshold is three releases and can be changed with
+`icg policy configure --threshold N`, which restarts qualification. A poison
+pill resets open-mode qualification, while a poison pill after graduation does
+not silently demote Fail-Closed. Use `icg policy demote --reason "..."` only as
+an authenticated, out-of-band emergency action; requalification is then
+required.
 
 ## Rule packs and release safety
 

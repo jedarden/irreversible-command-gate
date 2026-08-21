@@ -8,6 +8,7 @@
 //! - Content-mode: file path + content reading from Write/Edit or normalized
 //!   Codex apply_patch PreToolUse JSON (storage-class, image-tag packs)
 
+use crate::fail_closed::{PolicyStore, LEGACY_FAIL_CLOSED_ENV};
 use crate::rule_pack::Pack;
 use crate::telemetry::{CheckResultToVerdict, TelemetryStore, Verdict};
 use crate::value_derivation::render_reason;
@@ -764,12 +765,13 @@ pub struct Engine {
     /// This is populated only by `load_verified_override`; there is no public
     /// raw-ID bypass.
     exempted_rule_ids: HashSet<String>,
-    /// Once an in-process failure occurs, every subsequent check must allow.
-    /// This remains set for the lifetime of one engine invocation.
+    /// Once an in-process failure occurs, subsequent checks use the selected
+    /// availability-failure posture for the lifetime of this invocation.
     fail_open: bool,
-    /// Fail-closed mode: when enabled, guard crashes result in deny instead of allow.
-    /// This is the graduated policy from fail-open (default) to fail-closed after
-    /// reliability is validated. Set via ICG_FAIL_CLOSED environment variable.
+    /// Fail-closed mode: when enabled, guard-availability failures result in
+    /// deny instead of allow.  The normal source is the administrator-owned
+    /// graduated policy state; the legacy environment variable is retained as
+    /// a stricter local/test override.
     fail_closed: bool,
     /// Optional telemetry store for recording evaluation results
     telemetry_store: Option<std::sync::Arc<std::sync::Mutex<crate::telemetry::TelemetryStore>>>,
@@ -802,11 +804,24 @@ impl Engine {
             "nohup".to_string(),
         ];
 
-        // Check for fail-closed mode via environment variable
-        // When enabled, guard crashes result in deny instead of allow
-        let fail_closed = std::env::var("ICG_FAIL_CLOSED")
+        // Read the durable policy once at process start.  A missing or
+        // unreadable policy is deliberately fail-open so a configuration
+        // problem cannot wedge the fleet before an operator can repair it.
+        let policy_store = PolicyStore::from_env();
+        let durable_fail_closed = match policy_store.load() {
+            Ok(state) => state.is_fail_closed(),
+            Err(error) => {
+                eprintln!(
+                    "Engine: fail-open: unable to read fail-closed policy {} ({error:#})",
+                    policy_store.path().display()
+                );
+                false
+            }
+        };
+        let legacy_fail_closed = std::env::var(LEGACY_FAIL_CLOSED_ENV)
             .map(|val| val == "1" || val.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let fail_closed = durable_fail_closed || legacy_fail_closed;
 
         Self {
             env_assign_pattern,
@@ -845,6 +860,19 @@ impl Engine {
     pub fn with_state_store(mut self, store: std::sync::Arc<crate::state_store::StateStore>) -> Self {
         self.state_store = Some(store);
         self
+    }
+
+    /// Override the loaded policy for an embedding application or a focused
+    /// test.  This is intentionally an in-memory setting; production policy
+    /// changes must go through the durable policy store.
+    pub fn with_fail_closed(mut self, enabled: bool) -> Self {
+        self.fail_closed = enabled;
+        self
+    }
+
+    /// Return the availability-failure posture used by this process.
+    pub fn fail_closed(&self) -> bool {
+        self.fail_closed
     }
 
     /// Get the current session ID
@@ -1368,8 +1396,7 @@ impl Engine {
         match catch_unwind(AssertUnwindSafe(|| self.evaluate_token_inner(token))) {
             Ok(result) => result,
             Err(_) => {
-                report_fail_open("token evaluation panicked");
-                CheckResult::Allowed
+                self.guard_failure_result("token evaluation panicked")
             }
         }
     }
@@ -1552,8 +1579,7 @@ impl Engine {
         let result = match catch_unwind(AssertUnwindSafe(|| self.evaluate_command_inner(source))) {
             Ok(result) => result,
             Err(_) => {
-                report_fail_open("command evaluation panicked");
-                CheckResult::Allowed
+                self.guard_failure_result("command evaluation panicked")
             }
         };
 
@@ -1818,8 +1844,7 @@ impl Engine {
         let result = match catch_unwind(AssertUnwindSafe(|| self.evaluate_content_inner(source))) {
             Ok(result) => result,
             Err(_) => {
-                report_fail_open("content evaluation panicked");
-                CheckResult::Allowed
+                self.guard_failure_result("content evaluation panicked")
             }
         };
 
@@ -1840,8 +1865,7 @@ impl Engine {
             })) {
                 Ok(result) => result,
                 Err(_) => {
-                    report_fail_open("content evaluation panicked");
-                    CheckResult::Allowed
+                    self.guard_failure_result("content batch evaluation panicked")
                 }
             };
             result = self.most_severe_result(result, file_result);
@@ -2039,6 +2063,19 @@ impl Engine {
             if release_ref != "unknown" {
                 let _ = state_store.record_release_evaluation(release_ref, verdict.is_deny());
             }
+        }
+    }
+
+    fn guard_failure_result(&self, message: &str) -> CheckResult {
+        report_failure(self.fail_closed, message);
+        if self.fail_closed {
+            CheckResult::Denied {
+                reason: "Guard crash in fail-closed mode - rejecting all operations".to_string(),
+                pack_id: "fail-closed".to_string(),
+                pattern_id: "guard-crash".to_string(),
+            }
+        } else {
+            CheckResult::Allowed
         }
     }
 }
