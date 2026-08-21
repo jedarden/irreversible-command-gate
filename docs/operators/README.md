@@ -7,6 +7,7 @@ deny, rewrite, warning, or allow decision before the call executes.
 ## Start here
 
 - New installation or deployment: [Installation and deployment guide](deployment-guide.md)
+- Fail-closed activation and operations: [Fail-Closed mode guide](fail-closed-mode.md)
 - Installation and hook failures: [Troubleshooting](troubleshooting.md)
 - Moving from the existing Python hook: [Migration guide](migration-from-org-rule-guard.md)
 - Interpreting a denial: [Deny-message guide](deny-messages.md)
@@ -20,10 +21,11 @@ PreToolUse JSON for:
 - Claude-style `Write` and `Edit` content calls; and
 - Codex `apply_patch` calls, including multi-file patches.
 
-The hidden `icg wrapper` subcommand is still a parser scaffold. It does not
-execute the real shadowed binary or enforce a rule pack, so PATH symlinks must
-not be deployed from this tree. Cloud-hosted agent sessions are not covered by
-a binary installed on this host.
+The hidden `icg wrapper` subcommand is used by Unix PATH symlinks. It evaluates
+the command, denies matching rules, and `exec`s the real binary found later in
+`PATH`. It is still not a complete security boundary for absolute-path
+invocations or direct library calls. Cloud-hosted agent sessions are not
+covered by a binary installed on this host.
 
 ## Operator commands
 
@@ -83,6 +85,12 @@ required. `icg policy force-graduate --reason "..."` and
 controls. Every clean-release observation, poison-pill reset, graduation, and
 manual override is retained as bounded structured event telemetry in the
 policy snapshot and exposed by `icg policy status`.
+
+For activation prerequisites, configuration defaults, monitoring, emergency
+demotion, and troubleshooting, use the [Fail-Closed mode guide](fail-closed-mode.md).
+In particular, `ICG_FAIL_CLOSED=false` does not demote a durable Fail-Closed
+policy; use `icg policy force-revert --reason "..."` from an administrator
+control path during an incident.
 
 ## Rule packs and release safety
 

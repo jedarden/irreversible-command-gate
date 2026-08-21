@@ -315,8 +315,9 @@ secret deletion, or other destructive operation as an installation test.
 
 For one developer workstation, install the binary and rule pack under the
 protected system paths, then configure only the local harness hook. This is
-the smallest useful deployment. Do not install PATH symlinks for the current
-`wrapper` scaffold.
+the smallest useful deployment. Add Unix PATH symlinks only when the real
+shadowed binaries are available later in `PATH` and the wrapper's limitations
+are acceptable; the native hook remains the required harness integration.
 
 ### Shared host with both harnesses
 
@@ -484,13 +485,15 @@ it. Re-run the smoke tests after either rollback path.
 
 ### Fail-closed migration caution
 
-`ICG_FAIL_CLOSED=true` is an engine setting exposed for the fail-closed
-transition work. It is not a substitute for a complete harness-level
-fail-closed deployment in the current tree: unknown tools, telemetry failures,
-and hook registration failures still need explicit operational handling. Do
-not enable it fleet-wide based only on this guide. Follow
-[`fail-closed-transition.md`](../design/fail-closed-transition.md), validate
-the harness behavior, and obtain the required operational approval first.
+Fail-Closed is a durable, administrator-controlled policy decision. Do not
+enable it fleet-wide based only on this installation guide. Follow the
+[Fail-Closed mode guide](fail-closed-mode.md), validate the harness behavior
+for process errors/timeouts/missing responses, confirm health and telemetry
+evidence, and obtain the required operational approval first.
+
+`ICG_FAIL_CLOSED=true` is retained as a stricter local/test override. It is not
+the durable activation path, and `ICG_FAIL_CLOSED=false` cannot demote a valid
+durable Fail-Closed policy.
 
 ## Package and artifact distribution
 

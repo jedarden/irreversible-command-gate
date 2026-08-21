@@ -1,8 +1,17 @@
 # Fail-Closed Transition State Machine
 
-Status: design for `irrevers-aab3854c`
+Status: historical design for `irrevers-aab3854c`; implemented behavior is
+documented in [`docs/operators/fail-closed-mode.md`](../operators/fail-closed-mode.md)
 Scope: the guard's response to guard-availability failures (process exit,
 OOM-kill, timeout, or missing/invalid hook response)
+
+> Implementation note: the current repository persists two policy modes,
+> `FailOpen` and `FailClosed`. The `Graduating` state shown below is a
+> deployment/canary concept, not a third value in `PolicyMode`. The shipped
+> default graduation threshold is three eligible clean releases, and the
+> operator-facing activation, monitoring, and rollback procedures live in the
+> linked guide above. This document preserves the design rationale and the
+> boundaries that the implementation was required to respect.
 
 ## Purpose and boundaries
 

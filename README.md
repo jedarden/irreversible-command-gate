@@ -45,6 +45,7 @@ New to icg? Start here:
 
 - **[Onboarding Guide](docs/onboarding-guide.md)** — Structured learning path for operators and developers (recommended starting point)
 - **[Quick Start Guide](docs/quick-start.md)** — Get up and running in 5 minutes
+- **[Fail-Closed Mode Guide](docs/operators/fail-closed-mode.md)** — Activation, monitoring, emergency demotion, and troubleshooting for the graduated availability policy
 - **[Training Manual](docs/operators/training-manual.md)** — Comprehensive operator training (8-hour learning path)
 - **[Examples](docs/examples/README.md)** — Real-world scenarios and workflows
 

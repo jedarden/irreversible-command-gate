@@ -11,7 +11,7 @@ must be reported. A deployed fail-closed front end denies when it cannot obtain
 a trustworthy guard decision. `ICG_FAIL_CLOSED=true` is not by itself a
 harness-level process-disappearance detector; the hook or wrapper must also be
 configured to deny on guard error or timeout as described in the
-[fail-closed transition design](../design/fail-closed-transition.md).
+[Fail-Closed mode guide](../operators/fail-closed-mode.md).
 
 ## Detect and classify
 
@@ -126,9 +126,12 @@ out-of-band change. It must not be performed through the blocked agent session.
 
 1. Record the incident, reason, operator, time, affected generation, and expiry
    (if the emergency demotion is time-bounded).
-2. Through the deployment mechanism, set `ICG_FAIL_CLOSED=false` or remove it
-   for the affected cohort, and propagate the new policy generation. Confirm
-   cohort convergence; mixed generations are an active incident.
+2. From an administrator shell or through the deployment mechanism, run
+   `icg policy force-revert --reason "<incident>"` against the affected policy
+   store, then propagate the resulting policy snapshot and generation. Do not
+   rely on `ICG_FAIL_CLOSED=false`: it cannot demote a durable Fail-Closed
+   policy. Confirm cohort convergence; mixed generations are an active
+   incident.
 3. Reset the clean-release qualification streak. Demotion never qualifies the
    fleet for automatic re-promotion.
 4. Repair and validate the guard, harness, or host. Re-qualify with the

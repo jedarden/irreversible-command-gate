@@ -216,10 +216,11 @@ justification is rejected.
 
 ### The hook seems to allow after an internal error
 
-The current default is fail-open. That is intentional while the fail-closed
-transition is being validated. `ICG_FAIL_CLOSED=true` is not, by itself, a
-complete harness-level fail-closed deployment; follow the
-[transition design](../design/fail-closed-transition.md) before enabling it.
+The current default is fail-open. That is intentional until the operator has
+validated the durable policy, harness failure behavior, and release evidence.
+`ICG_FAIL_CLOSED=true` is only a stricter compatibility override; it is not the
+durable activation path. Follow the [Fail-Closed mode guide](fail-closed-mode.md)
+before enabling the policy.
 
 ## Trust pointer and updater failures
 
@@ -298,14 +299,11 @@ cleanup step.
 
 ## PATH wrapper and absolute paths
 
-The current `icg wrapper` command is not a complete enforcement front-end. It
-prints parsed segments and allows by default, so a symlink such as
-`/usr/local/libexec/icg-wrappers/git` must not be treated as protection. The
-native hook sees the harness's intended tool call and is the supported path.
-
-Even a completed PATH wrapper would not be a complete security boundary for
-absolute-path invocations or direct library calls. Keep the native hook and
-the harness's own controls in place.
+On Unix, the installed PATH wrapper evaluates a shadowed command, denies
+matching rules, and `exec`s the real binary found later in `PATH`. Check the
+symlink, PATH ordering, `ICG_RULE_PACK`, and `icg coverage --list` if it does
+not behave as expected. The wrapper does not cover absolute-path invocations
+or direct library calls, so keep the native hook and harness controls in place.
 
 ## Rollback
 
