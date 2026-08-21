@@ -1,0 +1,71 @@
+{
+  "id": "kubectl-fixed",
+  "tool_keywords": ["kubectl"],
+  "applies_to": [],
+  "safe_patterns": [
+    {
+      "id": "safe-delete-pod",
+      "check": {
+        "type": "command_regex",
+        "regex": "^kubectl delete pod "
+      }
+    },
+    {
+      "id": "safe-delete-deployment",
+      "check": {
+        "type": "command_regex",
+        "regex": "^kubectl delete deployment "
+      }
+    },
+    {
+      "id": "safe-delete-service",
+      "check": {
+        "type": "command_regex",
+        "regex": "^kubectl delete service "
+      }
+    },
+    {
+      "id": "safe-delete-configmap",
+      "check": {
+        "type": "command_regex",
+        "regex": "^kubectl delete configmap "
+      }
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "kubectl-delete-pvc",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "kubectl delete pvc"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Deleting a PVC destroys persistent data",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "kubectl delete pvc is permanently destructive. Data cannot be recovered.",
+        "rewrite_template": null
+      },
+      "destructive": true
+    },
+    {
+      "id": "kubectl-delete-pv",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "kubectl delete pv"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Deleting a PersistentVolume destroys data storage",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "kubectl delete pv is permanently destructive. Data cannot be recovered.",
+        "rewrite_template": null
+      },
+      "destructive": true
+    }
+  ]
+}

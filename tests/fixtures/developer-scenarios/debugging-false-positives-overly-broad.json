@@ -1,0 +1,25 @@
+{
+  "id": "kubectl-overly-broad",
+  "tool_keywords": ["kubectl"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "kubectl-delete-overly-broad",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "kubectl delete"
+      },
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Deleting kubernetes resources",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "kubectl delete is dangerous",
+        "rewrite_template": null
+      },
+      "destructive": true
+    }
+  ]
+}

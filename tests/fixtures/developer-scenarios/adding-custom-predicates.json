@@ -1,0 +1,74 @@
+{
+  "id": "beads-predicates",
+  "tool_keywords": ["git", "bead"],
+  "applies_to": ["Write", "Edit"],
+  "safe_patterns": [
+    {
+      "id": "safe-in-worktree",
+      "check": {
+        "type": "predicate",
+        "predicate_name": "is_worktree"
+      }
+    },
+    {
+      "id": "safe-with-clean-state",
+      "check": {
+        "type": "predicate",
+        "predicate_name": "has_clean_git_state"
+      }
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "beads-shared-checkout-write",
+      "enabled": true,
+      "check": {
+        "type": "predicate",
+        "predicate_name": "is_shared_checkout"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Writing to .beads/ in a shared checkout risks concurrent corruption",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Writing to .beads/ in a shared checkout risks concurrent corruption. Use a worktree instead.",
+        "rewrite_template": null
+      },
+      "destructive": true
+    },
+    {
+      "id": "beads-write-with-uncommitted-changes",
+      "enabled": true,
+      "check": {
+        "type": "predicate",
+        "predicate_name": "has_uncommitted_changes"
+      },
+      "tier": "tier2",
+      "severity": "High",
+      "explanation": "Writing to .beads/ with uncommitted changes risks data loss",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Commit your changes before writing to .beads/ to avoid data loss.",
+        "rewrite_template": null
+      },
+      "destructive": false
+    },
+    {
+      "id": "force-push-on-stale-head",
+      "enabled": true,
+      "check": {
+        "type": "predicate",
+        "predicate_name": "is_head_stale_with_force"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Force push when HEAD is stale behind remote is especially dangerous",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Pull latest changes before force pushing to avoid losing commits.",
+        "rewrite_template": null
+      },
+      "destructive": true
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "packId": "git",
+  "generatedAt": "2026-08-17T12:00:00Z",
+  "version": "v0.1.1",
+  "cases": [
+    {
+      "caseId": "git-force-push-001",
+      "patternId": "git-force-push",
+      "command": "git push --force origin main",
+      "expectedVerdict": "deny",
+      "severity": "Critical",
+      "reason": "git push --force would rewrite public history",
+      "rewrite": "git push --force-with-lease"
+    },
+    {
+      "caseId": "git-force-push-002",
+      "patternId": "git-force-push",
+      "command": "git push -f origin main",
+      "expectedVerdict": "deny",
+      "severity": "Critical",
+      "reason": "git push --force would rewrite public history",
+      "rewrite": "git push --force-with-lease"
+    },
+    {
+      "caseId": "git-commit-without-pathspec-001",
+      "patternId": "git-commit-without-pathspec",
+      "command": "git commit",
+      "expectedVerdict": "deny",
+      "severity": "High",
+      "reason": "git commit without explicit path specification can sweep in unintended changes",
+      "rewrite": null
+    },
+    {
+      "caseId": "git-commit-without-pathspec-002",
+      "patternId": "git-commit-without-pathspec",
+      "command": "git commit -m 'fix bug'",
+      "expectedVerdict": "deny",
+      "severity": "High",
+      "reason": "git commit without explicit path specification can sweep in unintended changes",
+      "rewrite": null
+    },
+    {
+      "caseId": "safe-push-001",
+      "patternId": "safe-push-no-force",
+      "command": "git push origin main",
+      "expectedVerdict": "allow",
+      "severity": null,
+      "reason": null,
+      "rewrite": null
+    },
+    {
+      "caseId": "safe-force-with-lease-001",
+      "patternId": "safe-push-with-lease",
+      "command": "git push --force-with-lease origin main",
+      "expectedVerdict": "allow",
+      "severity": null,
+      "reason": null,
+      "rewrite": null
+    }
+  ]
+}

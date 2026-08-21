@@ -305,6 +305,7 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
         }
     }
 
+    let mut debug_command_source = None;
     let result = if args.stdin {
         let Some((input, _raw_tool_input)) = engine.read_pre_tool_use_payload_from_stdin()? else {
             bail!("stdin did not contain a valid PreToolUse request")
@@ -312,9 +313,14 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
         let source = Engine::input_source_from_pre_tool_use(input)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?
             .context("PreToolUse request did not contain a checkable tool")?;
+        if let InputSource::Command(command) = &source {
+            debug_command_source = Some(command.clone());
+        }
         evaluate_input_source(&engine, source)
     } else if let Some(command) = args.command {
-        engine.evaluate_command(&CommandSource::Hook(command))
+        let source = CommandSource::Hook(command);
+        debug_command_source = Some(source.clone());
+        engine.evaluate_command(&source)
     } else if let Some(path) = args.file {
         let (file_path, content) = if path == Path::new("-") {
             ("stdin.yaml".to_string(), read_stdin_text()?)
@@ -329,6 +335,13 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
     };
 
     print_check_result(&result, &packs);
+    if args.debug {
+        if let Some(source) = debug_command_source {
+            eprintln!("{}", engine.debug_command_trace(&source, &result));
+        } else {
+            eprintln!("DEBUG: Pattern matching trace is available for command checks");
+        }
+    }
     Ok(())
 }
 

@@ -1,0 +1,74 @@
+{
+  "id": "git-baseline",
+  "tool_keywords": ["git"],
+  "applies_to": [],
+  "safe_patterns": [
+    {
+      "id": "safe-push-with-lease",
+      "check": {
+        "type": "command_regex",
+        "regex": "git push.*--force-with-lease"
+      }
+    },
+    {
+      "id": "safe-commit-with-pathspec",
+      "check": {
+        "type": "command_regex",
+        "regex": "git commit.*--"
+      }
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "git-force-push",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "git push.*--force"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Force push would rewrite public history",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "git push --force would rewrite public history. Use --force-with-lease instead.",
+        "rewrite_template": "git push --force-with-lease"
+      },
+      "destructive": true
+    },
+    {
+      "id": "git-push-f-flag",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "git push -f"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Force push with -f flag would rewrite public history",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "git push -f would rewrite public history. Use --force-with-lease instead.",
+        "rewrite_template": "git push --force-with-lease"
+      },
+      "destructive": true
+    },
+    {
+      "id": "git-commit-without-pathspec",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "git commit -m"
+      },
+      "tier": "tier2",
+      "severity": "High",
+      "explanation": "Commit without explicit path specification can sweep in unintended changes",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "git commit without explicit path specification (--all, --message, paths) can sweep in unintended changes from the working tree. Specify paths explicitly: git commit path/to/file path/to/other/file",
+        "rewrite_template": null
+      },
+      "destructive": false
+    }
+  ]
+}

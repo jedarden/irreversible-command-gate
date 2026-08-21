@@ -1599,6 +1599,126 @@ impl Engine {
         result
     }
 
+    /// Render a deterministic explanation of command dispatch and pattern
+    /// evaluation for the human-facing `check --debug` command.
+    ///
+    /// This deliberately reuses the same tokenization and pattern matcher as
+    /// normal evaluation. It is diagnostic output only: callers still use
+    /// [`evaluate_command`] for the authoritative result.
+    pub fn debug_command_trace(&self, source: &CommandSource, result: &CheckResult) -> String {
+        use std::collections::BTreeSet;
+        use std::fmt::Write as _;
+
+        let full_command = match source {
+            CommandSource::Hook(command) => command.clone(),
+            CommandSource::Argv(argv) => argv.join(" "),
+        };
+        let mut dispatched = BTreeSet::new();
+
+        for (pack_id, pack) in &self.packs {
+            if pack.tool_keywords.is_empty() {
+                dispatched.insert((pack_id.clone(), full_command.clone()));
+            }
+        }
+
+        for token in self.segment_command(source) {
+            let command = render_command(&token);
+            if let Some(pack_ids) = self.keyword_index.get(&token.executable) {
+                for pack_id in pack_ids {
+                    dispatched.insert((pack_id.clone(), command.clone()));
+                }
+            }
+        }
+
+        let mut trace = String::from("DEBUG: Pattern matching trace\n");
+        let _ = writeln!(trace, "Command: {full_command}");
+
+        if dispatched.is_empty() {
+            trace.push_str("Pack dispatched: none\n");
+        }
+
+        for (pack_id, command) in dispatched {
+            let Some(pack) = self.packs.get(&pack_id) else {
+                continue;
+            };
+
+            let _ = writeln!(trace, "Pack dispatched: {pack_id} (input: {command})");
+            trace.push_str("Safe patterns checked:\n");
+            if pack.safe_patterns.is_empty() {
+                trace.push_str("  (none)\n");
+            }
+            for pattern in &pack.safe_patterns {
+                let matched = self
+                    .pattern_matches_command(pattern, &command)
+                    .unwrap_or(false);
+                let status = if matched { "MATCH" } else { "NO MATCH" };
+                let _ = writeln!(
+                    trace,
+                    "  {}: {status} (check: {})",
+                    pattern.id,
+                    debug_check_description(&pattern.check)
+                );
+            }
+
+            trace.push_str("Guarded patterns checked:\n");
+            if pack.guarded_patterns.is_empty() {
+                trace.push_str("  (none)\n");
+            }
+            for pattern in &pack.guarded_patterns {
+                if !pattern.enabled {
+                    let _ = writeln!(trace, "  {}: SKIPPED (disabled)", pattern.id);
+                    continue;
+                }
+                if self.exempted_rule_ids.contains(&pattern.id) {
+                    let _ = writeln!(trace, "  {}: SKIPPED (verified override)", pattern.id);
+                    continue;
+                }
+
+                let wrapper = crate::rule_pack::Pattern {
+                    id: pattern.id.clone(),
+                    check: pattern.check.clone(),
+                };
+                let matched = self
+                    .pattern_matches_command(&wrapper, &command)
+                    .unwrap_or(false);
+                let status = if matched { "MATCH" } else { "NO MATCH" };
+                let _ = writeln!(
+                    trace,
+                    "  {}: {status} (check: {})",
+                    pattern.id,
+                    debug_check_description(&pattern.check)
+                );
+            }
+        }
+
+        match result {
+            CheckResult::Denied {
+                pack_id,
+                pattern_id,
+                ..
+            } => {
+                let _ = writeln!(trace, "Final verdict: DENY ({pack_id}/{pattern_id})");
+            }
+            CheckResult::Rewrite {
+                pack_id,
+                pattern_id,
+                ..
+            } => {
+                let _ = writeln!(trace, "Final verdict: REWRITE ({pack_id}/{pattern_id})");
+            }
+            CheckResult::Warning {
+                pack_id,
+                pattern_id,
+                ..
+            } => {
+                let _ = writeln!(trace, "Final verdict: WARNING ({pack_id}/{pattern_id})");
+            }
+            CheckResult::Allowed => trace.push_str("Final verdict: ALLOW\n"),
+        }
+
+        trace
+    }
+
     fn evaluate_command_inner(&self, source: &CommandSource) -> CheckResult {
         if self.should_fail_open() {
             return if self.should_fail_closed() {
@@ -2162,6 +2282,20 @@ impl Engine {
         } else {
             CheckResult::Allowed
         }
+    }
+}
+
+fn debug_check_description(check: &crate::rule_pack::Check) -> String {
+    match check {
+        crate::rule_pack::Check::CommandRegex { regex } => {
+            format!("command regex {regex:?}")
+        }
+        crate::rule_pack::Check::ContentRegex { regex } => {
+            format!("content regex {regex:?}")
+        }
+        crate::rule_pack::Check::Predicate {
+            predicate_name, ..
+        } => format!("predicate {predicate_name:?}"),
     }
 }
 
