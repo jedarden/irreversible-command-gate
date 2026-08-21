@@ -518,7 +518,7 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
             Ok(pack) => {
                 found = true;
                 println!(
-                    "✓ {} ({} patterns){}",
+                    "✓ pack {} ({} patterns){}",
                     pack.id,
                     pack.guarded_patterns.len(),
                     if args.list {

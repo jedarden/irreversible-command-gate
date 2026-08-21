@@ -901,6 +901,25 @@ fn check_and_handle_anomaly(
     Ok(())
 }
 
+/// Load runtime telemetry without making persistence a prerequisite for a
+/// guard decision.  Hook and wrapper evaluation must retain their fail-open
+/// contract when the configured cache is unavailable (for example, during an
+/// unprivileged installation or a read-only filesystem).  The in-memory
+/// store still lets this invocation collect metrics; its later persist attempt
+/// remains best effort and reports the operational failure on stderr.
+fn load_runtime_telemetry_store(path: PathBuf) -> telemetry::TelemetryStore {
+    match telemetry::TelemetryStore::load_or_create(path.clone()) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!(
+                "icg_monitoring_event event=telemetry_init_failed path={} error={error:#}",
+                path.display()
+            );
+            telemetry::TelemetryStore::new(path)
+        }
+    }
+}
+
 /// Keep the operator-facing telemetry configuration connected to the durable
 /// poison-pill reaction.  The release-count, baseline-volume, absolute-delta,
 /// and early-window safeguards remain fixed conservative defaults; the legacy
@@ -1062,6 +1081,16 @@ fn configured_health_path() -> PathBuf {
     health::HealthStore::from_environment_or_default()
         .map(|store| store.path().to_path_buf())
         .unwrap_or_else(|_| PathBuf::from("/var/cache/icg/health-state.json"))
+}
+
+fn configured_trust_pointer_path(path: Option<PathBuf>, channel: Option<&str>) -> Result<PathBuf> {
+    if let Some(path) = path {
+        return Ok(path);
+    }
+    if let Some(channel) = channel {
+        return Ok(TrustPointerStore::for_channel(channel).path().to_path_buf());
+    }
+    TrustPointerStore::default_path().context("Failed to determine trust pointer path")
 }
 
 /// Return the tool name when `icg` was invoked through a PATH-wrapper symlink.
@@ -1586,7 +1615,7 @@ fn main() -> Result<()> {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
             let telemetry_store = std::sync::Arc::new(std::sync::Mutex::new(
-                telemetry::TelemetryStore::load_or_create(telemetry_path)?,
+                load_runtime_telemetry_store(telemetry_path),
             ));
 
             // Generate session ID for this evaluation
@@ -1794,13 +1823,7 @@ fn main() -> Result<()> {
         } => documented_commands::run_install(dir, packs, force, uninstall),
         Commands::Trust(subcommand) => match subcommand {
             TrustSubcommand::Show { path, channel } => {
-                let store_path = if let Some(ref ch) = channel {
-                    // Use channel-specific trust pointer for canary rollout
-                    TrustPointerStore::for_channel(ch).path().to_path_buf()
-                } else {
-                    path.or_else(|| TrustPointerStore::default_path().ok())
-                        .context("Failed to determine trust pointer path")?
-                };
+                let store_path = configured_trust_pointer_path(path, channel.as_deref())?;
                 let store = TrustPointerStore::new(store_path.clone());
 
                 match store.load()? {
@@ -1842,13 +1865,7 @@ fn main() -> Result<()> {
                 path,
                 channel,
             } => {
-                let store_path = if let Some(ref ch) = channel {
-                    // Use channel-specific trust pointer for canary rollout
-                    TrustPointerStore::for_channel(ch).path().to_path_buf()
-                } else {
-                    path.or_else(|| TrustPointerStore::default_path().ok())
-                        .context("Failed to determine trust pointer path")?
-                };
+                let store_path = configured_trust_pointer_path(path, channel.as_deref())?;
                 let store = TrustPointerStore::new(store_path.clone());
 
                 if let Some(justification) = justification {
@@ -1888,13 +1905,7 @@ fn main() -> Result<()> {
                 path,
                 channel,
             } => {
-                let store_path = if let Some(ref ch) = channel {
-                    // Use channel-specific trust pointer for canary rollout
-                    TrustPointerStore::for_channel(ch).path().to_path_buf()
-                } else {
-                    path.or_else(|| TrustPointerStore::default_path().ok())
-                        .context("Failed to determine trust pointer path")?
-                };
+                let store_path = configured_trust_pointer_path(path, channel.as_deref())?;
                 let store = TrustPointerStore::new(store_path.clone());
 
                 let is_trusted = store.is_trusted(&reference)?;

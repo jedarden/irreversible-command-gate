@@ -4,8 +4,11 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 fn run_hook(stdin: &[u8], rule_pack: Option<&Path>) -> Output {
+    let telemetry_dir = tempfile::tempdir().expect("failed to create telemetry directory");
+    let telemetry_path = telemetry_dir.path().join("telemetry.json");
     let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
     command.arg("hook");
+    command.env("ICG_TELEMETRY_PATH", telemetry_path);
     if let Some(rule_pack) = rule_pack {
         command.arg("--rule-pack").arg(rule_pack);
     }

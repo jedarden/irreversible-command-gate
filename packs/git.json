@@ -57,6 +57,20 @@
         "reason_template": "git commit without a pathspec can sweep unrelated staged changes into the commit. Pass the same file paths to git commit that you passed to git add -- git commit <paths> -m \"...\".",
         "rewrite_template": null
       }
+    },
+    {
+      "id": "git-stale-remote-head-push",
+      "type": "predicate",
+      "predicate_name": "push_requires_current_remote_head",
+      "tier": "tier2",
+      "severity": "High",
+      "explanation": "Pushing when remote HEAD has moved forward risks rejection and creates merge conflicts",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Remote HEAD has moved forward since your last fetch/pull. Run 'git pull' first to integrate remote changes before pushing.",
+        "rewrite_template": null
+      }
     }
   ]
 }

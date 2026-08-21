@@ -1873,6 +1873,26 @@ impl Engine {
                     Ok(false)
                 }
             }
+            "push_requires_current_remote_head" => {
+                // Tier 2: Deny git push when local tracked remote HEAD doesn't match actual remote HEAD
+                // Returns true (pattern matches/deny) when:
+                // 1. The command is a git push (without --force, handled separately), AND
+                // 2. Remote HEAD has moved forward since last fetch/pull
+                // This is a deliberate exception to no-I/O-in-hot-path: git push is already a network operation
+                let is_push = command.contains("git push") && !command.contains("--force");
+                if !is_push {
+                    return Ok(false);
+                }
+
+                // Perform live remote HEAD check
+                match check_remote_head_stale() {
+                    Ok(is_stale) => Ok(is_stale),
+                    Err(_) => {
+                        // Check failed (not in a git repo, network error, etc.) - fail open
+                        Ok(false)
+                    }
+                }
+            }
             _ => {
                 // Unknown predicate - fail open (allow the command)
                 Ok(false)
@@ -2433,6 +2453,111 @@ fn report_fail_open(message: &str) {
         std::io::stderr(),
         "Engine: fail-open: {message} (allowing all commands)"
     );
+}
+
+/// Check if the remote HEAD has moved forward since the last fetch/pull.
+///
+/// This performs a live check against the remote repository to determine if
+/// the local checkout's tracked remote HEAD matches the actual current remote HEAD.
+///
+/// Returns true if the remote HEAD has moved forward (stale), false if up-to-date.
+/// Returns an error if the check cannot be performed (not in a git repo, network error, etc.).
+pub fn check_remote_head_stale() -> Result<bool> {
+    use std::process::Command;
+
+    // Get the current branch's upstream (remote tracking) branch
+    let upstream = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .output()
+        .context("Failed to get upstream branch")?;
+
+    if !upstream.status.success() {
+        // No upstream branch configured or not in a git repo
+        return Ok(false);
+    }
+
+    let upstream = String::from_utf8(upstream.stdout)
+        .context("Failed to parse upstream branch output")?
+        .trim()
+        .to_string();
+
+    if upstream.is_empty() || upstream.contains("@{u}") {
+        // No upstream configured or git rev-parse failed
+        return Ok(false);
+    }
+
+    // Get the local tracked remote HEAD SHA
+    let local_head = Command::new("git")
+        .args(["rev-parse", &upstream])
+        .output()
+        .context("Failed to get local remote HEAD")?;
+
+    if !local_head.status.success() {
+        // Failed to get local HEAD - fail open
+        return Ok(false);
+    }
+
+    let local_head = String::from_utf8(local_head.stdout)
+        .context("Failed to parse local HEAD output")?
+        .trim()
+        .to_string();
+
+    if local_head.is_empty() {
+        // Empty local HEAD - fail open
+        return Ok(false);
+    }
+
+    // Parse the upstream to get remote name and branch reference
+    // Format is typically "origin/main" or "remote/branch"
+    let parts: Vec<&str> = upstream.split('/').collect();
+    if parts.len() < 2 {
+        // Invalid upstream format - fail open
+        return Ok(false);
+    }
+
+    let remote_name = parts[0];
+    let branch_ref = if parts.len() == 2 {
+        format!("refs/heads/{}", parts[1])
+    } else {
+        format!("refs/heads/{}", parts[1..].join("/"))
+    };
+
+    // Get the actual remote HEAD SHA via ls-remote (live check)
+    let remote_head = Command::new("git")
+        .args(["ls-remote", "--heads", remote_name, &parts[1..].join("/")])
+        .output()
+        .context("Failed to fetch remote HEAD")?;
+
+    if !remote_head.status.success() {
+        // Network error or other issue - fail open
+        return Ok(false);
+    }
+
+    let output = String::from_utf8(remote_head.stdout)
+        .context("Failed to parse remote HEAD output")?;
+
+    // Parse the ls-remote output: format is "<SHA>\t<ref>"
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.is_empty() {
+        // No matching remote branch - fail open
+        return Ok(false);
+    }
+
+    for line in lines {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let remote_sha = parts[0].trim();
+            let remote_ref = parts[1].trim();
+
+            if remote_ref == &branch_ref || remote_ref.ends_with(&format!("/{}", parts[1..].join("/"))) {
+                // Compare SHAs - if they differ, remote has moved forward
+                return Ok(remote_sha != local_head);
+            }
+        }
+    }
+
+    // No matching ref found - fail open
+    Ok(false)
 }
 
 #[cfg(test)]

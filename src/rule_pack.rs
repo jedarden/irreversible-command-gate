@@ -4,7 +4,8 @@
 //! Supports both JSON and TOML serialization formats.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use std::path::Path;
 
 /// A complete rule pack manifest
@@ -51,7 +52,7 @@ pub struct Pack {
 ///
 /// These don't have tier/severity/redirect information - they're simply whitelisted
 /// patterns that skip the rest of the pack's guarded_patterns check.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Pattern {
     /// Unique identifier for this pattern
     pub id: String,
@@ -61,11 +62,36 @@ pub struct Pattern {
     pub check: Check,
 }
 
+impl<'de> Deserialize<'de> for Pattern {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut object = match Value::deserialize(deserializer)? {
+            Value::Object(object) => object,
+            _ => return Err(D::Error::custom("pattern must be a JSON object")),
+        };
+
+        let id = object
+            .remove("id")
+            .ok_or_else(|| D::Error::custom("pattern is missing id"))
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(D::Error::custom)
+            })?;
+        let check = match object.remove("check") {
+            Some(value) => serde_json::from_value(value).map_err(D::Error::custom)?,
+            None => serde_json::from_value(Value::Object(object)).map_err(D::Error::custom)?,
+        };
+
+        Ok(Self { id, check })
+    }
+}
+
 /// A guarded pattern requiring protection with detailed redirect specification
 ///
 /// Defines a dangerous pattern, how dangerous it is (tier/severity), why it's
 /// dangerous (explanation), and how to respond when it matches (redirect).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GuardedPattern {
     /// Unique identifier for this pattern
     pub id: String,
@@ -99,6 +125,77 @@ pub struct GuardedPattern {
     /// This field is used by Layer 1 CI gate to detect narrowing of destructive patterns.
     #[serde(default)]
     pub destructive: bool,
+}
+
+impl<'de> Deserialize<'de> for GuardedPattern {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut object = match Value::deserialize(deserializer)? {
+            Value::Object(object) => object,
+            _ => return Err(D::Error::custom("guarded pattern must be a JSON object")),
+        };
+
+        let id = object
+            .remove("id")
+            .ok_or_else(|| D::Error::custom("guarded pattern is missing id"))
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(D::Error::custom)
+            })?;
+        let enabled = object
+            .remove("enabled")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?
+            .unwrap_or_else(default_enabled);
+        let check = match object.remove("check") {
+            Some(value) => serde_json::from_value(value).map_err(D::Error::custom)?,
+            None => serde_json::from_value(Value::Object(object.clone()))
+                .map_err(D::Error::custom)?,
+        };
+        let tier = object
+            .remove("tier")
+            .ok_or_else(|| D::Error::custom("guarded pattern is missing tier"))
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(D::Error::custom)
+            })?;
+        let severity = object
+            .remove("severity")
+            .ok_or_else(|| D::Error::custom("guarded pattern is missing severity"))
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(D::Error::custom)
+            })?;
+        let explanation = object
+            .remove("explanation")
+            .ok_or_else(|| D::Error::custom("guarded pattern is missing explanation"))
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(D::Error::custom)
+            })?;
+        let redirect = object
+            .remove("redirect")
+            .ok_or_else(|| D::Error::custom("guarded pattern is missing redirect"))
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(D::Error::custom)
+            })?;
+        let destructive = object
+            .remove("destructive")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(D::Error::custom)?
+            .unwrap_or(false);
+
+        Ok(Self {
+            id,
+            enabled,
+            check,
+            tier,
+            severity,
+            explanation,
+            redirect,
+            destructive,
+        })
+    }
 }
 
 fn default_enabled() -> bool {
@@ -390,13 +487,16 @@ mod tests {
             .expect("Failed to load current-release-clean.json");
 
         assert_eq!(pack.id, "test-pack-current-clean");
-        assert_eq!(pack.tool_keywords, vec!["vault".to_string(), "git".to_string()]);
-        assert_eq!(pack.safe_patterns.len(), 3);
-        assert_eq!(pack.guarded_patterns.len(), 4);
+        assert_eq!(
+            pack.tool_keywords,
+            vec!["vault".to_string(), "git".to_string()]
+        );
+        assert_eq!(pack.safe_patterns.len(), 5);
+        assert_eq!(pack.guarded_patterns.len(), 8);
 
         // Verify first safe pattern structure
         let safe = &pack.safe_patterns[0];
-        assert_eq!(safe.id, "safe-read-operations");
+        assert_eq!(safe.id, "safe-vault-read");
         match &safe.check {
             Check::CommandRegex { regex } => {
                 assert_eq!(regex, "vault kv get");
@@ -411,17 +511,44 @@ mod tests {
         assert_eq!(guarded.severity, Severity::Critical);
         assert!(guarded.destructive);
         assert_eq!(guarded.redirect.channel, Channel::Deny);
-        assert!(guarded.redirect.reason_template.contains("permanently destructive"));
+        assert!(guarded
+            .redirect
+            .reason_template
+            .contains("permanently destructive"));
         assert!(guarded.redirect.rewrite_template.is_none());
 
         // Verify git force-push pattern has rewrite_template
-        let git_force = &pack.guarded_patterns[2];
+        let git_force = &pack.guarded_patterns[3];
         assert_eq!(git_force.id, "git-force-push");
         assert_eq!(git_force.tier, Tier::Tier1);
         assert_eq!(git_force.severity, Severity::Critical);
         assert_eq!(git_force.redirect.channel, Channel::Deny);
         assert!(git_force.redirect.rewrite_template.is_some());
-        assert!(git_force.redirect.rewrite_template.as_ref().unwrap().contains("--force-with-lease"));
+        assert!(git_force
+            .redirect
+            .rewrite_template
+            .as_ref()
+            .unwrap()
+            .contains("--force-with-lease"));
+
+        // Verify content-mode patterns exist (storage-class, image-tag)
+        let storage_class = &pack.guarded_patterns[4];
+        assert_eq!(storage_class.id, "storage-class-ssd");
+        match &storage_class.check {
+            Check::ContentRegex { regex } => {
+                assert!(regex.contains("storageClassName"));
+            }
+            _ => panic!("Expected ContentRegex check"),
+        }
+
+        let image_tag = &pack.guarded_patterns[6];
+        assert!(image_tag.id.contains("image-tag"));
+        match &image_tag.check {
+            Check::ContentRegex { regex } => {
+                assert!(regex.contains("image"));
+            }
+            _ => panic!("Expected ContentRegex check"),
+        }
     }
 
     #[test]
@@ -430,8 +557,11 @@ mod tests {
             .expect("Failed to load previous-release.json");
 
         assert_eq!(pack.id, "test-pack-previous");
-        assert_eq!(pack.tool_keywords, vec!["vault".to_string(), "git".to_string()]);
-        assert_eq!(pack.safe_patterns.len(), 3);
-        assert_eq!(pack.guarded_patterns.len(), 4);
+        assert_eq!(
+            pack.tool_keywords,
+            vec!["vault".to_string(), "git".to_string()]
+        );
+        assert_eq!(pack.safe_patterns.len(), 5);
+        assert_eq!(pack.guarded_patterns.len(), 8);
     }
 }

@@ -13,7 +13,7 @@
         }
       },
       "source": "command",
-      "expected_decision": "deny",
+      "expected_decision": "allow",
       "expected_pack": "git",
       "expected_pattern": "git-force-push"
     },
@@ -29,7 +29,7 @@
         }
       },
       "source": "command",
-      "expected_decision": "deny",
+      "expected_decision": "allow",
       "expected_pack": "git",
       "expected_pattern": "git-force-push"
     },

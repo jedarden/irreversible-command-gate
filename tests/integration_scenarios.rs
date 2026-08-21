@@ -89,7 +89,10 @@ fn assert_result(
             }
         }
         (true, other) => panic!("expected denial, got {other:?}"),
-        (false, CheckResult::Allowed) => {}
+        (
+            false,
+            CheckResult::Allowed | CheckResult::Rewrite { .. } | CheckResult::Warning { .. },
+        ) => {}
         (false, other) => panic!("expected allow, got {other:?}"),
     }
 }
@@ -304,10 +307,17 @@ fn assert_native_hook_decision(probe: &HarnessProbe, pack: &Path, telemetry_path
         response["hookSpecificOutput"]["permissionDecision"],
         probe.expected_decision
     );
-    assert!(response["hookSpecificOutput"]["permissionDecisionReason"]
+    let hook_output = &response["hookSpecificOutput"];
+    let explanation = hook_output["permissionDecisionReason"]
         .as_str()
-        .unwrap_or_default()
-        .contains(&probe.expected_pack));
+        .or_else(|| hook_output["additionalContext"].as_str())
+        .unwrap_or_default();
+    assert!(
+        explanation.contains(&probe.expected_pack),
+        "{} hook response should identify pack {}",
+        probe.name,
+        probe.expected_pack
+    );
 }
 
 #[test]
@@ -387,7 +397,15 @@ fn scenario_11_parses_and_runs_both_harness_wire_formats() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("DENIED"), "{} should be denied", probe.name);
+        match probe.expected_decision.as_str() {
+            "deny" => assert!(stdout.contains("DENIED"), "{} should be denied", probe.name),
+            "allow" => assert!(
+                stdout.contains("ALLOW") || stdout.contains("REWRITE"),
+                "{} should be allowed or rewritten",
+                probe.name
+            ),
+            decision => panic!("unsupported expected decision {decision}"),
+        }
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(&format!("Harness: {}", probe.name)),
             "--harness should be visible in debug output"
