@@ -1,0 +1,22 @@
+{
+  "id": "tmux",
+  "tool_keywords": ["tmux"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "bare-nato-session",
+      "type": "command_regex",
+      "regex": "^tmux\\s+.*(?:^|\\s)(?:-t(?:=|\\s+)?|--target(?:=|\\s+))(?:alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet|kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|uniform|victor|whiskey|xray|yankee|zulu)(?::[^\\s]*|\\.[^\\s]*|\\s|$)",
+      "tier": "tier1",
+      "severity": "Medium",
+      "explanation": "Bare NATO tmux sessions are operator-owned; targeting one can send keys to or disrupt the wrong session.",
+      "destructive": false,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Targeting a bare NATO tmux session is blocked because it may interfere with an operator's personal session. Use a named worker session or a tmux session ID instead.",
+        "rewrite_template": null
+      }
+    }
+  ]
+}
