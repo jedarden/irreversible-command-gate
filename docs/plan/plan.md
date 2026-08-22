@@ -453,13 +453,26 @@ GuardedPattern:
     the same payload) still failed with an identical "path does not exist"
     error. The real bug in both attempts was the parent key — the event JSON
     nests headers under `header` (singular), not `headers` (plural) — so
-    neither header name could ever have resolved. Three pushes, three
-    observed failures, before the fourth actually fired. Caught only because
-    every push after wiring it was watched live end-to-end against the raw
-    delivery payload rather than trusted on config-looks-right alone; every
-    other `*-sensor.yml` in `declarative-config` filtering on `headers.*`
-    (copied from the same `pdftract-ci-sensor.yml` origin) likely has the
-    identical bug and has never actually fired. Fixed for `icg-ci-sensor.yml`
+    neither header name could ever have resolved. Fixing the parent key made
+    the *filter* pass on push 4, which surfaced a **third, independent**
+    bug: the actual workflow submission then failed with a bare `exit status
+    1` and no further detail in the sensor's own logs. Root cause not fully
+    isolated — the trigger template's inline `{{dependencies...}}` annotation
+    templating plus a redundant `parameters:` binding (both copied from
+    `pdftract-ci-sensor.yml`) were the only things differing from this
+    repo's one *proven*-firing sensor (`needle-ci-sensor.yml`, confirmed via
+    a real historical run), so they were stripped rather than debugged
+    further — push 5 uses `needle-ci-sensor`'s exact bare
+    `generateName`+`workflowTemplateRef` shape with nothing else. Four
+    pushes, three independent observed failures (wrong header name, wrong
+    parent key, then a still-unexplained submit failure), before arriving at
+    a config that might work. Caught only because every push after wiring it
+    was watched live end-to-end against the raw delivery payload and the
+    sensor's own logs, rather than trusted on config-looks-right alone;
+    every other `*-sensor.yml` in `declarative-config` filtering on
+    `headers.*` (copied from the same `pdftract-ci-sensor.yml` origin)
+    likely has the identical header-key bug and has never actually fired.
+    Fixed for `icg-ci-sensor.yml`
     only; not audited fleet-wide as part of this change.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
