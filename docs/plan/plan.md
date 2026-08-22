@@ -474,6 +474,26 @@ GuardedPattern:
     likely has the identical header-key bug and has never actually fired.
     Fixed for `icg-ci-sensor.yml`
     only; not audited fleet-wide as part of this change.
+  - **GitHub mirror created, repo made public (2026-08-22, user decision).**
+    `icg-ci`'s `gh release create`/`view`/`edit` calls target
+    `jedarden/irreversible-command-gate` on GitHub — which never existed
+    until now, so no release attempt could ever have succeeded. Both sides
+    are now public: Forgejo flipped from private, GitHub repo created, a
+    Forgejo push-mirror (`sync_on_commit: true`) wired between them. The
+    decision to go public rather than keep this private and rework releases
+    onto Forgejo's own API was made after auditing what the repo actually
+    exposes — one specific cross-repo incident detail (a real NEEDLE worker
+    name and bead ID from `commitgraph`, in this file's Phase 1 section and
+    in a commit message) plus passing mentions of real cluster/repo names
+    (`iad-ci`, `rs-manager`, `declarative-config`); no credentials, secret
+    paths, IPs, or topology. Trigger and clone stay on Forgejo (the actual
+    source of truth); only the release artifact goes to GitHub.
+  - **Version-extraction bug, found before the first real release
+    attempt.** `icg`'s `Cargo.toml` is a plain `[package]` manifest, not a
+    workspace — the release step's `VERSION=$(grep -A10
+    '\[workspace.package\]' ...)` always matched nothing, so every
+    downstream step (`git tag`, `gh release view/create`) would have
+    operated on an empty version string. Fixed to grep `^version` directly.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
