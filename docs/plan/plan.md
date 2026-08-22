@@ -448,12 +448,19 @@ GuardedPattern:
     itself wrong**: the pattern copied from `pdftract-ci-sensor.yml`
     (`headers.X-Forgejo-Event`) silently discarded every real delivery — this
     Forgejo instance sends `X-Gitea-Event`/`X-Forgejo-Event-Type`, never
-    `X-Forgejo-Event`. Caught only because the very first push after wiring
-    it was watched live end-to-end rather than trusted on config-looks-right
-    alone; every other `*-sensor.yml` in `declarative-config` filtering on
-    that same header likely has the identical bug and has never actually
-    fired. Fixed for `icg-ci-sensor.yml`; not audited fleet-wide as part of
-    this change.
+    `X-Forgejo-Event`. **That fix was also wrong**, and in a way the first
+    error message actively misled: switching to `X-Gitea-Event` (present in
+    the same payload) still failed with an identical "path does not exist"
+    error. The real bug in both attempts was the parent key — the event JSON
+    nests headers under `header` (singular), not `headers` (plural) — so
+    neither header name could ever have resolved. Three pushes, three
+    observed failures, before the fourth actually fired. Caught only because
+    every push after wiring it was watched live end-to-end against the raw
+    delivery payload rather than trusted on config-looks-right alone; every
+    other `*-sensor.yml` in `declarative-config` filtering on `headers.*`
+    (copied from the same `pdftract-ci-sensor.yml` origin) likely has the
+    identical bug and has never actually fired. Fixed for `icg-ci-sensor.yml`
+    only; not audited fleet-wide as part of this change.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
