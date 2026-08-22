@@ -435,6 +435,16 @@ GuardedPattern:
   - Build the `icg-ci` Argo WorkflowTemplate (`declarative-config/k8s/iad-ci/argo-workflows/`)
     on the existing `forge-ci`/`needle-ci`/`agentscribe-ci`/`sigil-ci`
     pattern — Rust binary → GitHub Release, never GitHub Actions.
+  - **Trigger, added 2026-08-22.** The template existed for 6+ days with no
+    trigger — unlike its four sibling templates, none of which are
+    manually-submitted-only, `icg-ci` had no Sensor, so it had never run
+    once. Added `icg-ci-sensor.yml` (push-only, `refs/heads/main`, modeled
+    on `pdftract-ci-sensor.yml`'s push half) plus the matching
+    `forgejo-webhooks` EventSource entry and `webhook-ingressroute.yml`
+    route, and registered the live Forgejo webhook on this repo. Every push
+    to `main` now submits an `icg-ci` run; the version-gated skip inside the
+    release step (see below) still means a run only *cuts* a release when
+    `Cargo.toml`'s version actually bumps.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
