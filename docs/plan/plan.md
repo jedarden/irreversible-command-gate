@@ -494,6 +494,27 @@ GuardedPattern:
     '\[workspace.package\]' ...)` always matched nothing, so every
     downstream step (`git tag`, `gh release view/create`) would have
     operated on an empty version string. Fixed to grep `^version` directly.
+  - **`/workspace`-collision bug, the actual root cause of every prior
+    `codex-hook-compatibility`/`build-and-release` exit-128 failure.** Not
+    the missing GitHub mirror, as first assumed — `argo-guarded-builder`'s
+    `WORKDIR /workspace` (inherited from the shared `needle-ci-builder`
+    base) is already non-empty, so `git clone ... /workspace` always failed
+    with "destination path already exists." Confirmed by streaming a manual
+    workflow run's pod logs live before `podGC` deleted them; fixed by
+    cloning into `/tmp/icg-checkout` instead. Once fixed, all three
+    `codex-hook-compatibility` matrix items and `cargo fmt --all -- --check`
+    passed for the first time ever (the fmt drift itself — 28 files, no gate
+    had ever run to catch it — was fixed separately, `1ec085d`).
+  - **`cargo clippy --all-targets -- -D warnings` then failed with 27
+    real lint errors** (2026-08-22) — the first time this gate has ever
+    actually executed. Distinct from every fix above: not a pipeline bug,
+    genuine code-quality debt (`cmp_owned`, `unnecessary_unwrap`, a missing
+    `.truncate(true)`, a derivable `Default` impl, dead-code warnings)
+    across `state_store.rs`, `trust_pointer.rs`, `update.rs`,
+    `value_derivation.rs`, and others, accumulated because no gate had ever
+    run to catch it. Confirms the pipeline itself is now sound — it reached
+    a real code-quality gate and the gate did its job. Not fixed as part of
+    wiring the trigger; left as follow-up work.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
