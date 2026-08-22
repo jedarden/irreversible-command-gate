@@ -444,7 +444,16 @@ GuardedPattern:
     route, and registered the live Forgejo webhook on this repo. Every push
     to `main` now submits an `icg-ci` run; the version-gated skip inside the
     release step (see below) still means a run only *cuts* a release when
-    `Cargo.toml`'s version actually bumps.
+    `Cargo.toml`'s version actually bumps. **The first live-tested filter was
+    itself wrong**: the pattern copied from `pdftract-ci-sensor.yml`
+    (`headers.X-Forgejo-Event`) silently discarded every real delivery — this
+    Forgejo instance sends `X-Gitea-Event`/`X-Forgejo-Event-Type`, never
+    `X-Forgejo-Event`. Caught only because the very first push after wiring
+    it was watched live end-to-end rather than trusted on config-looks-right
+    alone; every other `*-sensor.yml` in `declarative-config` filtering on
+    that same header likely has the identical bug and has never actually
+    fired. Fixed for `icg-ci-sensor.yml`; not audited fleet-wide as part of
+    this change.
   - Implement release-integrity verification per
     `docs/notes/release-integrity-verification.md`: a fixed
     deny-must-still-fire regression suite plus a structured `coverage-diff/v1`
