@@ -365,12 +365,11 @@ fn print_check_result(result: &CheckResult, packs: &[Pack]) {
             println!("Reason: {reason}");
             println!("Pack: {pack_id}");
             println!("Pattern: {pattern_id}");
-            if let Some(pattern) = packs
-                .iter()
-                .find_map(|pack| pack.guarded_patterns.iter().find(|pattern| {
-                    pack.id == *pack_id && pattern.id == *pattern_id
-                }))
-            {
+            if let Some(pattern) = packs.iter().find_map(|pack| {
+                pack.guarded_patterns
+                    .iter()
+                    .find(|pattern| pack.id == *pack_id && pattern.id == *pattern_id)
+            }) {
                 println!("Severity: {:?}", pattern.severity);
                 println!("Explanation: {}", pattern.explanation);
                 println!("Redirect: {}", pattern.redirect.reason_template);
@@ -682,7 +681,10 @@ fn load_operator_denials(explicit: Option<&Path>) -> Result<Vec<OperatorDenial>>
         );
     }
     if denials.is_empty() {
-        bail!("denial log {} did not contain any denial records", path.display())
+        bail!(
+            "denial log {} did not contain any denial records",
+            path.display()
+        )
     }
     Ok(denials)
 }
@@ -757,10 +759,13 @@ pub fn run_operator_status(args: &StatusArgs) -> Result<()> {
     }
 
     let since = args.since.as_deref().or(Some("1h"));
-    let denials = filter_operator_denials(load_operator_denials(args.denial_log.as_deref())?, since)?;
+    let denials =
+        filter_operator_denials(load_operator_denials(args.denial_log.as_deref())?, since)?;
     match args.format.as_deref() {
         Some("json") => println!("{}", serde_json::to_string_pretty(&denials)?),
-        Some("table") | None if args.pattern_summary => print_pattern_summary(&denials, since.unwrap()),
+        Some("table") | None if args.pattern_summary => {
+            print_pattern_summary(&denials, since.unwrap())
+        }
         Some("table") | None if args.trend => print_denial_trend(&denials, since.unwrap()),
         Some("table") | None => print_denial_table(&denials, since.unwrap()),
         Some(other) => bail!("unsupported denial format '{other}'; use table or json"),
@@ -774,7 +779,11 @@ fn print_denial_table(denials: &[OperatorDenial], since: &str) {
     println!("Time                    Pack        Pattern              Severity");
     println!("────────────────────────────────────────────────────────────────");
     for denial in denials {
-        let time = denial.timestamp.replace('T', " ").trim_end_matches('Z').to_string();
+        let time = denial
+            .timestamp
+            .replace('T', " ")
+            .trim_end_matches('Z')
+            .to_string();
         println!(
             "{time:<23} {:<11} {:<20} {}",
             denial.pack_id, denial.pattern_id, denial.severity
@@ -849,7 +858,10 @@ pub fn run_health_report(check_packs: bool, check_hooks: bool, verbose: bool) ->
         println!("✓ Claude Code hook configured");
     }
     if verbose {
-        println!("✓ icg binary: /usr/local/bin/icg v{}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "✓ icg binary: /usr/local/bin/icg v{}",
+            env!("CARGO_PKG_VERSION")
+        );
         println!("✓ Rule packs: {} packs loaded", packs.len());
         for pack in &packs {
             println!("  - {} ({} patterns)", pack.id, pack.guarded_patterns.len());
@@ -867,11 +879,11 @@ pub fn run_update_check() -> Result<()> {
         return Ok(());
     };
     let fixture_path = PathBuf::from(path);
-    let fixture: UpdateFixture = serde_json::from_str(
-        &fs::read_to_string(&fixture_path)
-            .with_context(|| format!("failed to read update fixture {}", fixture_path.display()))?,
-    )
-    .with_context(|| format!("invalid update fixture {}", fixture_path.display()))?;
+    let fixture: UpdateFixture =
+        serde_json::from_str(&fs::read_to_string(&fixture_path).with_context(|| {
+            format!("failed to read update fixture {}", fixture_path.display())
+        })?)
+        .with_context(|| format!("invalid update fixture {}", fixture_path.display()))?;
     if fixture.updates.is_empty() {
         println!("No updates available.");
         return Ok(());
@@ -1471,8 +1483,8 @@ pub fn run_install(
     let install_dir = match install_dir {
         Some(dir) => dir,
         None => {
-            let home = dirs::home_dir()
-                .context("Could not determine home directory for ~/.local/bin")?;
+            let home =
+                dirs::home_dir().context("Could not determine home directory for ~/.local/bin")?;
             home.join(".local/bin")
         }
     };
@@ -1521,8 +1533,7 @@ pub fn run_install(
     }
 
     // Verify that icg binary exists
-    let icg_binary = std::env::current_exe()
-        .context("Could not determine path to icg binary")?;
+    let icg_binary = std::env::current_exe().context("Could not determine path to icg binary")?;
 
     if !icg_binary.exists() {
         bail!("icg binary not found at {}", icg_binary.display());
@@ -1530,8 +1541,12 @@ pub fn run_install(
 
     // Create installation directory if it doesn't exist
     if !install_dir.exists() {
-        fs::create_dir_all(&install_dir)
-            .with_context(|| format!("failed to create install directory {}", install_dir.display()))?;
+        fs::create_dir_all(&install_dir).with_context(|| {
+            format!(
+                "failed to create install directory {}",
+                install_dir.display()
+            )
+        })?;
     }
 
     // Show what will be installed
@@ -1599,7 +1614,10 @@ pub fn run_install(
 
         #[cfg(not(unix))]
         {
-            failed.push((keyword.clone(), "PATH-wrapper not supported on non-Unix platforms".to_string()));
+            failed.push((
+                keyword.clone(),
+                "PATH-wrapper not supported on non-Unix platforms".to_string(),
+            ));
         }
     }
 
@@ -1629,9 +1647,14 @@ pub fn run_install(
         println!();
         println!("PATH-wrapper installation complete.");
         println!();
-        println!("The install directory ({}) must be earlier in PATH than the real binaries.",
-                 install_dir.display());
-        println!("Verify with: echo $PATH | grep -o {}[^:]*", install_dir.display());
+        println!(
+            "The install directory ({}) must be earlier in PATH than the real binaries.",
+            install_dir.display()
+        );
+        println!(
+            "Verify with: echo $PATH | grep -o {}[^:]*",
+            install_dir.display()
+        );
     }
 
     Ok(())
@@ -1640,7 +1663,10 @@ pub fn run_install(
 /// Remove PATH-wrapper symlinks
 fn run_uninstall(install_dir: &Path, force: bool) -> Result<()> {
     if !install_dir.exists() {
-        bail!("Install directory does not exist: {}", install_dir.display());
+        bail!(
+            "Install directory does not exist: {}",
+            install_dir.display()
+        );
     }
 
     // Find all symlinks that point to icg
@@ -1664,13 +1690,19 @@ fn run_uninstall(install_dir: &Path, force: bool) -> Result<()> {
     }
 
     if found.is_empty() {
-        println!("No PATH-wrapper symlinks found in {}", install_dir.display());
+        println!(
+            "No PATH-wrapper symlinks found in {}",
+            install_dir.display()
+        );
         return Ok(());
     }
 
     println!("Found {} PATH-wrapper symlink(s):", found.len());
     for path in &found {
-        println!("  - {}", path.file_name().unwrap_or_default().to_string_lossy());
+        println!(
+            "  - {}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
     }
     println!();
 
@@ -1704,7 +1736,10 @@ fn run_uninstall(install_dir: &Path, force: bool) -> Result<()> {
     if !removed.is_empty() {
         println!("Removed {} symlink(s):", removed.len());
         for path in &removed {
-            println!("  ✓ {}", path.file_name().unwrap_or_default().to_string_lossy());
+            println!(
+                "  ✓ {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
         }
     }
 

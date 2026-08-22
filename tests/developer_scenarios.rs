@@ -167,12 +167,7 @@ fn scenario_7_regression_generation_verification_and_coverage_diff() {
     let output_path = tempdir().unwrap().path().join("git-regression.json");
     let baseline_arg = baseline_path.to_string_lossy().into_owned();
     let output_arg = output_path.to_string_lossy().into_owned();
-    let generated = icg(&[
-        "regression-suite",
-        &baseline_arg,
-        "--output",
-        &output_arg,
-    ]);
+    let generated = icg(&["regression-suite", &baseline_arg, "--output", &output_arg]);
     assert!(generated.status.success(), "{}", output_text(&generated));
     let generated_json: RegressionSuite = serde_json::from_str(
         &fs::read_to_string(&output_path).expect("regression output should exist"),
@@ -200,7 +195,11 @@ fn scenario_7_regression_generation_verification_and_coverage_diff() {
         "--justification",
         "The short force flag is retired after the replacement rule was verified.",
     ]);
-    assert!(approved_diff.status.success(), "{}", output_text(&approved_diff));
+    assert!(
+        approved_diff.status.success(),
+        "{}",
+        output_text(&approved_diff)
+    );
 
     // Verification must fail when a developer deletes a case or changes its
     // fixed input so a narrowed rule cannot silently ship.
@@ -266,7 +265,10 @@ fn scenario_8_debug_trace_reproduce_fix_and_verify_false_positive() {
         "kubectl-delete-pvc: MATCH",
         "Final verdict: DENY",
     ] {
-        assert!(trace.contains(marker), "debug trace missing {marker:?}: {trace}");
+        assert!(
+            trace.contains(marker),
+            "debug trace missing {marker:?}: {trace}"
+        );
     }
 
     let explain = icg(&[
@@ -336,19 +338,20 @@ fn scenario_9_custom_predicates_evaluate_shared_checkout_scope() {
         file_path: "docs/developer-notes.md".to_string(),
         content: "The checkout is healthy.\n".to_string(),
     };
-    assert_eq!(engine.evaluate_content(&unrelated_write), CheckResult::Allowed);
+    assert_eq!(
+        engine.evaluate_content(&unrelated_write),
+        CheckResult::Allowed
+    );
 
     let pack_arg = fixture("adding-custom-predicates.json")
         .to_string_lossy()
         .into_owned();
-    let request =
-        r#"{"toolName":"Write","toolInput":{"filePath":".beads/checkpoint/developer-scenario.json","content":"{}"}}"#;
+    let request = r#"{"toolName":"Write","toolInput":{"filePath":".beads/checkpoint/developer-scenario.json","content":"{}"}}"#;
     let denied = icg_with_stdin(&["check", "--stdin", "--pack", &pack_arg], request);
     assert!(denied.status.success(), "{}", output_text(&denied));
     assert!(output_text(&denied).contains("beads-shared-checkout-write"));
 
-    let safe_request =
-        r#"{"toolName":"Write","toolInput":{"filePath":"docs/developer-notes.md","content":"safe"}}"#;
+    let safe_request = r#"{"toolName":"Write","toolInput":{"filePath":"docs/developer-notes.md","content":"safe"}}"#;
     let allowed = icg_with_stdin(&["check", "--stdin", "--pack", &pack_arg], safe_request);
     assert!(allowed.status.success(), "{}", output_text(&allowed));
     assert!(output_text(&allowed).contains("ALLOW"));
@@ -372,9 +375,8 @@ fn developer_rule_pack_fixtures_validate_and_readme_commands_are_executable() {
             assert!(ids.insert(id.to_string()), "duplicate pattern id in {name}");
             match check {
                 Check::CommandRegex { regex } | Check::ContentRegex { regex } => {
-                    Regex::new(regex).unwrap_or_else(|error| {
-                        panic!("invalid regex in {name}/{id}: {error}")
-                    });
+                    Regex::new(regex)
+                        .unwrap_or_else(|error| panic!("invalid regex in {name}/{id}: {error}"));
                 }
                 Check::Predicate { predicate_name, .. } => {
                     assert!(!predicate_name.trim().is_empty());
@@ -387,7 +389,10 @@ fn developer_rule_pack_fixtures_validate_and_readme_commands_are_executable() {
         for pattern in &pack.guarded_patterns {
             validate_pattern(&pattern.id, &pattern.check);
         }
-        assert!(!pack.guarded_patterns.is_empty(), "{name} needs guarded coverage");
+        assert!(
+            !pack.guarded_patterns.is_empty(),
+            "{name} needs guarded coverage"
+        );
     }
 
     let corrupt = fixture("../../fixtures/corrupt-rule-pack.json");
@@ -406,10 +411,9 @@ fn developer_rule_pack_fixtures_validate_and_readme_commands_are_executable() {
     assert!(baseline_snapshot["cases"].as_array().unwrap().len() >= 4);
     assert!(updated_snapshot["cases"].as_array().unwrap().len() >= 4);
 
-    let readme = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples/README.md"),
-    )
-    .unwrap();
+    let readme =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/examples/README.md"))
+            .unwrap();
     for marker in [
         "### Scenario 6: Creating a New Rule Pack",
         "### Scenario 7: Testing Pattern Changes",
@@ -421,6 +425,9 @@ fn developer_rule_pack_fixtures_validate_and_readme_commands_are_executable() {
         "--debug",
         "is_shared_checkout",
     ] {
-        assert!(readme.contains(marker), "README missing developer marker {marker:?}");
+        assert!(
+            readme.contains(marker),
+            "README missing developer marker {marker:?}"
+        );
     }
 }

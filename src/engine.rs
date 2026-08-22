@@ -545,13 +545,15 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
         }
     };
 
-    let finish_command =
-        |commands: &mut Vec<Vec<String>>, command: &mut Vec<String>, word: &mut String, started: &mut bool| {
-            finish_word(command, word, started);
-            if !command.is_empty() {
-                commands.push(std::mem::take(command));
-            }
-        };
+    let finish_command = |commands: &mut Vec<Vec<String>>,
+                          command: &mut Vec<String>,
+                          word: &mut String,
+                          started: &mut bool| {
+        finish_word(command, word, started);
+        if !command.is_empty() {
+            commands.push(std::mem::take(command));
+        }
+    };
 
     let mut chars = input.chars().peekable();
     while let Some(character) = chars.next() {
@@ -609,12 +611,7 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
                 // Treat both short and compound shell operators as command
                 // boundaries. The second character of &&/|| is just another
                 // delimiter and therefore yields no empty command.
-                finish_command(
-                    &mut commands,
-                    &mut command,
-                    &mut word,
-                    &mut word_started,
-                );
+                finish_command(&mut commands, &mut command, &mut word, &mut word_started);
             }
             _ => {
                 word.push(character);
@@ -630,12 +627,7 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
         word.push('\\');
         word_started = true;
     }
-    finish_command(
-        &mut commands,
-        &mut command,
-        &mut word,
-        &mut word_started,
-    );
+    finish_command(&mut commands, &mut command, &mut word, &mut word_started);
 
     commands
 }
@@ -678,8 +670,8 @@ fn skip_options(tokens: &[String], mut index: usize, options_with_values: &[&str
             break;
         }
 
-        let consumes_next = options_with_values.contains(&option_name(token))
-            && !token.contains('=');
+        let consumes_next =
+            options_with_values.contains(&option_name(token)) && !token.contains('=');
         index += 1;
         if consumes_next && index < tokens.len() {
             index += 1;
@@ -711,8 +703,22 @@ fn strip_command_prefixes(
                     tokens,
                     index,
                     &[
-                        "-u", "--user", "-g", "--group", "-C", "--chdir", "-R", "--chroot",
-                        "-r", "--role", "-t", "--type", "-p", "--prompt", "-T", "--command-timeout",
+                        "-u",
+                        "--user",
+                        "-g",
+                        "--group",
+                        "-C",
+                        "--chdir",
+                        "-R",
+                        "--chroot",
+                        "-r",
+                        "--role",
+                        "-t",
+                        "--type",
+                        "-p",
+                        "--prompt",
+                        "-T",
+                        "--command-timeout",
                     ],
                 );
             }
@@ -724,9 +730,7 @@ fn strip_command_prefixes(
                     &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
                 );
             }
-            _ if ignored_prefixes
-                .iter()
-                .any(|ignored| ignored == prefix) => {
+            _ if ignored_prefixes.iter().any(|ignored| ignored == prefix) => {
                 index += 1;
                 index = skip_options(tokens, index, &["-a", "--argv0", "--format", "-f"]);
             }
@@ -839,7 +843,10 @@ impl Engine {
     }
 
     /// Set the telemetry store for recording evaluation results
-    pub fn with_telemetry_store(mut self, store: std::sync::Arc<std::sync::Mutex<crate::telemetry::TelemetryStore>>) -> Self {
+    pub fn with_telemetry_store(
+        mut self,
+        store: std::sync::Arc<std::sync::Mutex<crate::telemetry::TelemetryStore>>,
+    ) -> Self {
         self.telemetry_store = Some(store);
         self
     }
@@ -857,7 +864,10 @@ impl Engine {
     }
 
     /// Set the state store for Tier 2 cross-invocation state tracking
-    pub fn with_state_store(mut self, store: std::sync::Arc<crate::state_store::StateStore>) -> Self {
+    pub fn with_state_store(
+        mut self,
+        store: std::sync::Arc<crate::state_store::StateStore>,
+    ) -> Self {
         self.state_store = Some(store);
         self
     }
@@ -922,7 +932,9 @@ impl Engine {
             return Ok(None);
         };
 
-        let result = catch_unwind(AssertUnwindSafe(|| Self::input_source_from_pre_tool_use(input)));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            Self::input_source_from_pre_tool_use(input)
+        }));
         match result {
             Ok(Ok(input)) => Ok(input),
             Ok(Err(error)) => {
@@ -957,9 +969,7 @@ impl Engine {
         }
     }
 
-    fn read_pre_tool_use_payload_inner(
-        &self,
-    ) -> Result<(PreToolUseInput, serde_json::Value)> {
+    fn read_pre_tool_use_payload_inner(&self) -> Result<(PreToolUseInput, serde_json::Value)> {
         use std::io::{self, Read};
 
         let mut input = String::new();
@@ -968,8 +978,8 @@ impl Engine {
             .context("Failed to read stdin")?;
 
         // Parse and validate the JSON input
-        let raw: serde_json::Value = serde_json::from_str(&input)
-            .context("Failed to parse hook input JSON")?;
+        let raw: serde_json::Value =
+            serde_json::from_str(&input).context("Failed to parse hook input JSON")?;
         let parsed = Self::parse_and_validate_pre_tool_use(&input)?;
         let tool_input = raw
             .get("toolInput")
@@ -1215,8 +1225,7 @@ impl Engine {
     ///
     /// Returns a list of command tokens, one per segment found in the input
     pub fn segment_command(&self, source: &CommandSource) -> Vec<CommandToken> {
-        let Some(env_assign_pattern) = &self.env_assign_pattern
-        else {
+        let Some(env_assign_pattern) = &self.env_assign_pattern else {
             return vec![];
         };
 
@@ -1230,13 +1239,11 @@ impl Engine {
             // argv has already gone through the operating system's argument
             // parsing. Do not join it and lex again: an argument such as
             // `--message=a;b` is data, not a second shell command.
-            CommandSource::Argv(argv) => command_token_from_words(
-                argv.clone(),
-                env_assign_pattern,
-                &self.ignored_prefixes,
-            )
-            .into_iter()
-            .collect(),
+            CommandSource::Argv(argv) => {
+                command_token_from_words(argv.clone(), env_assign_pattern, &self.ignored_prefixes)
+                    .into_iter()
+                    .collect()
+            }
         }
     }
 
@@ -1405,9 +1412,7 @@ impl Engine {
     pub fn evaluate_token(&self, token: &CommandToken) -> CheckResult {
         match catch_unwind(AssertUnwindSafe(|| self.evaluate_token_inner(token))) {
             Ok(result) => result,
-            Err(_) => {
-                self.guard_failure_result("token evaluation panicked")
-            }
+            Err(_) => self.guard_failure_result("token evaluation panicked"),
         }
     }
 
@@ -1588,9 +1593,7 @@ impl Engine {
     pub fn evaluate_command(&self, source: &CommandSource) -> CheckResult {
         let result = match catch_unwind(AssertUnwindSafe(|| self.evaluate_command_inner(source))) {
             Ok(result) => result,
-            Err(_) => {
-                self.guard_failure_result("command evaluation panicked")
-            }
+            Err(_) => self.guard_failure_result("command evaluation panicked"),
         };
 
         // Record telemetry result if configured
@@ -1806,7 +1809,10 @@ impl Engine {
                     Ok(result) => Ok(result),
                     Err(_) => {
                         // Predicate evaluation error - fail open
-                        report_fail_open(&format!("predicate evaluation failed for '{}'", predicate_name));
+                        report_fail_open(&format!(
+                            "predicate evaluation failed for '{}'",
+                            predicate_name
+                        ));
                         Err(())
                     }
                 }
@@ -1940,7 +1946,9 @@ impl Engine {
             .filter_map(|words| {
                 command_token_from_words(words, env_assign_pattern, &self.ignored_prefixes)
             })
-            .any(|token| token.executable != canonical && deprecated.contains(&token.executable.as_str())))
+            .any(|token| {
+                token.executable != canonical && deprecated.contains(&token.executable.as_str())
+            }))
     }
 
     /// Convert a GuardedPattern to a CheckResult
@@ -1957,10 +1965,8 @@ impl Engine {
                 pattern_id: pattern.id.clone(),
             },
             crate::rule_pack::Channel::UpdatedInput => {
-                let rewrite = self.render_command_rewrite(
-                    pattern.redirect.rewrite_template.as_deref(),
-                    command,
-                );
+                let rewrite = self
+                    .render_command_rewrite(pattern.redirect.rewrite_template.as_deref(), command);
                 CheckResult::Rewrite {
                     reason: render_reason(&pattern.redirect.reason_template, None, None),
                     rewrite,
@@ -2099,9 +2105,7 @@ impl Engine {
     pub fn evaluate_content(&self, source: &ContentSource) -> CheckResult {
         let result = match catch_unwind(AssertUnwindSafe(|| self.evaluate_content_inner(source))) {
             Ok(result) => result,
-            Err(_) => {
-                self.guard_failure_result("content evaluation panicked")
-            }
+            Err(_) => self.guard_failure_result("content evaluation panicked"),
         };
 
         // Record telemetry result if configured
@@ -2116,14 +2120,11 @@ impl Engine {
     pub fn evaluate_content_batch(&self, sources: &[ContentSource]) -> CheckResult {
         let mut result = CheckResult::Allowed;
         for source in sources {
-            let file_result = match catch_unwind(AssertUnwindSafe(|| {
-                self.evaluate_content_inner(source)
-            })) {
-                Ok(result) => result,
-                Err(_) => {
-                    self.guard_failure_result("content batch evaluation panicked")
-                }
-            };
+            let file_result =
+                match catch_unwind(AssertUnwindSafe(|| self.evaluate_content_inner(source))) {
+                    Ok(result) => result,
+                    Err(_) => self.guard_failure_result("content batch evaluation panicked"),
+                };
             result = self.most_severe_result(result, file_result);
             if matches!(result, CheckResult::Denied { .. }) {
                 break;
@@ -2140,7 +2141,8 @@ impl Engine {
         if self.should_fail_open() {
             return if self.should_fail_closed() {
                 CheckResult::Denied {
-                    reason: "Guard crash in fail-closed mode - rejecting all operations".to_string(),
+                    reason: "Guard crash in fail-closed mode - rejecting all operations"
+                        .to_string(),
                     pack_id: "fail-closed".to_string(),
                     pattern_id: "guard-crash".to_string(),
                 }
@@ -2201,11 +2203,8 @@ impl Engine {
 
                 if matches {
                     // Pattern matched - convert to CheckResult
-                    let pattern_result = self.guarded_pattern_to_result_content(
-                        guarded_pattern,
-                        &pack.id,
-                        source,
-                    );
+                    let pattern_result =
+                        self.guarded_pattern_to_result_content(guarded_pattern, &pack.id, source);
 
                     // Return immediately if this is a deny (most severe)
                     if matches!(pattern_result, CheckResult::Denied { .. }) {
@@ -2246,10 +2245,7 @@ impl Engine {
                 // Command regex doesn't apply to content-mode checks
                 Ok(false)
             }
-            crate::rule_pack::Check::Predicate {
-                predicate_name,
-                ..
-            } => {
+            crate::rule_pack::Check::Predicate { predicate_name, .. } => {
                 // Predicates are evaluated against the target path rather
                 // than the text being written. The beads pack's
                 // `is_shared_checkout` predicate is additionally scoped by
@@ -2310,13 +2306,19 @@ impl Engine {
 
             let (pack_id, pattern_id) = match result {
                 CheckResult::Denied {
-                    pack_id, pattern_id, ..
+                    pack_id,
+                    pattern_id,
+                    ..
                 }
                 | CheckResult::Rewrite {
-                    pack_id, pattern_id, ..
+                    pack_id,
+                    pattern_id,
+                    ..
                 }
                 | CheckResult::Warning {
-                    pack_id, pattern_id, ..
+                    pack_id,
+                    pattern_id,
+                    ..
                 } => (Some(pack_id.as_str()), Some(pattern_id.as_str())),
                 CheckResult::Allowed => (None, None),
             };
@@ -2366,9 +2368,9 @@ fn debug_check_description(check: &crate::rule_pack::Check) -> String {
         crate::rule_pack::Check::ContentRegex { regex } => {
             format!("content regex {regex:?}")
         }
-        crate::rule_pack::Check::Predicate {
-            predicate_name, ..
-        } => format!("predicate {predicate_name:?}"),
+        crate::rule_pack::Check::Predicate { predicate_name, .. } => {
+            format!("predicate {predicate_name:?}")
+        }
     }
 }
 
@@ -2438,12 +2440,17 @@ fn validate_check_regex(check: &crate::rule_pack::Check) -> Result<()> {
 
 fn report_failure(fail_closed: bool, message: &str) {
     use std::io::Write;
-    let mode = if fail_closed { "fail-closed" } else { "fail-open" };
-    let action = if fail_closed { "denying all commands" } else { "allowing all commands" };
-    let _ = writeln!(
-        std::io::stderr(),
-        "Engine: {mode}: {message} ({action})"
-    );
+    let mode = if fail_closed {
+        "fail-closed"
+    } else {
+        "fail-open"
+    };
+    let action = if fail_closed {
+        "denying all commands"
+    } else {
+        "allowing all commands"
+    };
+    let _ = writeln!(std::io::stderr(), "Engine: {mode}: {message} ({action})");
 }
 
 /// Report a fail-open event where the guard crashed and is allowing operations
@@ -2533,8 +2540,8 @@ pub fn check_remote_head_stale() -> Result<bool> {
         return Ok(false);
     }
 
-    let output = String::from_utf8(remote_head.stdout)
-        .context("Failed to parse remote HEAD output")?;
+    let output =
+        String::from_utf8(remote_head.stdout).context("Failed to parse remote HEAD output")?;
 
     // Parse the ls-remote output: format is "<SHA>\t<ref>"
     let lines: Vec<&str> = output.lines().collect();
@@ -2549,7 +2556,9 @@ pub fn check_remote_head_stale() -> Result<bool> {
             let remote_sha = parts[0].trim();
             let remote_ref = parts[1].trim();
 
-            if remote_ref == &branch_ref || remote_ref.ends_with(&format!("/{}", parts[1..].join("/"))) {
+            if remote_ref == &branch_ref
+                || remote_ref.ends_with(&format!("/{}", parts[1..].join("/")))
+            {
                 // Compare SHAs - if they differ, remote has moved forward
                 return Ok(remote_sha != local_head);
             }
@@ -2833,15 +2842,22 @@ mod tests {
     #[test]
     fn test_beads_predicate_allows_linked_worktree_write() {
         let repository = tempfile::tempdir().unwrap();
-        std::fs::write(repository.path().join(".git"), "gitdir: ../main/.git/worktrees/x\n")
-            .unwrap();
+        std::fs::write(
+            repository.path().join(".git"),
+            "gitdir: ../main/.git/worktrees/x\n",
+        )
+        .unwrap();
         std::fs::create_dir(repository.path().join(".beads")).unwrap();
 
         let mut engine = default_engine();
         engine.load_pack(beads_pack()).unwrap();
 
         let source = ContentSource::Write {
-            file_path: repository.path().join(".beads/events.jsonl").to_string_lossy().into_owned(),
+            file_path: repository
+                .path()
+                .join(".beads/events.jsonl")
+                .to_string_lossy()
+                .into_owned(),
             content: "{}".to_string(),
         };
 
@@ -4143,7 +4159,9 @@ mod tests {
                 explanation: "bf doctor --repair must have flush first".to_string(),
                 redirect: crate::rule_pack::Redirect {
                     channel: crate::rule_pack::Channel::Deny,
-                    reason_template: "bf doctor --repair requires flush to happen first in this session".to_string(),
+                    reason_template:
+                        "bf doctor --repair requires flush to happen first in this session"
+                            .to_string(),
                     rewrite_template: None,
                 },
                 destructive: false,
@@ -4190,7 +4208,9 @@ mod tests {
                 explanation: "bf doctor --repair must have flush first".to_string(),
                 redirect: crate::rule_pack::Redirect {
                     channel: crate::rule_pack::Channel::Deny,
-                    reason_template: "bf doctor --repair requires flush to happen first in this session".to_string(),
+                    reason_template:
+                        "bf doctor --repair requires flush to happen first in this session"
+                            .to_string(),
                     rewrite_template: None,
                 },
                 destructive: false,
@@ -4235,7 +4255,9 @@ mod tests {
                 explanation: "bf sync --flush-only must have pull first".to_string(),
                 redirect: crate::rule_pack::Redirect {
                     channel: crate::rule_pack::Channel::Deny,
-                    reason_template: "bf sync --flush-only requires git pull to happen first in this session".to_string(),
+                    reason_template:
+                        "bf sync --flush-only requires git pull to happen first in this session"
+                            .to_string(),
                     rewrite_template: None,
                 },
                 destructive: false,
@@ -4282,7 +4304,9 @@ mod tests {
                 explanation: "bf sync --flush-only must have pull first".to_string(),
                 redirect: crate::rule_pack::Redirect {
                     channel: crate::rule_pack::Channel::Deny,
-                    reason_template: "bf sync --flush-only requires git pull to happen first in this session".to_string(),
+                    reason_template:
+                        "bf sync --flush-only requires git pull to happen first in this session"
+                            .to_string(),
                     rewrite_template: None,
                 },
                 destructive: false,
@@ -4369,7 +4393,9 @@ mod tests {
                 explanation: "bf doctor --repair must have flush first".to_string(),
                 redirect: crate::rule_pack::Redirect {
                     channel: crate::rule_pack::Channel::Deny,
-                    reason_template: "bf doctor --repair requires flush to happen first in this session".to_string(),
+                    reason_template:
+                        "bf doctor --repair requires flush to happen first in this session"
+                            .to_string(),
                     rewrite_template: None,
                 },
                 destructive: false,

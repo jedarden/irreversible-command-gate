@@ -73,7 +73,13 @@ fn validation_rejects_invalid_regex_unclosed_group() {
 
     fs::write(&pack_path, invalid_regex).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let stdout = String::from_utf8_lossy(&result.stdout);
@@ -81,7 +87,10 @@ fn validation_rejects_invalid_regex_unclosed_group() {
 
     // Should reject or warn about invalid regex
     assert!(
-        output.contains("error") || output.contains("invalid") || output.contains("regex") || !result.status.success(),
+        output.contains("error")
+            || output.contains("invalid")
+            || output.contains("regex")
+            || !result.status.success(),
         "Invalid regex (unclosed group) should be rejected"
     );
 }
@@ -120,14 +129,23 @@ fn validation_rejects_invalid_regex_unmatched_bracket() {
 
     fs::write(&pack_path, invalid_regex).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let stdout = String::from_utf8_lossy(&result.stdout);
     let output = format!("{}\n{}", stdout, stderr);
 
     assert!(
-        output.contains("error") || output.contains("invalid") || output.contains("regex") || !result.status.success(),
+        output.contains("error")
+            || output.contains("invalid")
+            || output.contains("regex")
+            || !result.status.success(),
         "Invalid regex (unmatched bracket) should be rejected"
     );
 }
@@ -166,7 +184,13 @@ fn validation_rejects_invalid_regex_invalid_escape() {
 
     fs::write(&pack_path, invalid_regex).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     // Should handle the invalid escape (either reject or treat as literal 'p')
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -195,7 +219,13 @@ fn validation_rejects_missing_required_field_id() {
 
     fs::write(&pack_path, missing_id).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -205,7 +235,11 @@ fn validation_rejects_missing_required_field_id() {
     };
 
     assert!(
-        output.contains("error") || output.contains("missing") || output.contains("required") || output.contains("id") || !result.status.success(),
+        output.contains("error")
+            || output.contains("missing")
+            || output.contains("required")
+            || output.contains("id")
+            || !result.status.success(),
         "Missing required field 'id' should be rejected"
     );
 }
@@ -226,7 +260,13 @@ fn validation_allows_missing_tool_keywords_for_content_pack() {
 
     fs::write(&pack_path, missing_keywords).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -235,7 +275,10 @@ fn validation_allows_missing_tool_keywords_for_content_pack() {
         String::from_utf8_lossy(&result.stdout)
     };
 
-    assert!(result.status.success(), "content pack should load: {output}");
+    assert!(
+        result.status.success(),
+        "content pack should load: {output}"
+    );
     assert!(output.contains("ALLOW"));
 }
 
@@ -272,7 +315,13 @@ fn validation_rejects_missing_pattern_id() {
 
     fs::write(&pack_path, missing_pattern_id).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -282,7 +331,10 @@ fn validation_rejects_missing_pattern_id() {
     };
 
     assert!(
-        output.contains("error") || output.contains("missing") || output.contains("id") || !result.status.success(),
+        output.contains("error")
+            || output.contains("missing")
+            || output.contains("id")
+            || !result.status.success(),
         "Pattern missing 'id' should be rejected"
     );
 }
@@ -320,7 +372,13 @@ fn validation_rejects_missing_check_type() {
 
     fs::write(&pack_path, missing_check_type).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -330,7 +388,10 @@ fn validation_rejects_missing_check_type() {
     };
 
     assert!(
-        output.contains("error") || output.contains("missing") || output.contains("type") || !result.status.success(),
+        output.contains("error")
+            || output.contains("missing")
+            || output.contains("type")
+            || !result.status.success(),
         "Pattern missing 'check.type' should be rejected"
     );
 }
@@ -386,7 +447,13 @@ fn validation_rejects_duplicate_pattern_ids() {
 
     fs::write(&pack_path, duplicate_ids).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous1"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous1",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -396,7 +463,10 @@ fn validation_rejects_duplicate_pattern_ids() {
     };
 
     assert!(
-        output.contains("duplicate") || output.contains("unique") || output.contains("id") || !result.status.success(),
+        output.contains("duplicate")
+            || output.contains("unique")
+            || output.contains("id")
+            || !result.status.success(),
         "Duplicate pattern IDs should be rejected"
     );
 }
@@ -436,7 +506,13 @@ fn validation_rejects_redirect_without_rewrite_for_safe_operations() {
 
     fs::write(&pack_path, redirect_conflict).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test mildly-dangerous"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test mildly-dangerous",
+    ]);
 
     // This is a warning case - non-destructive with deny and no rewrite
     // Should probably provide a rewrite if it's not truly destructive
@@ -493,7 +569,13 @@ fn validation_accepts_well_formed_pack() {
 
     fs::write(&pack_path, well_formed).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test safe"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test safe",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let stdout = String::from_utf8_lossy(&result.stdout);
@@ -522,7 +604,13 @@ fn validation_handles_empty_patterns_array() {
 
     fs::write(&pack_path, empty_patterns).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test anything"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test anything",
+    ]);
 
     // Empty patterns array is valid (just allows everything)
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -572,7 +660,13 @@ fn validation_rejects_invalid_tier_value() {
 
     fs::write(&pack_path, invalid_tier).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -582,7 +676,10 @@ fn validation_rejects_invalid_tier_value() {
     };
 
     assert!(
-        output.contains("error") || output.contains("invalid") || output.contains("tier") || !result.status.success(),
+        output.contains("error")
+            || output.contains("invalid")
+            || output.contains("tier")
+            || !result.status.success(),
         "Invalid tier value should be rejected"
     );
 }
@@ -621,7 +718,13 @@ fn validation_rejects_invalid_severity_value() {
 
     fs::write(&pack_path, invalid_severity).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -631,7 +734,10 @@ fn validation_rejects_invalid_severity_value() {
     };
 
     assert!(
-        output.contains("error") || output.contains("invalid") || output.contains("severity") || !result.status.success(),
+        output.contains("error")
+            || output.contains("invalid")
+            || output.contains("severity")
+            || !result.status.success(),
         "Invalid severity value should be rejected"
     );
 }
@@ -670,7 +776,13 @@ fn validation_rejects_invalid_channel_value() {
 
     fs::write(&pack_path, invalid_channel).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
@@ -680,7 +792,10 @@ fn validation_rejects_invalid_channel_value() {
     };
 
     assert!(
-        output.contains("error") || output.contains("invalid") || output.contains("channel") || !result.status.success(),
+        output.contains("error")
+            || output.contains("invalid")
+            || output.contains("channel")
+            || !result.status.success(),
         "Invalid redirect channel value should be rejected"
     );
 }
@@ -719,7 +834,13 @@ fn validation_handles_complex_regex_patterns() {
 
     fs::write(&pack_path, complex_regex).expect("pack should write");
 
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test dangerous command"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test dangerous command",
+    ]);
 
     // Complex regex should compile and work
     let stderr = String::from_utf8_lossy(&result.stderr);

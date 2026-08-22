@@ -385,8 +385,7 @@ async fn handle_connection(
         }
     }
 
-    let request = String::from_utf8(bytes)
-        .context("Invalid UTF-8 in request")?;
+    let request = String::from_utf8(bytes).context("Invalid UTF-8 in request")?;
 
     let lines: Vec<&str> = request.lines().collect();
     if lines.is_empty() {
@@ -403,7 +402,14 @@ async fn handle_connection(
     let path = parts[1];
 
     if method != "GET" {
-        return send_response(&mut stream, 405, "Method Not Allowed", "text/plain", "Method not allowed").await;
+        return send_response(
+            &mut stream,
+            405,
+            "Method Not Allowed",
+            "text/plain",
+            "Method not allowed",
+        )
+        .await;
     }
 
     let durable_metrics = health_store
@@ -438,20 +444,37 @@ async fn handle_connection(
             let health = detailed_status(durable_metrics.clone(), local_uptime);
             let status_code = durable_metrics
                 .as_ref()
-                .map(|metrics| if metrics.status.is_running() { 200 } else { 503 })
+                .map(|metrics| {
+                    if metrics.status.is_running() {
+                        200
+                    } else {
+                        503
+                    }
+                })
                 .unwrap_or(200);
             (
                 status_code,
-                if status_code == 200 { "OK" } else { "Service Unavailable" },
+                if status_code == 200 {
+                    "OK"
+                } else {
+                    "Service Unavailable"
+                },
                 "application/json",
                 serde_json::to_string_pretty(&health)?,
             )
         }
         "/health/ready" => {
             if !config.readiness_enabled {
-                (404, "Not Found", "text/plain", "Readiness probe disabled".to_string())
+                (
+                    404,
+                    "Not Found",
+                    "text/plain",
+                    "Readiness probe disabled".to_string(),
+                )
             } else {
-                let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
+                let state_guard = state
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
                 let ready = state_guard.ready
@@ -462,12 +485,21 @@ async fn handle_connection(
 
                 if ready {
                     let health = detailed_status(durable_metrics.clone(), uptime);
-                    (200, "OK", "application/json", serde_json::to_string_pretty(&health)?)
+                    (
+                        200,
+                        "OK",
+                        "application/json",
+                        serde_json::to_string_pretty(&health)?,
+                    )
                 } else {
                     let reason = state_guard
                         .not_ready_reason
                         .clone()
-                        .or_else(|| durable_metrics.as_ref().map(|metrics| format!("guard status: {:?}", metrics.status)))
+                        .or_else(|| {
+                            durable_metrics
+                                .as_ref()
+                                .map(|metrics| format!("guard status: {:?}", metrics.status))
+                        })
                         .unwrap_or_else(|| "Unknown reason".to_string());
                     let mut health = HealthStatus::not_ready(uptime, reason);
                     health.details = Some(serde_json::json!({
@@ -478,15 +510,27 @@ async fn handle_connection(
                             .unwrap_or_else(|| serde_json::Value::String("not ready".to_string())),
                         "health_metrics": durable_metrics.clone(),
                     }));
-                    (503, "Service Unavailable", "application/json", serde_json::to_string_pretty(&health)?)
+                    (
+                        503,
+                        "Service Unavailable",
+                        "application/json",
+                        serde_json::to_string_pretty(&health)?,
+                    )
                 }
             }
         }
         "/health/live" => {
             if !config.liveness_enabled {
-                (404, "Not Found", "text/plain", "Liveness probe disabled".to_string())
+                (
+                    404,
+                    "Not Found",
+                    "text/plain",
+                    "Liveness probe disabled".to_string(),
+                )
             } else {
-                let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
+                let state_guard = state
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
                 let alive = state_guard.alive
@@ -497,12 +541,21 @@ async fn handle_connection(
 
                 if alive {
                     let health = detailed_status(durable_metrics.clone(), uptime);
-                    (200, "OK", "application/json", serde_json::to_string_pretty(&health)?)
+                    (
+                        200,
+                        "OK",
+                        "application/json",
+                        serde_json::to_string_pretty(&health)?,
+                    )
                 } else {
                     let reason = state_guard
                         .not_alive_reason
                         .clone()
-                        .or_else(|| durable_metrics.as_ref().map(|metrics| format!("guard status: {:?}", metrics.status)))
+                        .or_else(|| {
+                            durable_metrics
+                                .as_ref()
+                                .map(|metrics| format!("guard status: {:?}", metrics.status))
+                        })
                         .unwrap_or_else(|| "Unknown reason".to_string());
                     let mut health = HealthStatus::unhealthy(uptime, reason);
                     health.details = Some(serde_json::json!({
@@ -513,15 +566,27 @@ async fn handle_connection(
                             .unwrap_or_else(|| serde_json::Value::String("not alive".to_string())),
                         "health_metrics": durable_metrics.clone(),
                     }));
-                    (503, "Service Unavailable", "application/json", serde_json::to_string_pretty(&health)?)
+                    (
+                        503,
+                        "Service Unavailable",
+                        "application/json",
+                        serde_json::to_string_pretty(&health)?,
+                    )
                 }
             }
         }
         "/metrics" => {
             if !config.metrics_enabled {
-                (404, "Not Found", "text/plain", "Metrics endpoint disabled".to_string())
+                (
+                    404,
+                    "Not Found",
+                    "text/plain",
+                    "Metrics endpoint disabled".to_string(),
+                )
             } else {
-                let state_guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
+                let state_guard = state
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Failed to lock state: {}", e))?;
                 let uptime = state_guard.uptime_seconds();
 
                 let server_metrics = format!(
@@ -535,17 +600,19 @@ async fn handle_connection(
                 );
 
                 let mut metrics = if let Some(monitoring_config) = monitoring_config {
-                    crate::monitoring::export_prometheus(&monitoring_config)
-                        .unwrap_or_else(|error| {
+                    crate::monitoring::export_prometheus(&monitoring_config).unwrap_or_else(
+                        |error| {
                             format!(
                                 "# Monitoring scrape failed: {error:#}\n\
                                 icg_monitoring_collection_errors 1\n"
                             )
-                        })
+                        },
+                    )
                 } else {
                     let mut metrics = String::new();
                     if let Some(health) = durable_metrics {
-                        let guard_metrics = crate::metrics::GuardMetrics::from_health_metrics(&health);
+                        let guard_metrics =
+                            crate::metrics::GuardMetrics::from_health_metrics(&health);
                         metrics.push_str(&format!(
                             "icg_uptime_seconds {}\n\
                             icg_total_crashes {}\n\
@@ -570,9 +637,7 @@ async fn handle_connection(
                 (200, "OK", "text/plain", metrics)
             }
         }
-        _ => {
-            (404, "Not Found", "text/plain", "Not found".to_string())
-        }
+        _ => (404, "Not Found", "text/plain", "Not found".to_string()),
     };
 
     send_response(&mut stream, status_code, status_text, content_type, &body).await
@@ -712,13 +777,17 @@ mod tests {
 
         // Mark as not ready
         {
-            let mut guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock: {}", e))?;
+            let mut guard = state
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock: {}", e))?;
             guard.set_not_ready("initializing".to_string());
         }
 
         // Verify state persists
         {
-            let guard = state.lock().map_err(|e| anyhow::anyhow!("Failed to lock: {}", e))?;
+            let guard = state
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock: {}", e))?;
             assert!(!guard.ready);
             assert_eq!(guard.not_ready_reason, Some("initializing".to_string()));
         }
@@ -743,7 +812,9 @@ mod tests {
             store,
         );
         server.spawn_background_task().await?;
-        let address = server.local_addr().expect("server should have a local address");
+        let address = server
+            .local_addr()
+            .expect("server should have a local address");
 
         let mut stream = tokio::net::TcpStream::connect(address).await?;
         stream

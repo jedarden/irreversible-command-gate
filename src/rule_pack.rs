@@ -75,9 +75,7 @@ impl<'de> Deserialize<'de> for Pattern {
         let id = object
             .remove("id")
             .ok_or_else(|| D::Error::custom("pattern is missing id"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(D::Error::custom)
-            })?;
+            .and_then(|value| serde_json::from_value(value).map_err(D::Error::custom))?;
         let check = match object.remove("check") {
             Some(value) => serde_json::from_value(value).map_err(D::Error::custom)?,
             None => serde_json::from_value(Value::Object(object)).map_err(D::Error::custom)?,
@@ -140,9 +138,7 @@ impl<'de> Deserialize<'de> for GuardedPattern {
         let id = object
             .remove("id")
             .ok_or_else(|| D::Error::custom("guarded pattern is missing id"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(D::Error::custom)
-            })?;
+            .and_then(|value| serde_json::from_value(value).map_err(D::Error::custom))?;
         let enabled = object
             .remove("enabled")
             .map(serde_json::from_value)
@@ -151,33 +147,26 @@ impl<'de> Deserialize<'de> for GuardedPattern {
             .unwrap_or_else(default_enabled);
         let check = match object.remove("check") {
             Some(value) => serde_json::from_value(value).map_err(D::Error::custom)?,
-            None => serde_json::from_value(Value::Object(object.clone()))
-                .map_err(D::Error::custom)?,
+            None => {
+                serde_json::from_value(Value::Object(object.clone())).map_err(D::Error::custom)?
+            }
         };
         let tier = object
             .remove("tier")
             .ok_or_else(|| D::Error::custom("guarded pattern is missing tier"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(D::Error::custom)
-            })?;
+            .and_then(|value| serde_json::from_value(value).map_err(D::Error::custom))?;
         let severity = object
             .remove("severity")
             .ok_or_else(|| D::Error::custom("guarded pattern is missing severity"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(D::Error::custom)
-            })?;
+            .and_then(|value| serde_json::from_value(value).map_err(D::Error::custom))?;
         let explanation = object
             .remove("explanation")
             .ok_or_else(|| D::Error::custom("guarded pattern is missing explanation"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(D::Error::custom)
-            })?;
+            .and_then(|value| serde_json::from_value(value).map_err(D::Error::custom))?;
         let redirect = object
             .remove("redirect")
             .ok_or_else(|| D::Error::custom("guarded pattern is missing redirect"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(D::Error::custom)
-            })?;
+            .and_then(|value| serde_json::from_value(value).map_err(D::Error::custom))?;
         let destructive = object
             .remove("destructive")
             .map(serde_json::from_value)
@@ -339,15 +328,15 @@ pub fn load_pack<P: AsRef<Path>>(path: P) -> Result<Pack> {
     let extension = path.extension().and_then(|e| e.to_str());
 
     match extension {
-        Some("json") => {
-            serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse JSON from {}", path.display()))
-        }
+        Some("json") => serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse JSON from {}", path.display())),
         Some("toml") => {
             // TOML support via basic_str feature for inline tables
             // For proper TOML support, we'd need toml crate
             let _ = content;
-            Err(anyhow::anyhow!("TOML support not yet implemented - please use JSON manifests"))
+            Err(anyhow::anyhow!(
+                "TOML support not yet implemented - please use JSON manifests"
+            ))
         }
         _ => {
             // Default to JSON if no extension
@@ -364,16 +353,14 @@ pub fn save_pack<P: AsRef<Path>>(pack: &Pack, path: P) -> Result<()> {
 
     let content = match extension {
         Some("json") => {
-            serde_json::to_string_pretty(pack)
-                .context("Failed to serialize pack to JSON")?
+            serde_json::to_string_pretty(pack).context("Failed to serialize pack to JSON")?
         }
         Some("toml") => {
-            return Err(anyhow::anyhow!("TOML support not yet implemented - please use JSON manifests"))
+            return Err(anyhow::anyhow!(
+                "TOML support not yet implemented - please use JSON manifests"
+            ))
         }
-        _ => {
-            serde_json::to_string_pretty(pack)
-                .context("Failed to serialize pack to JSON")?
-        }
+        _ => serde_json::to_string_pretty(pack).context("Failed to serialize pack to JSON")?,
     };
 
     std::fs::write(path, content)

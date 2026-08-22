@@ -49,11 +49,17 @@ fn repository_overrides_scenario_1_override_command_exists() {
     let override_help = icg(&["override", "--help"]);
 
     // Should succeed
-    assert!(override_help.status.success(), "override --help should succeed");
+    assert!(
+        override_help.status.success(),
+        "override --help should succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&override_help.stdout);
     assert!(
-        stdout.contains("create") || stdout.contains("approve") || stdout.contains("list") || stdout.contains("override"),
+        stdout.contains("create")
+            || stdout.contains("approve")
+            || stdout.contains("list")
+            || stdout.contains("override"),
         "Override help should mention subcommands"
     );
 }
@@ -119,7 +125,12 @@ fn repository_overrides_scenario_3_override_fields_documented() {
     // Verify the structure can be parsed
     let content = fs::read_to_string(&override_path).expect("override should be readable");
     assert!(
-        content.contains("repository") && content.contains("patternId") && content.contains("justification") && content.contains("approver") && content.contains("expiresAt") && content.contains("trustedRef"),
+        content.contains("repository")
+            && content.contains("patternId")
+            && content.contains("justification")
+            && content.contains("approver")
+            && content.contains("expiresAt")
+            && content.contains("trustedRef"),
         "Override structure should contain all required fields"
     );
 }
@@ -240,7 +251,8 @@ fn repository_overrides_scenario_6_override_expiration_tracking() {
     // This tests the temporary nature of overrides
 
     let overrides = vec![
-        (r#"{
+        (
+            r#"{
             "repository": "/home/coding/app1",
             "patternId": "pattern1",
             "justification": "Test",
@@ -248,8 +260,11 @@ fn repository_overrides_scenario_6_override_expiration_tracking() {
             "approvedAt": "2026-08-17T00:00:00Z",
             "expiresAt": "2026-09-30T23:59:59Z",
             "trustedRef": "v0.1.0"
-        }"#, "2026-09-30"),
-        (r#"{
+        }"#,
+            "2026-09-30",
+        ),
+        (
+            r#"{
             "repository": "/home/coding/app2",
             "patternId": "pattern2",
             "justification": "Test",
@@ -257,7 +272,9 @@ fn repository_overrides_scenario_6_override_expiration_tracking() {
             "approvedAt": "2026-08-17T00:00:00Z",
             "expiresAt": "2026-12-31T23:59:59Z",
             "trustedRef": "v0.1.0"
-        }"#, "2026-12-31"),
+        }"#,
+            "2026-12-31",
+        ),
     ];
 
     for (override_json, expected_expiry) in overrides {
@@ -381,7 +398,8 @@ fn repository_overrides_scenario_override_approval_workflow() {
 
     fs::write(&pending_path, pending_override).expect("pending override should write");
 
-    let pending_content = fs::read_to_string(&pending_path).expect("pending override should be readable");
+    let pending_content =
+        fs::read_to_string(&pending_path).expect("pending override should be readable");
     assert!(
         pending_content.contains("pending") && !pending_content.contains("approver"),
         "Pending override should not have approver"
@@ -400,7 +418,8 @@ fn repository_overrides_scenario_override_approval_workflow() {
 
     fs::write(&approved_path, approved_override).expect("approved override should write");
 
-    let approved_content = fs::read_to_string(&approved_path).expect("approved override should be readable");
+    let approved_content =
+        fs::read_to_string(&approved_path).expect("approved override should be readable");
     assert!(
         approved_content.contains("approver") && approved_content.contains("approvedAt"),
         "Approved override should have approver and approval timestamp"
@@ -432,7 +451,10 @@ fn repository_overrides_scenario_override_transparency() {
     let content = fs::read_to_string(&override_path).expect("override should be readable");
     // Should contain audit trail
     assert!(
-        content.contains("approver") && content.contains("justification") && content.contains("approvedAt") && content.contains("expiresAt"),
+        content.contains("approver")
+            && content.contains("justification")
+            && content.contains("approvedAt")
+            && content.contains("expiresAt"),
         "Override should contain full audit trail"
     );
 }

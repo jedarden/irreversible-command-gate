@@ -341,8 +341,12 @@ impl DenialStore {
         // Ensure parent directory exists
         if let Some(parent) = log_path.parent() {
             if !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create denial log directory: {}", parent.display()))?;
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Failed to create denial log directory: {}",
+                        parent.display()
+                    )
+                })?;
             }
         }
 
@@ -390,28 +394,55 @@ impl DenialStore {
 
         // Find the next available rotation slot
         let mut rotation_index = 1;
-        let parent = self.log_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
+        let parent = self.log_path.parent().unwrap_or_else(|| Path::new("."));
 
         loop {
-            let rotated_path = parent.join(format!("{}.{}", self.log_path.file_name().unwrap_or_default().to_string_lossy(), rotation_index));
+            let rotated_path = parent.join(format!(
+                "{}.{}",
+                self.log_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                rotation_index
+            ));
             if !rotated_path.exists() {
-                std::fs::rename(&self.log_path, &rotated_path)
-                    .with_context(|| format!("Failed to rotate denial log to {}", rotated_path.display()))?;
+                std::fs::rename(&self.log_path, &rotated_path).with_context(|| {
+                    format!("Failed to rotate denial log to {}", rotated_path.display())
+                })?;
                 break;
             }
             rotation_index += 1;
 
             if rotation_index > self.config.max_rotated_files as u32 {
                 // Delete the oldest file and rotate
-                let oldest_path = parent.join(format!("{}.{}", self.log_path.file_name().unwrap_or_default().to_string_lossy(), self.config.max_rotated_files));
+                let oldest_path = parent.join(format!(
+                    "{}.{}",
+                    self.log_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    self.config.max_rotated_files
+                ));
                 if oldest_path.exists() {
-                    std::fs::remove_file(&oldest_path)
-                        .with_context(|| format!("Failed to remove oldest rotated log: {}", oldest_path.display()))?;
+                    std::fs::remove_file(&oldest_path).with_context(|| {
+                        format!(
+                            "Failed to remove oldest rotated log: {}",
+                            oldest_path.display()
+                        )
+                    })?;
                 }
-                std::fs::rename(&self.log_path, &parent.join(format!("{}.{}", self.log_path.file_name().unwrap_or_default().to_string_lossy(), self.config.max_rotated_files)))
-                    .with_context(|| format!("Failed to rotate denial log"))?;
+                std::fs::rename(
+                    &self.log_path,
+                    &parent.join(format!(
+                        "{}.{}",
+                        self.log_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                        self.config.max_rotated_files
+                    )),
+                )
+                .with_context(|| format!("Failed to rotate denial log"))?;
                 break;
             }
         }
@@ -435,9 +466,10 @@ impl DenialStore {
         };
 
         // Acquire write lock
-        let _lock = self.write_lock.lock().map_err(|e| {
-            anyhow::anyhow!("Failed to acquire denial log write lock: {}", e)
-        })?;
+        let _lock = self
+            .write_lock
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire denial log write lock: {}", e))?;
 
         // Check if rotation is needed
         if self.needs_rotation()? {
@@ -453,14 +485,12 @@ impl DenialStore {
 
         // Write the record as a single JSON line
         let mut writer = BufWriter::new(file);
-        let json_line = serde_json::to_string(&record)
-            .context("Failed to serialize denial record")?;
+        let json_line =
+            serde_json::to_string(&record).context("Failed to serialize denial record")?;
 
-        writeln!(writer, "{}", json_line)
-            .context("Failed to write denial record")?;
+        writeln!(writer, "{}", json_line).context("Failed to write denial record")?;
 
-        writer.flush()
-            .context("Failed to flush denial log")?;
+        writer.flush().context("Failed to flush denial log")?;
 
         Ok(())
     }
@@ -478,7 +508,12 @@ impl DenialStore {
         let mut results = Vec::new();
 
         for line in reader.lines() {
-            let line = line.with_context(|| format!("Failed to read line from denial log: {}", self.log_path.display()))?;
+            let line = line.with_context(|| {
+                format!(
+                    "Failed to read line from denial log: {}",
+                    self.log_path.display()
+                )
+            })?;
 
             if let Ok(record) = serde_json::from_str::<DenialRecord>(&line) {
                 if record.matches_pattern(pattern) {
@@ -503,7 +538,12 @@ impl DenialStore {
         let mut records = Vec::new();
 
         for line in reader.lines() {
-            let line = line.with_context(|| format!("Failed to read line from denial log: {}", self.log_path.display()))?;
+            let line = line.with_context(|| {
+                format!(
+                    "Failed to read line from denial log: {}",
+                    self.log_path.display()
+                )
+            })?;
 
             if let Ok(record) = serde_json::from_str::<DenialRecord>(&line) {
                 records.push(record);
@@ -522,9 +562,12 @@ impl DenialStore {
         }
 
         let total_denials = records.len();
-        let mut by_category: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut by_severity: std::collections::HashMap<DenialSeverity, usize> = std::collections::HashMap::new();
-        let mut by_pattern: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_category: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut by_severity: std::collections::HashMap<DenialSeverity, usize> =
+            std::collections::HashMap::new();
+        let mut by_pattern: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for record in &records {
             *by_category.entry(record.category.clone()).or_insert(0) += 1;
@@ -559,7 +602,8 @@ impl DenialStore {
     /// Clean up old log files based on retention policy
     pub fn cleanup_old_logs(&self) -> Result<usize> {
         if let Some(parent) = self.log_path.parent() {
-            let retention_threshold = Utc::now() - chrono::Duration::days(self.config.retention_days as i64);
+            let retention_threshold =
+                Utc::now() - chrono::Duration::days(self.config.retention_days as i64);
             let mut removed_count = 0;
 
             for entry in std::fs::read_dir(parent)? {
@@ -567,7 +611,14 @@ impl DenialStore {
                 let path = entry.path();
 
                 // Check if this is a rotated log file
-                if path.extension().and_then(|e| e.to_str()) == Some(&*self.log_path.file_name().unwrap_or_default().to_string_lossy())
+                if path.extension().and_then(|e| e.to_str())
+                    == Some(
+                        &*self
+                            .log_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                    )
                     || path.starts_with(self.log_path.with_extension(""))
                 {
                     if let Ok(metadata) = entry.metadata() {
@@ -668,8 +719,10 @@ impl DenialAnalyzer {
         let stats = self.store.get_statistics()?;
 
         // Detect patterns of abuse (e.g., repeated attempts by same session)
-        let mut session_attempts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut user_attempts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut session_attempts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut user_attempts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         for record in &records {
             if let Some(ref session_id) = record.context.session_id {
@@ -716,8 +769,14 @@ impl DenialAnalyzer {
 
         // Overall statistics
         report.push_str("## Overall Statistics\n\n");
-        report.push_str(&format!("**Total Denials:** {}\n", analysis.statistics.total_denials));
-        report.push_str(&format!("**Unique Patterns:** {}\n", analysis.statistics.unique_patterns));
+        report.push_str(&format!(
+            "**Total Denials:** {}\n",
+            analysis.statistics.total_denials
+        ));
+        report.push_str(&format!(
+            "**Unique Patterns:** {}\n",
+            analysis.statistics.unique_patterns
+        ));
 
         if let Some((first, last)) = analysis.statistics.timestamp_range {
             report.push_str(&format!("**Time Range:** {} to {}\n", first, last));
@@ -732,7 +791,10 @@ impl DenialAnalyzer {
 
         for (category, count) in categories {
             let percentage = (*count as f64 / analysis.statistics.total_denials as f64) * 100.0;
-            report.push_str(&format!("- **{}**: {} ({:.1}%)\n", category, count, percentage));
+            report.push_str(&format!(
+                "- **{}**: {} ({:.1}%)\n",
+                category, count, percentage
+            ));
         }
 
         report.push('\n');
@@ -744,7 +806,10 @@ impl DenialAnalyzer {
 
         for (severity, count) in severities {
             let percentage = (*count as f64 / analysis.statistics.total_denials as f64) * 100.0;
-            report.push_str(&format!("- **{:?}**: {} ({:.1}%)\n", severity, count, percentage));
+            report.push_str(&format!(
+                "- **{:?}**: {} ({:.1}%)\n",
+                severity, count, percentage
+            ));
         }
 
         report.push('\n');
@@ -756,7 +821,10 @@ impl DenialAnalyzer {
             if !analysis.suspicious_sessions.is_empty() {
                 report.push_str("### High-Denial Sessions\n\n");
                 for (session_id, count) in &analysis.suspicious_sessions {
-                    report.push_str(&format!("- **Session {}**: {} denials\n", session_id, count));
+                    report.push_str(&format!(
+                        "- **Session {}**: {} denials\n",
+                        session_id, count
+                    ));
                 }
                 report.push('\n');
             }

@@ -256,9 +256,11 @@ impl CrashDetector {
         let path = std::env::var_os("ICG_CGROUP_MEMORY_EVENTS")
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
-            .or_else(|| Path::new(DEFAULT_CGROUP_MEMORY_EVENTS).is_file().then(|| {
-                PathBuf::from(DEFAULT_CGROUP_MEMORY_EVENTS)
-            }));
+            .or_else(|| {
+                Path::new(DEFAULT_CGROUP_MEMORY_EVENTS)
+                    .is_file()
+                    .then(|| PathBuf::from(DEFAULT_CGROUP_MEMORY_EVENTS))
+            });
         let baseline_oom_kill_count = path
             .as_ref()
             .and_then(|path| read_oom_kill_count(path).ok());
@@ -290,10 +292,15 @@ impl CrashDetector {
     /// counter value.
     pub fn oom_killed_since(&self, previous_count: Option<u64>) -> Result<bool> {
         let current_count = self.oom_kill_count()?;
-        Ok(match (current_count, previous_count.or(self.baseline_oom_kill_count)) {
-            (Some(current), Some(previous)) => current > previous,
-            _ => false,
-        })
+        Ok(
+            match (
+                current_count,
+                previous_count.or(self.baseline_oom_kill_count),
+            ) {
+                (Some(current), Some(previous)) => current > previous,
+                _ => false,
+            },
+        )
     }
 
     /// Classify an exit status, consulting cgroup evidence when available.
@@ -304,8 +311,12 @@ impl CrashDetector {
 }
 
 fn read_oom_kill_count(path: &Path) -> Result<u64> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read cgroup memory events from {}", path.display()))?;
+    let content = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "Failed to read cgroup memory events from {}",
+            path.display()
+        )
+    })?;
     content
         .lines()
         .find_map(|line| {
@@ -402,7 +413,10 @@ impl HealthStatus {
     pub fn is_running(&self) -> bool {
         matches!(
             self,
-            HealthStatus::Healthy | HealthStatus::Recovering | HealthStatus::Unstable | HealthStatus::Degraded
+            HealthStatus::Healthy
+                | HealthStatus::Recovering
+                | HealthStatus::Unstable
+                | HealthStatus::Degraded
         )
     }
 
@@ -550,10 +564,7 @@ impl HealthState {
         self.current_run_id = Some(new_run_id());
         self.current_run_pid = Some(std::process::id());
         self.current_run_heartbeat_at = Some(now);
-        self.current_run_oom_kill_count = CrashDetector::new()
-            .oom_kill_count()
-            .ok()
-            .flatten();
+        self.current_run_oom_kill_count = CrashDetector::new().oom_kill_count().ok().flatten();
         self.last_start_at = Some(now);
     }
 
@@ -824,13 +835,20 @@ impl Drop for HealthLock {
     fn drop(&mut self) {
         #[cfg(unix)]
         unsafe {
-            libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&self.file), libc::LOCK_UN);
+            libc::flock(
+                std::os::unix::io::AsRawFd::as_raw_fd(&self.file),
+                libc::LOCK_UN,
+            );
         }
     }
 }
 
 fn new_run_id() -> String {
-    format!("run-{}-{}", Utc::now().timestamp_nanos_opt().unwrap_or_default(), std::process::id())
+    format!(
+        "run-{}-{}",
+        Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        std::process::id()
+    )
 }
 
 #[cfg(unix)]
@@ -910,15 +928,12 @@ impl HealthStore {
 
         #[cfg(unix)]
         {
-            let result = unsafe {
-                libc::flock(
-                    std::os::unix::io::AsRawFd::as_raw_fd(&file),
-                    libc::LOCK_EX,
-                )
-            };
+            let result =
+                unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) };
             if result != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .with_context(|| format!("Failed to lock health state {}", self.path.display()));
+                return Err(std::io::Error::last_os_error()).with_context(|| {
+                    format!("Failed to lock health state {}", self.path.display())
+                });
             }
         }
 
@@ -927,11 +942,13 @@ impl HealthStore {
 
     fn load_unlocked(&self) -> Result<HealthState> {
         if self.path.exists() {
-            let content = std::fs::read_to_string(&self.path)
-                .with_context(|| format!("Failed to read health state from {}", self.path.display()))?;
+            let content = std::fs::read_to_string(&self.path).with_context(|| {
+                format!("Failed to read health state from {}", self.path.display())
+            })?;
 
-            let mut state: HealthState = serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse health state from {}", self.path.display()))?;
+            let mut state: HealthState = serde_json::from_str(&content).with_context(|| {
+                format!("Failed to parse health state from {}", self.path.display())
+            })?;
 
             if state.schema_version > HEALTH_SCHEMA_VERSION {
                 anyhow::bail!(
@@ -952,7 +969,8 @@ impl HealthStore {
 
         let mut state = state.clone();
         state.schema_version = HEALTH_SCHEMA_VERSION;
-        let content = serde_json::to_vec_pretty(&state).context("Failed to serialize health state")?;
+        let content =
+            serde_json::to_vec_pretty(&state).context("Failed to serialize health state")?;
 
         let file_name = self
             .path
@@ -965,8 +983,12 @@ impl HealthStore {
             .unwrap_or_else(|| Path::new("."))
             .join(format!(".{file_name}.tmp-{}", std::process::id()));
 
-        std::fs::write(&temp_path, content)
-            .with_context(|| format!("Failed to write temporary health file {}", temp_path.display()))?;
+        std::fs::write(&temp_path, content).with_context(|| {
+            format!(
+                "Failed to write temporary health file {}",
+                temp_path.display()
+            )
+        })?;
 
         #[cfg(unix)]
         {
@@ -975,18 +997,30 @@ impl HealthStore {
                 .context("Failed to set health file permissions")?;
         }
 
-        let temp_file = File::open(&temp_path)
-            .with_context(|| format!("Failed to open temp file for syncing {}", temp_path.display()))?;
-        temp_file
-            .sync_all()
-            .with_context(|| format!("Failed to sync temporary health file {}", temp_path.display()))?;
+        let temp_file = File::open(&temp_path).with_context(|| {
+            format!(
+                "Failed to open temp file for syncing {}",
+                temp_path.display()
+            )
+        })?;
+        temp_file.sync_all().with_context(|| {
+            format!(
+                "Failed to sync temporary health file {}",
+                temp_path.display()
+            )
+        })?;
 
         std::fs::rename(&temp_path, &self.path)
             .with_context(|| format!("Failed to rename health file to {}", self.path.display()))?;
 
         if let Some(parent) = self.path.parent() {
             File::open(parent)
-                .with_context(|| format!("Failed to open parent directory for syncing {}", parent.display()))?
+                .with_context(|| {
+                    format!(
+                        "Failed to open parent directory for syncing {}",
+                        parent.display()
+                    )
+                })?
                 .sync_all()
                 .with_context(|| format!("Failed to sync health directory {}", parent.display()))?;
         }
@@ -1013,10 +1047,7 @@ impl HealthStore {
         let mut recovered_crash = None;
 
         if state.current_run_started_at.is_some() {
-            let previous_is_live = state
-                .current_run_pid
-                .map(process_is_alive)
-                .unwrap_or(false);
+            let previous_is_live = state.current_run_pid.map(process_is_alive).unwrap_or(false);
             if !previous_is_live {
                 let detector = CrashDetector::new();
                 let oom_killed = detector
@@ -1477,7 +1508,9 @@ mod tests {
             use std::os::unix::process::ExitStatusExt;
             let killed = ExitStatus::from_raw(libc::SIGKILL);
             assert_eq!(
-                detector.classify_exit_status(&killed)?.map(|record| record.crash_type),
+                detector
+                    .classify_exit_status(&killed)?
+                    .map(|record| record.crash_type),
                 Some(CrashType::OutOfMemory)
             );
         }

@@ -90,7 +90,13 @@ fn custom_predicates_scenario_1_identify_state_dependent_need() {
     fs::write(&pack_path, predicate_pack).expect("pack should write");
 
     // The pack should load without crashing (predicate support exists)
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "echo test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "echo test",
+    ]);
 
     // Should not crash - predicates may or may not be evaluated
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -145,7 +151,13 @@ fn custom_predicates_scenario_2_predicate_check_type_exists() {
     fs::write(&pack_path, predicate_pack).expect("pack should write");
 
     // Pack with predicate types should load
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test command"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test command",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(
@@ -223,7 +235,13 @@ fn custom_predicates_scenario_4_multiple_predicates_in_pack() {
     fs::write(&pack_path, multi_predicate_pack).expect("pack should write");
 
     // Multiple predicates should load without conflict
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "git status"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "git status",
+    ]);
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(
@@ -398,7 +416,13 @@ fn custom_predicates_scenario_predicate_naming_conventions() {
     fs::write(&pack_path, predicate_names_pack).expect("pack should write");
 
     // Pack should load with well-named predicates
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     assert!(
         !result.status.success() || result.status.success(), // Either way is fine
@@ -443,7 +467,13 @@ fn custom_predicates_scenario_predicate_error_handling() {
     fs::write(&pack_path, error_predicates_pack).expect("pack should write");
 
     // If a predicate fails to evaluate, it should handle the error gracefully
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     // Should not crash - should handle error or fail closed
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -602,13 +632,16 @@ fn custom_predicates_scenario_repair_requires_flush_only_matches_repair_commands
         "bead show abc123",
         "bead status",
         "bf list --ready",
-        "bead sync flush-only",  // flush itself is allowed
+        "bead sync flush-only", // flush itself is allowed
     ];
 
     for command in safe_commands {
         let result = icg_with_stdin(
             &["check", "--stdin", "--pack", &pack_path.to_string_lossy()],
-            &format!(r#"{{"toolName":"Bash","toolInput":{{"command":"{}"}}}}"#, command),
+            &format!(
+                r#"{{"toolName":"Bash","toolInput":{{"command":"{}"}}}}"#,
+                command
+            ),
         );
 
         let stdout = String::from_utf8_lossy(&result.stdout);
@@ -771,14 +804,17 @@ fn custom_predicates_scenario_flush_requires_pull_only_matches_flush_commands() 
         "bead show abc123",
         "bead status",
         "bf list --ready",
-        "bead sync import-only",  // other sync subcommands are allowed
-        "bead sync",  // sync without flush-only is allowed
+        "bead sync import-only", // other sync subcommands are allowed
+        "bead sync",             // sync without flush-only is allowed
     ];
 
     for command in safe_commands {
         let result = icg_with_stdin(
             &["check", "--stdin", "--pack", &pack_path.to_string_lossy()],
-            &format!(r#"{{"toolName":"Bash","toolInput":{{"command":"{}"}}}}"#, command),
+            &format!(
+                r#"{{"toolName":"Bash","toolInput":{{"command":"{}"}}}}"#,
+                command
+            ),
         );
 
         let stdout = String::from_utf8_lossy(&result.stdout);

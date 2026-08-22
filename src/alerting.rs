@@ -266,11 +266,7 @@ impl AlertBackend for WebhookBackend {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Webhook request failed with status {}: {}",
-                status,
-                body
-            );
+            anyhow::bail!("Webhook request failed with status {}: {}", status, body);
         }
     }
 
@@ -356,7 +352,7 @@ impl SlackBackend {
     /// Convert alert severity to Slack color
     fn severity_to_color(severity: AlertSeverity) -> String {
         match severity {
-            AlertSeverity::Info => "#36a64f".to_string(),     // green
+            AlertSeverity::Info => "#36a64f".to_string(), // green
             AlertSeverity::Warning => "#ff9900".to_string(), // orange
             AlertSeverity::Critical => "#ff0000".to_string(), // red
         }
@@ -579,8 +575,12 @@ impl AlertManager {
     /// Clean up old alert fingerprints (call periodically)
     pub fn cleanup_old_alerts(&mut self, older_than: Duration) {
         let now = Utc::now();
-        self.recent_alerts
-            .retain(|_, &mut last_sent| now.signed_duration_since(last_sent).to_std().unwrap_or(Duration::ZERO) < older_than);
+        self.recent_alerts.retain(|_, &mut last_sent| {
+            now.signed_duration_since(last_sent)
+                .to_std()
+                .unwrap_or(Duration::ZERO)
+                < older_than
+        });
     }
 
     /// Get the number of backends configured
@@ -714,9 +714,18 @@ mod tests {
 
     #[test]
     fn test_slack_color_mapping() {
-        assert_eq!(SlackBackend::severity_to_color(AlertSeverity::Info), "#36a64f");
-        assert_eq!(SlackBackend::severity_to_color(AlertSeverity::Warning), "#ff9900");
-        assert_eq!(SlackBackend::severity_to_color(AlertSeverity::Critical), "#ff0000");
+        assert_eq!(
+            SlackBackend::severity_to_color(AlertSeverity::Info),
+            "#36a64f"
+        );
+        assert_eq!(
+            SlackBackend::severity_to_color(AlertSeverity::Warning),
+            "#ff9900"
+        );
+        assert_eq!(
+            SlackBackend::severity_to_color(AlertSeverity::Critical),
+            "#ff0000"
+        );
     }
 
     #[test]

@@ -124,7 +124,13 @@ fn debug_flag_provides_pattern_matching_trace() {
 
     // Test with --debug flag
     let result = icg_with_stdin(
-        &["check", "--stdin", "--pack", &pack_path.to_string_lossy(), "--debug"],
+        &[
+            "check",
+            "--stdin",
+            "--pack",
+            &pack_path.to_string_lossy(),
+            "--debug",
+        ],
         r#"{"toolName":"Bash","toolInput":{"command":"kubectl delete pvc data"}}"#,
     );
 
@@ -134,7 +140,10 @@ fn debug_flag_provides_pattern_matching_trace() {
 
     // Debug output should include pattern matching information
     assert!(
-        output.contains("DEBUG") || output.contains("debug") || output.contains("pattern") || output.contains("match"),
+        output.contains("DEBUG")
+            || output.contains("debug")
+            || output.contains("pattern")
+            || output.contains("match"),
         "Debug output should include pattern matching trace, got: {}",
         output
     );
@@ -165,7 +174,13 @@ fn debug_flag_shows_safe_pattern_evaluation() {
     fs::write(&pack_path, safe_pack).expect("pack should write");
 
     let result = icg_with_stdin(
-        &["check", "--stdin", "--pack", &pack_path.to_string_lossy(), "--debug"],
+        &[
+            "check",
+            "--stdin",
+            "--pack",
+            &pack_path.to_string_lossy(),
+            "--debug",
+        ],
         r#"{"toolName":"Bash","toolInput":{"command":"kubectl get pods"}}"#,
     );
 
@@ -273,7 +288,11 @@ fn verify_coverage_accepts_same_coverage() {
         &baseline.to_string_lossy(),
         &current.to_string_lossy(),
     ]);
-    assert!(result.status.success(), "coverage diff should pass: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "coverage diff should pass: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]
@@ -290,7 +309,11 @@ fn verify_coverage_accepts_expanded_coverage() {
         &baseline.to_string_lossy(),
         &current.to_string_lossy(),
     ]);
-    assert!(result.status.success(), "coverage diff should pass: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "coverage diff should pass: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]
@@ -341,7 +364,9 @@ fn explain_pattern_shows_pattern_documentation() {
 
     // Should show pattern information
     assert!(
-        output.contains("vault-kv-destroy") || output.contains("destructive") || output.contains("vault"),
+        output.contains("vault-kv-destroy")
+            || output.contains("destructive")
+            || output.contains("vault"),
         "explain should show pattern documentation"
     );
 }
@@ -436,7 +461,9 @@ fn regression_suite_generates_test_cases() {
     // Output should contain test cases
     let content = fs::read_to_string(&output_path).expect("output should be readable");
     assert!(
-        content.contains("cases") || content.contains("test-dangerous-1") || content.contains("test-dangerous-2"),
+        content.contains("cases")
+            || content.contains("test-dangerous-1")
+            || content.contains("test-dangerous-2"),
         "Regression suite should contain test cases for each guarded pattern"
     );
 }
@@ -483,11 +510,17 @@ fn regression_suite_includes_metadata() {
         &output_path.to_string_lossy(),
     ]);
 
-    assert!(result.status.success(), "Regression suite generation should succeed");
+    assert!(
+        result.status.success(),
+        "Regression suite generation should succeed"
+    );
 
     let content = fs::read_to_string(&output_path).expect("output should be readable");
     assert!(
-        content.contains("packId") || content.contains("generatedAt") || content.contains("version") || content.contains("cases"),
+        content.contains("packId")
+            || content.contains("generatedAt")
+            || content.contains("version")
+            || content.contains("cases"),
         "Regression suite should include metadata"
     );
 }

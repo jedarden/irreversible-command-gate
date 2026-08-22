@@ -115,7 +115,8 @@ impl TrustPointerStore {
     /// For testing/CI contexts using custom paths, this check only warns
     /// rather than failing.
     pub fn verify_artifact_directory_security(&self) -> Result<()> {
-        let artifact_dir = self.path
+        let artifact_dir = self
+            .path
             .parent()
             .context("Trust pointer path has no parent directory")?;
 
@@ -126,8 +127,12 @@ impl TrustPointerStore {
         }
 
         // Check directory metadata
-        let metadata = fs::metadata(artifact_dir)
-            .with_context(|| format!("Failed to read metadata for directory: {}", artifact_dir.display()))?;
+        let metadata = fs::metadata(artifact_dir).with_context(|| {
+            format!(
+                "Failed to read metadata for directory: {}",
+                artifact_dir.display()
+            )
+        })?;
 
         // Get ownership information
         let owner = metadata.uid();
@@ -224,11 +229,13 @@ impl TrustPointerStore {
             return Ok(None);
         }
 
-        let content = std::fs::read_to_string(&self.path)
-            .with_context(|| format!("Failed to read trust pointer from {}", self.path.display()))?;
+        let content = std::fs::read_to_string(&self.path).with_context(|| {
+            format!("Failed to read trust pointer from {}", self.path.display())
+        })?;
 
-        let pointer: TrustPointer = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse trust pointer from {}", self.path.display()))?;
+        let pointer: TrustPointer = serde_json::from_str(&content).with_context(|| {
+            format!("Failed to parse trust pointer from {}", self.path.display())
+        })?;
 
         Ok(Some(pointer))
     }
@@ -241,15 +248,20 @@ impl TrustPointerStore {
         // Write to a temporary file first, then atomic rename
         let temp_path = self.path.with_extension("tmp");
 
-        let content = serde_json::to_string_pretty(pointer)
-            .context("Failed to serialize trust pointer")?;
+        let content =
+            serde_json::to_string_pretty(pointer).context("Failed to serialize trust pointer")?;
 
         std::fs::write(&temp_path, content)
             .with_context(|| format!("Failed to write trust pointer to {}", temp_path.display()))?;
 
         // Atomic rename
-        std::fs::rename(&temp_path, &self.path)
-            .with_context(|| format!("Failed to rename trust pointer from {} to {}", temp_path.display(), self.path.display()))?;
+        std::fs::rename(&temp_path, &self.path).with_context(|| {
+            format!(
+                "Failed to rename trust pointer from {} to {}",
+                temp_path.display(),
+                self.path.display()
+            )
+        })?;
 
         Ok(())
     }
@@ -305,7 +317,10 @@ mod tests {
     fn test_trust_pointer_with_justification() {
         let pointer = TrustPointer::with_justification("v0.1.0", "Passed Layer 1/2 gates");
         assert_eq!(pointer.trusted_ref, "v0.1.0");
-        assert_eq!(pointer.justification, Some("Passed Layer 1/2 gates".to_string()));
+        assert_eq!(
+            pointer.justification,
+            Some("Passed Layer 1/2 gates".to_string())
+        );
     }
 
     #[test]

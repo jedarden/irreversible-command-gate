@@ -101,8 +101,7 @@ fn denies_bare_sha_image_tags_in_yaml_and_yml_content() {
 fn embeds_the_container_version_in_unpinned_image_denials() {
     let root = tempfile::tempdir().expect("temporary repository should exist");
     fs::create_dir_all(root.path().join("containers/myapp")).expect("container directory");
-    fs::write(root.path().join("containers/myapp/VERSION"), "1.2.3\n")
-        .expect("version file");
+    fs::write(root.path().join("containers/myapp/VERSION"), "1.2.3\n").expect("version file");
 
     let engine = load_image_tag_engine();
     let file_path = root.path().join("deploy/app.yaml");
@@ -119,9 +118,18 @@ fn embeds_the_container_version_in_unpinned_image_denials() {
         let CheckResult::Denied { reason, .. } = result else {
             panic!("expected unpinned image to be denied");
         };
-        assert!(reason.contains("1.2.3"), "denial should include the version: {reason}");
-        assert!(!reason.contains("{derived_value}"), "placeholder must be rendered: {reason}");
-        assert!(!reason.contains("containers/<name>/VERSION"), "path pointer must be replaced: {reason}");
+        assert!(
+            reason.contains("1.2.3"),
+            "denial should include the version: {reason}"
+        );
+        assert!(
+            !reason.contains("{derived_value}"),
+            "placeholder must be rendered: {reason}"
+        );
+        assert!(
+            !reason.contains("containers/<name>/VERSION"),
+            "path pointer must be replaced: {reason}"
+        );
     }
 }
 

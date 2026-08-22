@@ -13,7 +13,9 @@
 //! This tests pattern debugging capabilities and pattern refinement workflows.
 
 use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
-use icg::rule_pack::{load_pack, Check, GuardedPattern, Pack, Pattern, Redirect, Severity, Tier, Channel};
+use icg::rule_pack::{
+    load_pack, Channel, Check, GuardedPattern, Pack, Pattern, Redirect, Severity, Tier,
+};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
@@ -36,7 +38,10 @@ fn debugging_scenario_1_reproduce_false_positive_issue() {
             // Correct - pinned images are allowed
         }
         CheckResult::Denied { pattern_id, .. } => {
-            panic!("False positive: pinned image should be allowed, but was denied by pattern '{}'", pattern_id);
+            panic!(
+                "False positive: pinned image should be allowed, but was denied by pattern '{}'",
+                pattern_id
+            );
         }
         other => panic!("Unexpected result: {:?}", other),
     }
@@ -57,7 +62,12 @@ fn debugging_scenario_2_analyze_pattern_matching_behavior() {
     });
 
     match result {
-        CheckResult::Denied { pattern_id, pack_id, reason, .. } => {
+        CheckResult::Denied {
+            pattern_id,
+            pack_id,
+            reason,
+            ..
+        } => {
             assert_eq!(pack_id, "storage-class");
             assert!(pattern_id.contains("ssd") || pattern_id.contains("storage-class"));
             assert!(reason.contains("SSD") || reason.contains("prohibited"));
@@ -100,10 +110,9 @@ fn debugging_scenario_3_identify_overly_broad_patterns() {
     };
 
     // Write the test pack
-    let pack_json = serde_json::to_string_pretty(&overly_broad_pack)
-        .expect("pack should serialize");
-    std::fs::write(&pack_path, pack_json)
-        .expect("pack should write");
+    let pack_json =
+        serde_json::to_string_pretty(&overly_broad_pack).expect("pack should serialize");
+    std::fs::write(&pack_path, pack_json).expect("pack should write");
 
     // Load and test
     let pack = load_pack(&pack_path).expect("test pack should load");
@@ -112,9 +121,18 @@ fn debugging_scenario_3_identify_overly_broad_patterns() {
 
     // The overly broad pattern catches BOTH legitimate and dangerous operations
     let test_cases = vec![
-        ("kubectl delete pod old-pod", "legitimate - should be allowed"),
-        ("kubectl delete deployment myapp", "legitimate - should be allowed"),
-        ("kubectl delete pvc data-pvc", "dangerous - should be blocked"),
+        (
+            "kubectl delete pod old-pod",
+            "legitimate - should be allowed",
+        ),
+        (
+            "kubectl delete deployment myapp",
+            "legitimate - should be allowed",
+        ),
+        (
+            "kubectl delete pvc data-pvc",
+            "dangerous - should be blocked",
+        ),
     ];
 
     for (command, description) in test_cases {
@@ -171,7 +189,9 @@ fn debugging_scenario_4_fix_pattern_to_be_more_specific() {
             explanation: "Deleting a PVC destroys persistent data".to_string(),
             redirect: Redirect {
                 channel: Channel::Deny,
-                reason_template: "kubectl delete pvc is permanently destructive. Data cannot be recovered.".to_string(),
+                reason_template:
+                    "kubectl delete pvc is permanently destructive. Data cannot be recovered."
+                        .to_string(),
                 rewrite_template: None,
             },
             destructive: true,
@@ -179,10 +199,8 @@ fn debugging_scenario_4_fix_pattern_to_be_more_specific() {
     };
 
     // Write the fixed pack
-    let pack_json = serde_json::to_string_pretty(&fixed_pack)
-        .expect("pack should serialize");
-    std::fs::write(&pack_path, pack_json)
-        .expect("pack should write");
+    let pack_json = serde_json::to_string_pretty(&fixed_pack).expect("pack should serialize");
+    std::fs::write(&pack_path, pack_json).expect("pack should write");
 
     // Load and test the fixed behavior
     let pack = load_pack(&pack_path).expect("fixed pack should load");
@@ -203,7 +221,10 @@ fn debugging_scenario_4_fix_pattern_to_be_more_specific() {
                 // Good - legitimate operations are allowed
             }
             CheckResult::Denied { pattern_id, .. } => {
-                panic!("False positive: '{}' should be allowed but was denied by '{}'", command, pattern_id);
+                panic!(
+                    "False positive: '{}' should be allowed but was denied by '{}'",
+                    command, pattern_id
+                );
             }
             other => panic!("Unexpected result for '{}': {:?}", command, other),
         }
@@ -276,10 +297,8 @@ fn debugging_scenario_5_verify_fix_with_regression_suite() {
     };
 
     // Write test pack
-    let pack_json = serde_json::to_string_pretty(&test_pack)
-        .expect("pack should serialize");
-    std::fs::write(&pack_path, pack_json)
-        .expect("pack should write");
+    let pack_json = serde_json::to_string_pretty(&test_pack).expect("pack should serialize");
+    std::fs::write(&pack_path, pack_json).expect("pack should write");
 
     // Load and verify all patterns still work
     let pack = load_pack(&pack_path).expect("test pack should load");
@@ -297,9 +316,15 @@ fn debugging_scenario_5_verify_fix_with_regression_suite() {
                     // Good - pattern still works
                 }
                 CheckResult::Allowed => {
-                    panic!("Regression: pattern '{}' no longer denies '{}'", pattern.id, regex);
+                    panic!(
+                        "Regression: pattern '{}' no longer denies '{}'",
+                        pattern.id, regex
+                    );
                 }
-                other => panic!("Unexpected result for pattern '{}': {:?}", pattern.id, other),
+                other => panic!(
+                    "Unexpected result for pattern '{}': {:?}",
+                    pattern.id, other
+                ),
             }
         }
     }
@@ -339,10 +364,8 @@ fn debugging_scenario_pattern_refinement_maintains_security() {
     };
 
     // Write initial pack
-    let pack_json = serde_json::to_string_pretty(&overly_strict)
-        .expect("pack should serialize");
-    std::fs::write(&pack_path, pack_json)
-        .expect("pack should write");
+    let pack_json = serde_json::to_string_pretty(&overly_strict).expect("pack should serialize");
+    std::fs::write(&pack_path, pack_json).expect("pack should write");
 
     // Test the overly strict behavior
     let pack = load_pack(&pack_path).expect("pack should load");
@@ -359,14 +382,12 @@ fn debugging_scenario_pattern_refinement_maintains_security() {
         id: "refinement-test".to_string(),
         tool_keywords: vec!["vault".to_string()],
         applies_to: vec![],
-        safe_patterns: vec![
-            Pattern {
-                id: "safe-write-secret".to_string(),
-                check: Check::CommandRegex {
-                    regex: "vault write secret/".to_string(),
-                },
+        safe_patterns: vec![Pattern {
+            id: "safe-write-secret".to_string(),
+            check: Check::CommandRegex {
+                regex: "vault write secret/".to_string(),
             },
-        ],
+        }],
         guarded_patterns: vec![GuardedPattern {
             id: "vault-destroy-only".to_string(),
             enabled: true,
@@ -379,7 +400,8 @@ fn debugging_scenario_pattern_refinement_maintains_security() {
             explanation: "Vault destroy operations are permanently destructive".to_string(),
             redirect: Redirect {
                 channel: Channel::Deny,
-                reason_template: "vault kv destroy is permanently destructive and cannot be undone".to_string(),
+                reason_template: "vault kv destroy is permanently destructive and cannot be undone"
+                    .to_string(),
                 rewrite_template: Some("vault kv patch".to_string()),
             },
             destructive: true,
@@ -387,10 +409,8 @@ fn debugging_scenario_pattern_refinement_maintains_security() {
     };
 
     // Write refined pack
-    let pack_json = serde_json::to_string_pretty(&refined)
-        .expect("pack should serialize");
-    std::fs::write(&pack_path, pack_json)
-        .expect("pack should write");
+    let pack_json = serde_json::to_string_pretty(&refined).expect("pack should serialize");
+    std::fs::write(&pack_path, pack_json).expect("pack should write");
 
     // Load and test refined behavior
     let pack = load_pack(&pack_path).expect("pack should load");

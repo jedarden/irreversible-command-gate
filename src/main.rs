@@ -1,18 +1,18 @@
 mod coverage;
+mod denial_log;
 mod documented_commands;
 mod engine;
 mod fail_closed;
 mod health;
 mod health_server;
-mod denial_log;
 mod metrics;
 mod monitoring;
 mod new_pack;
 mod overrides;
 mod regex_safety;
 mod regression;
-mod rule_pack;
 mod rollback;
+mod rule_pack;
 mod state_store;
 mod telemetry;
 mod trust_pointer;
@@ -34,9 +34,9 @@ use regression::{
 };
 use rollback::{check_and_rollback, PoisonPillConfig};
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use trust_pointer::*;
 use update::*;
@@ -872,9 +872,9 @@ fn check_and_handle_anomaly(
     // Preserve the legacy per-process telemetry file for status/diagnostics.
     // The rollback decision below intentionally consumes the durable
     // per-release state store instead; the two signals must not be mixed.
-    let store = telemetry_store.lock().map_err(|e| {
-        anyhow::anyhow!("Failed to lock telemetry store: {}", e)
-    })?;
+    let store = telemetry_store
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Failed to lock telemetry store: {}", e))?;
     let poison_pill_config = poison_pill_config_from_telemetry(store.config());
     if let Err(e) = store.persist() {
         eprintln!("⚠️  Failed to persist telemetry state: {}", e);
@@ -885,11 +885,7 @@ fn check_and_handle_anomaly(
         return Ok(());
     };
     let trust_store = TrustPointerStore::new(trust_store_path);
-    if let Err(error) = check_and_rollback(
-        state_store,
-        &trust_store,
-        &poison_pill_config,
-    ) {
+    if let Err(error) = check_and_rollback(state_store, &trust_store, &poison_pill_config) {
         // Rollback failure is deliberately loud but does not rewrite the
         // already-emitted allow/deny hook response. Operators must use the
         // rollback runbook when this path cannot complete.
@@ -924,9 +920,7 @@ fn load_runtime_telemetry_store(path: PathBuf) -> telemetry::TelemetryStore {
 /// poison-pill reaction.  The release-count, baseline-volume, absolute-delta,
 /// and early-window safeguards remain fixed conservative defaults; the legacy
 /// names map only to their compatible reaction controls.
-fn poison_pill_config_from_telemetry(
-    config: &telemetry::TelemetryConfig,
-) -> PoisonPillConfig {
+fn poison_pill_config_from_telemetry(config: &telemetry::TelemetryConfig) -> PoisonPillConfig {
     let mut poison_pill_config = PoisonPillConfig::default();
     poison_pill_config.enabled = config.auto_rollback_enabled;
     poison_pill_config.cooldown = config.rollback_cooldown;
@@ -995,7 +989,6 @@ fn reconcile_fail_closed_policy(
             );
         }
     }
-
 }
 
 /// Consume a crash recovered by the lifecycle marker before evaluating the
@@ -1026,9 +1019,7 @@ fn recovered_guard_crash_requires_halt(
     }
 
     if engine.fail_closed() {
-        eprintln!(
-            "🚨 Fail-Closed enforcement: guard crash {event_ref} halts this operation"
-        );
+        eprintln!("🚨 Fail-Closed enforcement: guard crash {event_ref} halts this operation");
         true
     } else {
         eprintln!(
@@ -1049,10 +1040,7 @@ fn guard_crash_result() -> engine::CheckResult {
 /// Record an in-process guard availability failure without treating ordinary
 /// rule denials as crashes.  Health persistence is best effort and never
 /// changes the already computed policy decision.
-fn record_engine_guard_failure(
-    lifecycle: Option<&mut health::GuardLifecycle>,
-    engine: &Engine,
-) {
+fn record_engine_guard_failure(lifecycle: Option<&mut health::GuardLifecycle>, engine: &Engine) {
     if !engine.has_guard_failure() {
         return;
     }
@@ -1161,7 +1149,8 @@ fn real_binary_in_path(tool: &str, argv0: &OsStr) -> Result<PathBuf> {
     } else {
         None
     };
-    let path = std::env::var_os("PATH").context("PATH is not set; cannot locate the real binary")?;
+    let path =
+        std::env::var_os("PATH").context("PATH is not set; cannot locate the real binary")?;
 
     for directory in std::env::split_paths(&path) {
         let candidate = if directory.as_os_str().is_empty() {
@@ -1208,9 +1197,7 @@ fn rewritten_wrapper_args(tool: &str, rewrite: &str) -> Result<Vec<OsString>> {
     let source = engine::CommandSource::Hook(rewrite.to_string());
     let tokens = parser.segment_command(&source);
     if tokens.len() != 1 || tokens[0].executable != tool {
-        anyhow::bail!(
-            "rule rewrite did not produce one command for the wrapped tool `{tool}`"
-        );
+        anyhow::bail!("rule rewrite did not produce one command for the wrapped tool `{tool}`");
     }
 
     Ok(tokens[0].args.iter().map(OsString::from).collect())
@@ -1231,10 +1218,8 @@ fn run_shadowed_tool(
     }
 
     let engine = load_wrapper_engine()?;
-    let halt_for_recovered_crash = recovered_guard_crash_requires_halt(
-        &engine,
-        lifecycle.as_deref(),
-    );
+    let halt_for_recovered_crash =
+        recovered_guard_crash_requires_halt(&engine, lifecycle.as_deref());
     let mut check_argv = Vec::with_capacity(original_args.len() + 1);
     check_argv.push(tool.to_string());
     check_argv.extend(
@@ -1264,18 +1249,11 @@ fn run_shadowed_tool(
         if let Ok(trust_path) = TrustPointerStore::default_path() {
             let trust_store = TrustPointerStore::new(&trust_path);
             let poison_pill_config = configured_poison_pill_config();
-            if let Err(error) = check_and_rollback(
-                &state_store,
-                &trust_store,
-                &poison_pill_config,
-            ) {
+            if let Err(error) = check_and_rollback(&state_store, &trust_store, &poison_pill_config)
+            {
                 eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
             }
-            reconcile_fail_closed_policy(
-                &state_store,
-                &trust_store,
-                &poison_pill_config,
-            );
+            reconcile_fail_closed_policy(&state_store, &trust_store, &poison_pill_config);
         }
     }
 
@@ -1286,9 +1264,7 @@ fn run_shadowed_tool(
             pack_id,
             pattern_id,
         } => {
-            eprintln!(
-                "icg warning: {reason} [pack={pack_id}, pattern={pattern_id}]"
-            );
+            eprintln!("icg warning: {reason} [pack={pack_id}, pattern={pattern_id}]");
             original_args.to_vec()
         }
         engine::CheckResult::Rewrite {
@@ -1297,9 +1273,7 @@ fn run_shadowed_tool(
             pack_id,
             pattern_id,
         } => {
-            eprintln!(
-                "icg updated command: {reason} [pack={pack_id}, pattern={pattern_id}]"
-            );
+            eprintln!("icg updated command: {reason} [pack={pack_id}, pattern={pattern_id}]");
             rewritten_wrapper_args(tool, &rewrite)?
         }
         engine::CheckResult::Denied {
@@ -1319,9 +1293,7 @@ fn run_shadowed_tool(
                     eprintln!("icg_health_event event=finish_failed error={error:#}");
                 }
             }
-            anyhow::bail!(
-                "command denied: {reason} [pack={pack_id}, pattern={pattern_id}]"
-            )
+            anyhow::bail!("command denied: {reason} [pack={pack_id}, pattern={pattern_id}]")
         }
     };
 
@@ -1332,7 +1304,8 @@ fn run_shadowed_tool(
     // still reported by the caller as an abnormal guard exit.
     if let Some(run) = lifecycle.as_deref_mut() {
         if halt_for_recovered_crash {
-            if let Err(error) = run.finish_error("recovered guard crash triggered fail-closed halt") {
+            if let Err(error) = run.finish_error("recovered guard crash triggered fail-closed halt")
+            {
                 eprintln!("icg_health_event event=finish_failed error={error:#}");
             }
         }
@@ -1378,11 +1351,9 @@ fn run_monitor(
             port,
             ..Default::default()
         };
-        let mut server = health_server::HealthServer::with_health_store(
-            server_config,
-            health_store.clone(),
-        )
-        .with_monitoring_config(monitoring_config);
+        let mut server =
+            health_server::HealthServer::with_health_store(server_config, health_store.clone())
+                .with_monitoring_config(monitoring_config);
         if let Err(error) = server.spawn_background_task().await {
             let _ = health_store.mark_clean_exit();
             return Err(error);
@@ -1437,9 +1408,7 @@ fn main() -> Result<()> {
         return result;
     }
 
-    let cli = Cli::parse_from(
-        std::iter::once(argv0.clone()).chain(original_args.iter().cloned()),
-    );
+    let cli = Cli::parse_from(std::iter::once(argv0.clone()).chain(original_args.iter().cloned()));
 
     let tracks_lifecycle = matches!(
         &cli.command,
@@ -1508,9 +1477,7 @@ fn main() -> Result<()> {
             if has_regressions
                 && !CoverageDiff::has_explicit_justification(justification.as_deref())
             {
-                eprintln!(
-                    "Coverage regressions detected; rerun with --justification <rationale>."
-                );
+                eprintln!("Coverage regressions detected; rerun with --justification <rationale>.");
                 std::process::exit(2);
             }
 
@@ -1626,12 +1593,13 @@ fn main() -> Result<()> {
             let durable_state_store = state_store::StateStore::default_path()
                 .ok()
                 .map(|path| std::sync::Arc::new(state_store::StateStore::new(path)));
-            let release_ref = if let Ok(Some(pointer)) = TrustPointerStore::new(&trust_store_path).load() {
-                record_trust_pointer_observation(durable_state_store.as_deref(), &pointer);
-                Some(pointer.trusted_ref)
-            } else {
-                None
-            };
+            let release_ref =
+                if let Ok(Some(pointer)) = TrustPointerStore::new(&trust_store_path).load() {
+                    record_trust_pointer_observation(durable_state_store.as_deref(), &pointer);
+                    Some(pointer.trusted_ref)
+                } else {
+                    None
+                };
 
             // Configure engine with telemetry
             engine = engine
@@ -1642,10 +1610,8 @@ fn main() -> Result<()> {
                 engine = engine.with_state_store(std::sync::Arc::clone(state_store));
             }
 
-            let halt_for_recovered_crash = recovered_guard_crash_requires_halt(
-                &engine,
-                lifecycle.as_ref(),
-            );
+            let halt_for_recovered_crash =
+                recovered_guard_crash_requires_halt(&engine, lifecycle.as_ref());
 
             // Retain the original tool input so an updatedInput response can
             // replace one field without dropping the other tool arguments.
@@ -1753,7 +1719,10 @@ fn main() -> Result<()> {
                         &contents,
                         &result,
                     );
-                    record_operational_denial(&InputSource::ContentBatch(contents.clone()), &result);
+                    record_operational_denial(
+                        &InputSource::ContentBatch(contents.clone()),
+                        &result,
+                    );
                     let files = contents
                         .iter()
                         .map(|content| content.file_path())
@@ -1995,7 +1964,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Status(args) => {
-            if args.denials || args.health || args.pattern_summary || args.trend || args.format.is_some() {
+            if args.denials
+                || args.health
+                || args.pattern_summary
+                || args.trend
+                || args.format.is_some()
+            {
                 return documented_commands::run_operator_status(&args);
             }
             let documented_commands::StatusArgs {
@@ -2160,16 +2134,30 @@ fn main() -> Result<()> {
                 path,
                 state_store_path,
             } => {
-                let telemetry_path = path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+                let telemetry_path =
+                    path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
                 let store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
 
                 println!("# Telemetry Status\n");
                 println!("**Path:** {}", store.path().display());
                 println!("**Window Size:** {}", store.config().window_size);
-                println!("**Spike Threshold:** {:.2}x", store.config().spike_threshold);
+                println!(
+                    "**Spike Threshold:** {:.2}x",
+                    store.config().spike_threshold
+                );
                 println!("**Minimum Samples:** {}", store.config().minimum_samples);
-                println!("**Rollback Cooldown:** {:?}", store.config().rollback_cooldown);
-                println!("**Auto-Rollback:** {}", if store.config().auto_rollback_enabled { "enabled" } else { "disabled" });
+                println!(
+                    "**Rollback Cooldown:** {:?}",
+                    store.config().rollback_cooldown
+                );
+                println!(
+                    "**Auto-Rollback:** {}",
+                    if store.config().auto_rollback_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
                 println!();
 
                 let window = store.window();
@@ -2205,7 +2193,10 @@ fn main() -> Result<()> {
                 println!("## Durable Release Baseline");
                 println!("**State Store:** {}", durable_store.path().display());
                 println!("**Retained Releases:** {}", durable_baseline.release_count);
-                println!("**Total Evaluations:** {}", durable_baseline.evaluation_count);
+                println!(
+                    "**Total Evaluations:** {}",
+                    durable_baseline.evaluation_count
+                );
                 println!("**Deny Count:** {}", durable_baseline.deny_count);
                 println!(
                     "**Mean Deny Rate:** {:.2}%",
@@ -2265,7 +2256,8 @@ fn main() -> Result<()> {
                 Ok(())
             }
             TelemetrySubcommand::Reset { path, force } => {
-                let telemetry_path = path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+                let telemetry_path =
+                    path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
 
                 if !force {
                     println!("⚠️  This will clear all telemetry data and reset the baseline.");
@@ -2294,7 +2286,8 @@ fn main() -> Result<()> {
                 cooldown_seconds,
                 auto_rollback,
             } => {
-                let telemetry_path = path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+                let telemetry_path =
+                    path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
                 let mut store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
 
                 // Update configuration with provided values
@@ -2317,15 +2310,16 @@ fn main() -> Result<()> {
                     config.rollback_cooldown = std::time::Duration::from_secs(seconds);
                 }
                 if let Some(enabled) = auto_rollback {
-                    println!("Setting auto-rollback to {}", if enabled { "enabled" } else { "disabled" });
+                    println!(
+                        "Setting auto-rollback to {}",
+                        if enabled { "enabled" } else { "disabled" }
+                    );
                     config.auto_rollback_enabled = enabled;
                 }
 
                 // Create new store with updated configuration
-                let mut new_store = telemetry::TelemetryStore::with_config(
-                    store.path().to_path_buf(),
-                    config,
-                );
+                let mut new_store =
+                    telemetry::TelemetryStore::with_config(store.path().to_path_buf(), config);
 
                 // Copy existing window data to new store
                 let window_records = store.window().records().to_vec();
@@ -2536,133 +2530,136 @@ fn main() -> Result<()> {
                 .subcommand
                 .context("a health subcommand or health check flag is required")?;
             match subcommand {
-            HealthSubcommand::Status { path } => {
-                let health_path = path.unwrap_or_else(configured_health_path);
-                let store = health::HealthStore::new(health_path);
-                let metrics = store.health_metrics()?;
+                HealthSubcommand::Status { path } => {
+                    let health_path = path.unwrap_or_else(configured_health_path);
+                    let store = health::HealthStore::new(health_path);
+                    let metrics = store.health_metrics()?;
 
-                println!("# Guard Health Status\n");
-                println!("**Path:** {}", store.path().display());
-                println!();
+                    println!("# Guard Health Status\n");
+                    println!("**Path:** {}", store.path().display());
+                    println!();
 
-                println!("## Health Status");
-                println!("**Status:** {:?}", metrics.status);
-                println!("**Running:** {}", metrics.status.is_running());
-                println!("**Healthy:** {}", metrics.status.is_healthy());
-                println!("**Stable:** {}", metrics.is_stable);
-                println!();
+                    println!("## Health Status");
+                    println!("**Status:** {:?}", metrics.status);
+                    println!("**Running:** {}", metrics.status.is_running());
+                    println!("**Healthy:** {}", metrics.status.is_healthy());
+                    println!("**Stable:** {}", metrics.is_stable);
+                    println!();
 
-                println!("## Crash Metrics");
-                println!("**Total Crashes:** {}", metrics.total_crashes);
-                println!("**Recent Crashes (1h):** {}", metrics.recent_crashes);
-                println!("**Crash Rate:** {:.2} crashes/hour", metrics.crash_rate);
-                if let Some(last_crash) = metrics.last_crash_at {
-                    println!("**Last Crash:** {}", last_crash);
-                } else {
-                    println!("**Last Crash:** (none)");
-                }
-                println!();
-
-                println!("## Uptime & Stability");
-                println!("**Consecutive Clean Runs:** {}", metrics.consecutive_clean_runs);
-                if let Some(uptime) = metrics.current_uptime {
-                    println!("**Current Uptime:** {:?}", uptime);
-                } else {
-                    println!("**Current Uptime:** (not running)");
-                }
-                if let Some(stable_time) = metrics.time_since_stable {
-                    println!("**Time Since Stable:** {:?}", stable_time);
-                }
-                if let Some(last_start) = metrics.last_start_at {
-                    println!("**Last Start:** {}", last_start);
-                }
-
-                Ok(())
-            }
-            HealthSubcommand::Reset { path, force } => {
-                let health_path = path.unwrap_or_else(configured_health_path);
-
-                if !force {
-                    println!("⚠️  This will clear all health data and crash history.");
-                    println!("Type 'yes' to confirm:");
-                    let mut confirmation = String::new();
-                    std::io::stdin().read_line(&mut confirmation)?;
-                    if confirmation.trim() != "yes" {
-                        println!("Reset cancelled.");
-                        return Ok(());
+                    println!("## Crash Metrics");
+                    println!("**Total Crashes:** {}", metrics.total_crashes);
+                    println!("**Recent Crashes (1h):** {}", metrics.recent_crashes);
+                    println!("**Crash Rate:** {:.2} crashes/hour", metrics.crash_rate);
+                    if let Some(last_crash) = metrics.last_crash_at {
+                        println!("**Last Crash:** {}", last_crash);
+                    } else {
+                        println!("**Last Crash:** (none)");
                     }
+                    println!();
+
+                    println!("## Uptime & Stability");
+                    println!(
+                        "**Consecutive Clean Runs:** {}",
+                        metrics.consecutive_clean_runs
+                    );
+                    if let Some(uptime) = metrics.current_uptime {
+                        println!("**Current Uptime:** {:?}", uptime);
+                    } else {
+                        println!("**Current Uptime:** (not running)");
+                    }
+                    if let Some(stable_time) = metrics.time_since_stable {
+                        println!("**Time Since Stable:** {:?}", stable_time);
+                    }
+                    if let Some(last_start) = metrics.last_start_at {
+                        println!("**Last Start:** {}", last_start);
+                    }
+
+                    Ok(())
                 }
+                HealthSubcommand::Reset { path, force } => {
+                    let health_path = path.unwrap_or_else(configured_health_path);
 
-                let store = health::HealthStore::new(health_path);
-                store.clear()?;
+                    if !force {
+                        println!("⚠️  This will clear all health data and crash history.");
+                        println!("Type 'yes' to confirm:");
+                        let mut confirmation = String::new();
+                        std::io::stdin().read_line(&mut confirmation)?;
+                        if confirmation.trim() != "yes" {
+                            println!("Reset cancelled.");
+                            return Ok(());
+                        }
+                    }
 
-                println!("✅ Health data cleared successfully.");
+                    let store = health::HealthStore::new(health_path);
+                    store.clear()?;
 
-                Ok(())
-            }
-            HealthSubcommand::MarkStart { path } => {
-                let health_path = path.unwrap_or_else(configured_health_path);
-                let store = health::HealthStore::new(health_path);
-                store.mark_start()?;
+                    println!("✅ Health data cleared successfully.");
 
-                println!("✅ Process start marked successfully.");
-
-                Ok(())
-            }
-            HealthSubcommand::MarkCleanExit { path } => {
-                let health_path = path.unwrap_or_else(configured_health_path);
-                let store = health::HealthStore::new(health_path);
-                store.mark_clean_exit()?;
-
-                println!("✅ Clean exit marked successfully.");
-
-                Ok(())
-            }
-            HealthSubcommand::RecordCrash {
-                path,
-                crash_type,
-                signal,
-                exit_code,
-                context,
-            } => {
-                let health_path = path.unwrap_or_else(configured_health_path);
-
-                // Parse crash type from string
-                let crash_type_enum = match crash_type.to_lowercase().as_str() {
-                    "segfault" | "sigsegv" => health::CrashType::SegmentationFault,
-                    "abort" | "sigabrt" => health::CrashType::Abort,
-                    "bus" | "sigbus" => health::CrashType::BusError,
-                    "fpe" | "sigfpe" => health::CrashType::FloatingPointException,
-                    "oom" | "outofmemory" => health::CrashType::OutOfMemory,
-                    "timeout" => health::CrashType::Timeout,
-                    "panic" => health::CrashType::Panic,
-                    "exit" | "exitcode" => health::CrashType::ExitCodeError,
-                    _ => health::CrashType::Unknown,
-                };
-
-                let mut crash_record = health::CrashRecord::new(crash_type_enum);
-
-                if let Some(sig) = signal {
-                    crash_record = crash_record.with_signal(sig);
+                    Ok(())
                 }
+                HealthSubcommand::MarkStart { path } => {
+                    let health_path = path.unwrap_or_else(configured_health_path);
+                    let store = health::HealthStore::new(health_path);
+                    store.mark_start()?;
 
-                if let Some(code) = exit_code {
-                    crash_record = crash_record.with_exit_code(code);
+                    println!("✅ Process start marked successfully.");
+
+                    Ok(())
                 }
+                HealthSubcommand::MarkCleanExit { path } => {
+                    let health_path = path.unwrap_or_else(configured_health_path);
+                    let store = health::HealthStore::new(health_path);
+                    store.mark_clean_exit()?;
 
-                if let Some(ctx) = context {
-                    crash_record = crash_record.with_context(ctx);
+                    println!("✅ Clean exit marked successfully.");
+
+                    Ok(())
                 }
+                HealthSubcommand::RecordCrash {
+                    path,
+                    crash_type,
+                    signal,
+                    exit_code,
+                    context,
+                } => {
+                    let health_path = path.unwrap_or_else(configured_health_path);
 
-                let store = health::HealthStore::new(health_path);
-                store.record_crash(crash_record)?;
+                    // Parse crash type from string
+                    let crash_type_enum = match crash_type.to_lowercase().as_str() {
+                        "segfault" | "sigsegv" => health::CrashType::SegmentationFault,
+                        "abort" | "sigabrt" => health::CrashType::Abort,
+                        "bus" | "sigbus" => health::CrashType::BusError,
+                        "fpe" | "sigfpe" => health::CrashType::FloatingPointException,
+                        "oom" | "outofmemory" => health::CrashType::OutOfMemory,
+                        "timeout" => health::CrashType::Timeout,
+                        "panic" => health::CrashType::Panic,
+                        "exit" | "exitcode" => health::CrashType::ExitCodeError,
+                        _ => health::CrashType::Unknown,
+                    };
 
-                println!("✅ Crash recorded successfully.");
+                    let mut crash_record = health::CrashRecord::new(crash_type_enum);
 
-                Ok(())
+                    if let Some(sig) = signal {
+                        crash_record = crash_record.with_signal(sig);
+                    }
+
+                    if let Some(code) = exit_code {
+                        crash_record = crash_record.with_exit_code(code);
+                    }
+
+                    if let Some(ctx) = context {
+                        crash_record = crash_record.with_context(ctx);
+                    }
+
+                    let store = health::HealthStore::new(health_path);
+                    store.record_crash(crash_record)?;
+
+                    println!("✅ Crash recorded successfully.");
+
+                    Ok(())
+                }
             }
         }
-        },
         Commands::Monitor {
             host,
             port,

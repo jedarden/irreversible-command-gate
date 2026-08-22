@@ -139,7 +139,13 @@ fn handling_denials_scenario_2_explain_pattern_works() {
     fs::write(&pack_path, test_pack).expect("test pack should write");
 
     // Try to explain the pattern
-    let explain = icg(&["explain", "--pattern", "kubectl-delete-pvc", "--pack", &pack_path.to_string_lossy()]);
+    let explain = icg(&[
+        "explain",
+        "--pattern",
+        "kubectl-delete-pvc",
+        "--pack",
+        &pack_path.to_string_lossy(),
+    ]);
 
     // Command should not crash (might not be fully implemented)
     let stderr = String::from_utf8_lossy(&explain.stderr);

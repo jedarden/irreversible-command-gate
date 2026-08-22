@@ -4,7 +4,7 @@
 //! that prevents git push when the remote HEAD has moved forward since the last fetch/pull.
 
 use icg::engine::{self, CommandSource, Engine};
-use icg::rule_pack::{Check, Channel, GuardedPattern, Pack, Redirect, Severity, Tier};
+use icg::rule_pack::{Channel, Check, GuardedPattern, Pack, Redirect, Severity, Tier};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -46,8 +46,7 @@ fn create_test_repo() -> TempDir {
 
     // Create initial commit
     let test_file = repo_path.join("test.txt");
-    std::fs::write(&test_file, "initial content")
-        .expect("Failed to write test file");
+    std::fs::write(&test_file, "initial content").expect("Failed to write test file");
 
     Command::new("git")
         .args(["add", "test.txt"])
@@ -199,15 +198,18 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
     let repo2_path = repo2_dir.into_path();
 
     Command::new("git")
-        .args(["clone", remote_path.to_str().expect("Invalid path"), repo2_path.to_str().expect("Invalid path")])
+        .args([
+            "clone",
+            remote_path.to_str().expect("Invalid path"),
+            repo2_path.to_str().expect("Invalid path"),
+        ])
         .current_dir(repo2_path.parent().expect("Invalid parent"))
         .status()
         .expect("Failed to clone remote");
 
     // Make a new commit in repo2 and push
     let test_file2 = repo2_path.join("test2.txt");
-    std::fs::write(&test_file2, "second content")
-        .expect("Failed to write test file 2");
+    std::fs::write(&test_file2, "second content").expect("Failed to write test file 2");
 
     Command::new("git")
         .args(["add", "test2.txt"])
@@ -253,11 +255,18 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
 
     // Should deny because remote HEAD has moved forward
     match test_result {
-        engine::CheckResult::Denied { reason, pack_id, pattern_id } => {
+        engine::CheckResult::Denied {
+            reason,
+            pack_id,
+            pattern_id,
+        } => {
             assert_eq!(pack_id, "git");
             assert_eq!(pattern_id, "git-stale-remote-head-push");
-            assert!(reason.contains("pull") || reason.contains("Remote HEAD has moved"),
-                    "Reason should mention pull or remote HEAD movement, got: {}", reason);
+            assert!(
+                reason.contains("pull") || reason.contains("Remote HEAD has moved"),
+                "Reason should mention pull or remote HEAD movement, got: {}",
+                reason
+            );
         }
         other => panic!("Expected Denied result, got {:?}", other),
     }
@@ -286,14 +295,17 @@ fn test_push_guard_allows_after_pull() {
     let repo2_path = repo2_dir.into_path();
 
     Command::new("git")
-        .args(["clone", remote_path.to_str().expect("Invalid path"), repo2_path.to_str().expect("Invalid path")])
+        .args([
+            "clone",
+            remote_path.to_str().expect("Invalid path"),
+            repo2_path.to_str().expect("Invalid path"),
+        ])
         .current_dir(repo2_path.parent().expect("Invalid parent"))
         .status()
         .expect("Failed to clone remote");
 
     let test_file2 = repo2_path.join("test2.txt");
-    std::fs::write(&test_file2, "second content")
-        .expect("Failed to write test file 2");
+    std::fs::write(&test_file2, "second content").expect("Failed to write test file 2");
 
     Command::new("git")
         .args(["add", "test2.txt"])
@@ -372,10 +384,15 @@ fn test_push_guard_does_not_affect_force_push_check() {
     std::env::set_current_dir(current_dir).expect("Failed to restore current directory");
 
     match result {
-        engine::CheckResult::Denied { reason, pattern_id, .. } => {
+        engine::CheckResult::Denied {
+            reason, pattern_id, ..
+        } => {
             assert_eq!(pattern_id, "git-force-push");
-            assert!(reason.contains("force-with-lease") || reason.contains("Force-push"),
-                    "Reason should mention force-with-lease or force-push, got: {}", reason);
+            assert!(
+                reason.contains("force-with-lease") || reason.contains("Force-push"),
+                "Reason should mention force-with-lease or force-push, got: {}",
+                reason
+            );
         }
         other => panic!("Expected Denied result for force-push, got {:?}", other),
     }
@@ -407,8 +424,12 @@ fn test_push_guard_safe_patterns_are_respected() {
 
     for command in safe_commands {
         let result = engine.evaluate_command(&CommandSource::Hook(command.to_string()));
-        assert!(matches!(result, engine::CheckResult::Allowed),
-                "Command '{}' should be allowed, got {:?}", command, result);
+        assert!(
+            matches!(result, engine::CheckResult::Allowed),
+            "Command '{}' should be allowed, got {:?}",
+            command,
+            result
+        );
     }
 
     // Restore original directory before dropping temp dir

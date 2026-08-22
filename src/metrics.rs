@@ -122,8 +122,12 @@ impl GuardMetrics {
             time_since_stable_seconds: metrics
                 .time_since_stable
                 .map(|duration| duration.as_secs_f64()),
-            last_crash_timestamp: metrics.last_crash_at.map(|timestamp| timestamp.timestamp() as f64),
-            last_start_timestamp: metrics.last_start_at.map(|timestamp| timestamp.timestamp() as f64),
+            last_crash_timestamp: metrics
+                .last_crash_at
+                .map(|timestamp| timestamp.timestamp() as f64),
+            last_start_timestamp: metrics
+                .last_start_at
+                .map(|timestamp| timestamp.timestamp() as f64),
         }
     }
 }
@@ -255,57 +259,108 @@ impl MetricsExporter {
         if self.config.include_health {
             output.push_str("# Guard Health Metrics\n\n");
 
-            output.push_str(&format!("# HELP {}uptime_seconds Uptime of the guard process in seconds\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}uptime_seconds Uptime of the guard process in seconds\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}uptime_seconds gauge\n", prefix));
-            output.push_str(&format!("{}uptime_seconds {}\n", prefix, snapshot.health.uptime_seconds));
+            output.push_str(&format!(
+                "{}uptime_seconds {}\n",
+                prefix, snapshot.health.uptime_seconds
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}total_crashes Total number of guard process crashes\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}total_crashes Total number of guard process crashes\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}total_crashes counter\n", prefix));
-            output.push_str(&format!("{}total_crashes {}\n", prefix, snapshot.health.total_crashes));
+            output.push_str(&format!(
+                "{}total_crashes {}\n",
+                prefix, snapshot.health.total_crashes
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}recent_crashes Number of crashes in the last hour\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}recent_crashes Number of crashes in the last hour\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}recent_crashes gauge\n", prefix));
-            output.push_str(&format!("{}recent_crashes {}\n", prefix, snapshot.health.recent_crashes));
+            output.push_str(&format!(
+                "{}recent_crashes {}\n",
+                prefix, snapshot.health.recent_crashes
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}crash_rate Current crash rate (crashes per hour)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}crash_rate Current crash rate (crashes per hour)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}crash_rate gauge\n", prefix));
-            output.push_str(&format!("{}crash_rate {}\n", prefix, snapshot.health.crash_rate));
+            output.push_str(&format!(
+                "{}crash_rate {}\n",
+                prefix, snapshot.health.crash_rate
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}consecutive_clean_runs Number of consecutive clean process exits\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}consecutive_clean_runs Number of consecutive clean process exits\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}consecutive_clean_runs gauge\n", prefix));
-            output.push_str(&format!("{}consecutive_clean_runs {}\n", prefix, snapshot.health.consecutive_clean_runs));
+            output.push_str(&format!(
+                "{}consecutive_clean_runs {}\n",
+                prefix, snapshot.health.consecutive_clean_runs
+            ));
             output.push('\n');
 
             output.push_str(&format!("# HELP {}health_status Current health status code (0=Unknown, 1=Healthy, 2=Recovering, 3=Unstable, 4=Degraded, 5=Dead)\n", prefix));
             output.push_str(&format!("# TYPE {}health_status gauge\n", prefix));
-            output.push_str(&format!("{}health_status {}\n", prefix, snapshot.health.health_status));
+            output.push_str(&format!(
+                "{}health_status {}\n",
+                prefix, snapshot.health.health_status
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}is_stable Whether the process is currently stable (1=yes, 0=no)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}is_stable Whether the process is currently stable (1=yes, 0=no)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}is_stable gauge\n", prefix));
-            output.push_str(&format!("{}is_stable {}\n", prefix, snapshot.health.is_stable));
+            output.push_str(&format!(
+                "{}is_stable {}\n",
+                prefix, snapshot.health.is_stable
+            ));
             output.push('\n');
 
             if let Some(time_stable) = snapshot.health.time_since_stable_seconds {
                 output.push_str(&format!("# HELP {}time_since_stable_seconds Time since the process became stable in seconds\n", prefix));
-                output.push_str(&format!("# TYPE {}time_since_stable_seconds gauge\n", prefix));
-                output.push_str(&format!("{}time_since_stable_seconds {}\n", prefix, time_stable));
+                output.push_str(&format!(
+                    "# TYPE {}time_since_stable_seconds gauge\n",
+                    prefix
+                ));
+                output.push_str(&format!(
+                    "{}time_since_stable_seconds {}\n",
+                    prefix, time_stable
+                ));
                 output.push('\n');
             }
 
             if let Some(last_crash) = snapshot.health.last_crash_timestamp {
-                output.push_str(&format!("# HELP {}last_crash_timestamp Unix timestamp of the last crash\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}last_crash_timestamp Unix timestamp of the last crash\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}last_crash_timestamp gauge\n", prefix));
                 output.push_str(&format!("{}last_crash_timestamp {}\n", prefix, last_crash));
                 output.push('\n');
             }
 
             if let Some(last_start) = snapshot.health.last_start_timestamp {
-                output.push_str(&format!("# HELP {}last_start_timestamp Unix timestamp of the last process start\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}last_start_timestamp Unix timestamp of the last process start\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}last_start_timestamp gauge\n", prefix));
                 output.push_str(&format!("{}last_start_timestamp {}\n", prefix, last_start));
                 output.push('\n');
@@ -315,55 +370,115 @@ impl MetricsExporter {
         if self.config.include_telemetry {
             output.push_str("# Telemetry Metrics\n\n");
 
-            output.push_str(&format!("# HELP {}baseline_evaluations Total evaluations in the baseline window\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_evaluations Total evaluations in the baseline window\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_evaluations gauge\n", prefix));
-            output.push_str(&format!("{}baseline_evaluations {}\n", prefix, snapshot.telemetry.baseline_evaluations));
+            output.push_str(&format!(
+                "{}baseline_evaluations {}\n",
+                prefix, snapshot.telemetry.baseline_evaluations
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}baseline_denies Number of denies in the baseline window\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_denies Number of denies in the baseline window\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_denies gauge\n", prefix));
-            output.push_str(&format!("{}baseline_denies {}\n", prefix, snapshot.telemetry.baseline_denies));
+            output.push_str(&format!(
+                "{}baseline_denies {}\n",
+                prefix, snapshot.telemetry.baseline_denies
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}baseline_deny_rate Baseline deny rate (0.0 to 1.0)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_deny_rate Baseline deny rate (0.0 to 1.0)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_deny_rate gauge\n", prefix));
-            output.push_str(&format!("{}baseline_deny_rate {}\n", prefix, snapshot.telemetry.baseline_deny_rate));
+            output.push_str(&format!(
+                "{}baseline_deny_rate {}\n",
+                prefix, snapshot.telemetry.baseline_deny_rate
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}baseline_mean Baseline mean deny rate\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_mean Baseline mean deny rate\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_mean gauge\n", prefix));
-            output.push_str(&format!("{}baseline_mean {}\n", prefix, snapshot.telemetry.baseline_mean));
+            output.push_str(&format!(
+                "{}baseline_mean {}\n",
+                prefix, snapshot.telemetry.baseline_mean
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}baseline_stddev Baseline standard deviation\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_stddev Baseline standard deviation\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_stddev gauge\n", prefix));
-            output.push_str(&format!("{}baseline_stddev {}\n", prefix, snapshot.telemetry.baseline_stddev));
+            output.push_str(&format!(
+                "{}baseline_stddev {}\n",
+                prefix, snapshot.telemetry.baseline_stddev
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}baseline_min Minimum deny rate in baseline\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_min Minimum deny rate in baseline\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_min gauge\n", prefix));
-            output.push_str(&format!("{}baseline_min {}\n", prefix, snapshot.telemetry.baseline_min));
+            output.push_str(&format!(
+                "{}baseline_min {}\n",
+                prefix, snapshot.telemetry.baseline_min
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}baseline_max Maximum deny rate in baseline\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}baseline_max Maximum deny rate in baseline\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}baseline_max gauge\n", prefix));
-            output.push_str(&format!("{}baseline_max {}\n", prefix, snapshot.telemetry.baseline_max));
+            output.push_str(&format!(
+                "{}baseline_max {}\n",
+                prefix, snapshot.telemetry.baseline_max
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}current_deny_rate Current deny rate (0.0 to 1.0)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}current_deny_rate Current deny rate (0.0 to 1.0)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}current_deny_rate gauge\n", prefix));
-            output.push_str(&format!("{}current_deny_rate {}\n", prefix, snapshot.telemetry.current_deny_rate));
+            output.push_str(&format!(
+                "{}current_deny_rate {}\n",
+                prefix, snapshot.telemetry.current_deny_rate
+            ));
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}rollback_on_cooldown Whether rollback is on cooldown (1=yes, 0=no)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}rollback_on_cooldown Whether rollback is on cooldown (1=yes, 0=no)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}rollback_on_cooldown gauge\n", prefix));
-            output.push_str(&format!("{}rollback_on_cooldown {}\n", prefix, snapshot.telemetry.rollback_on_cooldown));
+            output.push_str(&format!(
+                "{}rollback_on_cooldown {}\n",
+                prefix, snapshot.telemetry.rollback_on_cooldown
+            ));
             output.push('\n');
 
             if let Some(last_rollback) = snapshot.telemetry.last_rollback_timestamp {
-                output.push_str(&format!("# HELP {}last_rollback_timestamp Unix timestamp of the last rollback\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}last_rollback_timestamp Unix timestamp of the last rollback\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}last_rollback_timestamp gauge\n", prefix));
-                output.push_str(&format!("{}last_rollback_timestamp {}\n", prefix, last_rollback));
+                output.push_str(&format!(
+                    "{}last_rollback_timestamp {}\n",
+                    prefix, last_rollback
+                ));
                 output.push('\n');
             }
         }
@@ -372,7 +487,10 @@ impl MetricsExporter {
             if self.config.include_pack_info {
                 output.push_str("# Rule Pack Metrics\n\n");
 
-                output.push_str(&format!("# HELP {}pack_info Information about the rule pack\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}pack_info Information about the rule pack\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}pack_info info\n", prefix));
                 output.push_str(&format!(
                     "{}pack_info{{pack_id=\"{}\",version=\"{}\"}} 1\n",
@@ -382,19 +500,37 @@ impl MetricsExporter {
                 ));
                 output.push('\n');
 
-                output.push_str(&format!("# HELP {}total_patterns Total number of patterns in the pack\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}total_patterns Total number of patterns in the pack\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}total_patterns gauge\n", prefix));
-                output.push_str(&format!("{}total_patterns {}\n", prefix, pack.total_patterns));
+                output.push_str(&format!(
+                    "{}total_patterns {}\n",
+                    prefix, pack.total_patterns
+                ));
                 output.push('\n');
 
-                output.push_str(&format!("# HELP {}enabled_patterns Number of enabled patterns\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}enabled_patterns Number of enabled patterns\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}enabled_patterns gauge\n", prefix));
-                output.push_str(&format!("{}enabled_patterns {}\n", prefix, pack.enabled_patterns));
+                output.push_str(&format!(
+                    "{}enabled_patterns {}\n",
+                    prefix, pack.enabled_patterns
+                ));
                 output.push('\n');
 
-                output.push_str(&format!("# HELP {}disabled_patterns Number of disabled patterns\n", prefix));
+                output.push_str(&format!(
+                    "# HELP {}disabled_patterns Number of disabled patterns\n",
+                    prefix
+                ));
                 output.push_str(&format!("# TYPE {}disabled_patterns gauge\n", prefix));
-                output.push_str(&format!("{}disabled_patterns {}\n", prefix, pack.disabled_patterns));
+                output.push_str(&format!(
+                    "{}disabled_patterns {}\n",
+                    prefix, pack.disabled_patterns
+                ));
                 output.push('\n');
             }
         }
@@ -402,7 +538,10 @@ impl MetricsExporter {
         if self.config.include_rule_metrics && !snapshot.rules.is_empty() {
             output.push_str("# Per-Rule Metrics\n\n");
 
-            output.push_str(&format!("# HELP {}rule_match_count Total number of matches for this rule\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}rule_match_count Total number of matches for this rule\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}rule_match_count counter\n", prefix));
 
             for rule in &snapshot.rules {
@@ -416,7 +555,10 @@ impl MetricsExporter {
             }
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}rule_deny_count Total number of denies for this rule\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}rule_deny_count Total number of denies for this rule\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}rule_deny_count counter\n", prefix));
 
             for rule in &snapshot.rules {
@@ -430,7 +572,10 @@ impl MetricsExporter {
             }
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}rule_deny_rate Deny rate for this rule (0.0 to 1.0)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}rule_deny_rate Deny rate for this rule (0.0 to 1.0)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}rule_deny_rate gauge\n", prefix));
 
             for rule in &snapshot.rules {
@@ -444,7 +589,10 @@ impl MetricsExporter {
             }
             output.push('\n');
 
-            output.push_str(&format!("# HELP {}rule_enabled Whether this rule is enabled (1=yes, 0=no)\n", prefix));
+            output.push_str(&format!(
+                "# HELP {}rule_enabled Whether this rule is enabled (1=yes, 0=no)\n",
+                prefix
+            ));
             output.push_str(&format!("# TYPE {}rule_enabled gauge\n", prefix));
 
             for rule in &snapshot.rules {
@@ -461,9 +609,15 @@ impl MetricsExporter {
 
         // Add scrape timestamp
         let scrape_timestamp = snapshot.timestamp.timestamp();
-        output.push_str(&format!("# HELP {}scrape_timestamp Unix timestamp when metrics were scraped\n", prefix));
+        output.push_str(&format!(
+            "# HELP {}scrape_timestamp Unix timestamp when metrics were scraped\n",
+            prefix
+        ));
         output.push_str(&format!("# TYPE {}scrape_timestamp gauge\n", prefix));
-        output.push_str(&format!("{}scrape_timestamp {}\n", prefix, scrape_timestamp));
+        output.push_str(&format!(
+            "{}scrape_timestamp {}\n",
+            prefix, scrape_timestamp
+        ));
 
         Ok(output)
     }
@@ -681,9 +835,14 @@ mod tests {
         };
 
         let output = exporter.export_metrics(&snapshot).unwrap();
-        assert!(output.contains("icg_rule_match_count{pack_id=\"test-pack\",pattern_id=\"rule-1\"} 100"));
-        assert!(output.contains("icg_rule_deny_count{pack_id=\"test-pack\",pattern_id=\"rule-2\"} 10"));
-        assert!(output.contains("icg_rule_deny_rate{pack_id=\"test-pack\",pattern_id=\"rule-1\"} 0.05"));
+        assert!(output
+            .contains("icg_rule_match_count{pack_id=\"test-pack\",pattern_id=\"rule-1\"} 100"));
+        assert!(
+            output.contains("icg_rule_deny_count{pack_id=\"test-pack\",pattern_id=\"rule-2\"} 10")
+        );
+        assert!(
+            output.contains("icg_rule_deny_rate{pack_id=\"test-pack\",pattern_id=\"rule-1\"} 0.05")
+        );
         assert!(output.contains("icg_rule_enabled{pack_id=\"test-pack\",pattern_id=\"rule-2\"} 1"));
     }
 

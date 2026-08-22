@@ -368,19 +368,22 @@ impl TelemetryStore {
     /// Load telemetry from disk, or create new if file doesn't exist
     pub fn load_or_create(path: PathBuf) -> Result<Self> {
         if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read telemetry store from {}", path.display()))?;
+            let content = std::fs::read_to_string(&path).with_context(|| {
+                format!("Failed to read telemetry store from {}", path.display())
+            })?;
 
-            let mut store: TelemetryStore = serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse telemetry store from {}", path.display()))?;
+            let mut store: TelemetryStore = serde_json::from_str(&content).with_context(|| {
+                format!("Failed to parse telemetry store from {}", path.display())
+            })?;
 
             store.store_path = path;
             Ok(store)
         } else {
             // Ensure parent directory exists
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create telemetry directory {}", parent.display()))?;
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create telemetry directory {}", parent.display())
+                })?;
             }
 
             Ok(Self::new(path))
@@ -389,16 +392,24 @@ impl TelemetryStore {
 
     /// Persist telemetry state to disk
     pub fn persist(&self) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize telemetry store")?;
+        let content =
+            serde_json::to_string_pretty(self).context("Failed to serialize telemetry store")?;
 
         // Atomic write: write to temp file, then rename
         let temp_path = self.store_path.with_extension("tmp");
-        std::fs::write(&temp_path, content)
-            .with_context(|| format!("Failed to write telemetry temp file {}", temp_path.display()))?;
+        std::fs::write(&temp_path, content).with_context(|| {
+            format!(
+                "Failed to write telemetry temp file {}",
+                temp_path.display()
+            )
+        })?;
 
-        std::fs::rename(&temp_path, &self.store_path)
-            .with_context(|| format!("Failed to rename telemetry file to {}", self.store_path.display()))?;
+        std::fs::rename(&temp_path, &self.store_path).with_context(|| {
+            format!(
+                "Failed to rename telemetry file to {}",
+                self.store_path.display()
+            )
+        })?;
 
         Ok(())
     }
@@ -627,10 +638,15 @@ pub fn handle_rollback(
     // Check if auto-rollback is enabled
     if !store.config.auto_rollback_enabled {
         eprintln!("⚠️  Anomaly detected but auto-rollback is disabled (dry-run mode)");
-        eprintln!("   Current deny rate: {:.2}%, Baseline: {:.2}%, Threshold: {:.2}%",
-                  anomaly.current_deny_rate * 100.0,
-                  anomaly.baseline.mean * 100.0,
-                  anomaly.baseline.anomaly_threshold(store.config.spike_threshold) * 100.0);
+        eprintln!(
+            "   Current deny rate: {:.2}%, Baseline: {:.2}%, Threshold: {:.2}%",
+            anomaly.current_deny_rate * 100.0,
+            anomaly.baseline.mean * 100.0,
+            anomaly
+                .baseline
+                .anomaly_threshold(store.config.spike_threshold)
+                * 100.0
+        );
         return Ok(None);
     }
 
@@ -642,14 +658,16 @@ pub fn handle_rollback(
     }
 
     // Get current trust pointer
-    let current_pointer = trust_store.load()?
+    let current_pointer = trust_store
+        .load()?
         .context("No trust pointer found - cannot perform rollback")?;
 
     let current_ref = current_pointer.trusted_ref.clone();
 
     // Get previous reference from trust pointer state
     // We need to read the state store to get the previous ref
-    let state_store_path = trust_store.path()
+    let state_store_path = trust_store
+        .path()
         .parent()
         .context("Trust pointer path has no parent")?
         .join("runtime-state.json");
@@ -658,36 +676,52 @@ pub fn handle_rollback(
         let state_store = crate::state_store::StateStore::new(&state_store_path);
 
         // Load the session state to get the trust pointer state
-        let session_state = state_store.load()
-            .with_context(|| format!("Failed to load session state from {}", state_store_path.display()))?;
+        let session_state = state_store.load().with_context(|| {
+            format!(
+                "Failed to load session state from {}",
+                state_store_path.display()
+            )
+        })?;
 
         // Get the previous trusted ref from the trust pointer state
-        session_state.trust_pointer.as_ref().and_then(|tp| tp.previous_trusted_ref.clone())
+        session_state
+            .trust_pointer
+            .as_ref()
+            .and_then(|tp| tp.previous_trusted_ref.clone())
     } else {
         eprintln!("⚠️  No state store found - cannot determine previous ref for rollback");
         None
     };
 
-    let previous_ref = previous_ref
-        .context("No previous trust reference available - cannot perform rollback")?;
+    let previous_ref =
+        previous_ref.context("No previous trust reference available - cannot perform rollback")?;
 
     // Perform the rollback
     eprintln!("🚨 Performing automatic rollback due to anomaly detection");
-    eprintln!("   Current ref: {}, Rolling back to: {}", current_ref, previous_ref);
+    eprintln!(
+        "   Current ref: {}, Rolling back to: {}",
+        current_ref, previous_ref
+    );
     eprintln!("   Severity: {:?}", anomaly.severity);
-    eprintln!("   Current deny rate: {:.2}%, Baseline: {:.2}%",
-              anomaly.current_deny_rate * 100.0,
-              anomaly.baseline.mean * 100.0);
+    eprintln!(
+        "   Current deny rate: {:.2}%, Baseline: {:.2}%",
+        anomaly.current_deny_rate * 100.0,
+        anomaly.baseline.mean * 100.0
+    );
 
     trust_store.set_trusted_ref_with_justification(
         &previous_ref,
-        format!("Automatic rollback due to anomaly detection. \
+        format!(
+            "Automatic rollback due to anomaly detection. \
                 Previous ref: {} had deny rate {:.2}%, \
                 current ref: {} had deny rate {:.2}%. \
                 Severity: {:?}",
-                current_ref, anomaly.baseline.mean * 100.0,
-                previous_ref, anomaly.current_deny_rate * 100.0,
-                anomaly.severity)
+            current_ref,
+            anomaly.baseline.mean * 100.0,
+            previous_ref,
+            anomaly.current_deny_rate * 100.0,
+            anomaly.severity
+        ),
     )?;
 
     // Mark rollback as performed in telemetry store
@@ -782,7 +816,8 @@ mod tests {
 
     #[test]
     fn health_snapshot_round_trips_with_telemetry() {
-        let mut telemetry = TelemetryStore::new(std::path::PathBuf::from("/tmp/icg-test-telemetry.json"));
+        let mut telemetry =
+            TelemetryStore::new(std::path::PathBuf::from("/tmp/icg-test-telemetry.json"));
         let mut health = crate::health::HealthState::new();
         health.mark_start();
         health.record_crash(crate::health::CrashRecord::new(
@@ -932,7 +967,11 @@ mod tests {
         for i in 0..20 {
             window.push(EvaluationRecord {
                 timestamp: Utc::now(),
-                verdict: if i % 100 == 0 { Verdict::Denied } else { Verdict::Allowed },
+                verdict: if i % 100 == 0 {
+                    Verdict::Denied
+                } else {
+                    Verdict::Allowed
+                },
                 release_ref: None,
                 session_id: None,
             });
@@ -982,7 +1021,11 @@ mod tests {
         // Record some evaluations
         for i in 0..5 {
             store.record_evaluation(
-                if i % 2 == 0 { Verdict::Allowed } else { Verdict::Denied },
+                if i % 2 == 0 {
+                    Verdict::Allowed
+                } else {
+                    Verdict::Denied
+                },
                 Some("v1.0.0".to_string()),
                 Some("session-123".to_string()),
             );

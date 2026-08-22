@@ -95,7 +95,10 @@ fn creating_rule_pack_scenario_1_scaffold_creates_files() {
     if pack_file.exists() {
         let content = fs::read_to_string(&pack_file).expect("pack file should be readable");
         assert!(
-            content.contains("id") && content.contains("tool_keywords") && content.contains("safe_patterns") && content.contains("guarded_patterns"),
+            content.contains("id")
+                && content.contains("tool_keywords")
+                && content.contains("safe_patterns")
+                && content.contains("guarded_patterns"),
             "Pack file should contain required fields"
         );
     }
@@ -140,7 +143,13 @@ fn creating_rule_pack_scenario_2_safe_patterns_structure() {
     fs::write(&pack_path, pack_with_safe_patterns).expect("pack should write");
 
     // Verify the pack can be loaded
-    let check = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "kubectl get pods"]);
+    let check = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "kubectl get pods",
+    ]);
 
     // Should not crash
     let stderr = String::from_utf8_lossy(&check.stderr);
@@ -379,10 +388,11 @@ fn creating_rule_pack_scenario_6_generate_regression_suite() {
         "Regression suite file should be created"
     );
 
-    let content = fs::read_to_string(&output_path)
-        .expect("regression suite should be readable");
+    let content = fs::read_to_string(&output_path).expect("regression suite should be readable");
     assert!(
-        content.contains("cases") || content.contains("test-dangerous-1") || content.contains("test-dangerous-2"),
+        content.contains("cases")
+            || content.contains("test-dangerous-1")
+            || content.contains("test-dangerous-2"),
         "Regression suite should contain test cases for each guarded pattern"
     );
 }
@@ -422,7 +432,13 @@ fn creating_rule_pack_scenario_pack_validation_rejects_invalid_regex() {
     fs::write(&pack_path, invalid_pack).expect("pack should write");
 
     // Should fail to load or validate
-    let result = icg(&["check", "--pack", &pack_path.to_string_lossy(), "--command", "test"]);
+    let result = icg(&[
+        "check",
+        "--pack",
+        &pack_path.to_string_lossy(),
+        "--command",
+        "test",
+    ]);
 
     // Should indicate an error
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -430,7 +446,10 @@ fn creating_rule_pack_scenario_pack_validation_rejects_invalid_regex() {
     let output = format!("{} {}", stdout, stderr);
 
     assert!(
-        output.contains("error") || output.contains("invalid") || output.contains("failed") || !result.status.success(),
+        output.contains("error")
+            || output.contains("invalid")
+            || output.contains("failed")
+            || !result.status.success(),
         "Invalid regex should cause validation error"
     );
 }
@@ -482,7 +501,10 @@ fn creating_rule_pack_scenario_pack_with_content_patterns() {
 
     // Should deny writing API keys
     assert!(
-        output.contains("DENIED") || output.contains("deny") || output.contains("api_key") || output.contains("API key"),
+        output.contains("DENIED")
+            || output.contains("deny")
+            || output.contains("api_key")
+            || output.contains("API key"),
         "Content pattern should deny dangerous writes, got: {}",
         output
     );

@@ -102,16 +102,10 @@ fn emits_allow_deny_rewrite_and_warning_responses() {
     .expect("pack should be written");
 
     let allowed = run_hook(&pack_path, json!({"command": "git status"}));
-    assert_eq!(
-        allowed["hookSpecificOutput"]["permissionDecision"],
-        "allow"
-    );
+    assert_eq!(allowed["hookSpecificOutput"]["permissionDecision"], "allow");
 
     let denied = run_hook(&pack_path, json!({"command": "git reset --hard HEAD"}));
-    assert_eq!(
-        denied["hookSpecificOutput"]["permissionDecision"],
-        "deny"
-    );
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
     assert!(denied["hookSpecificOutput"]["permissionDecisionReason"]
         .as_str()
         .expect("deny reason should be a string")
@@ -138,11 +132,11 @@ fn emits_allow_deny_rewrite_and_warning_responses() {
         "preserve this field"
     );
 
-    let warning = run_hook(&pack_path, json!({"command": "git worktree add path branch"}));
-    assert_eq!(
-        warning["hookSpecificOutput"]["permissionDecision"],
-        "allow"
+    let warning = run_hook(
+        &pack_path,
+        json!({"command": "git worktree add path branch"}),
     );
+    assert_eq!(warning["hookSpecificOutput"]["permissionDecision"], "allow");
     assert!(warning["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .expect("warning context should be a string")

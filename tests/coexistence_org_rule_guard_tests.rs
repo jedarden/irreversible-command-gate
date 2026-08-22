@@ -44,10 +44,7 @@ fn coexistence_both_deny_latest_image_tag_in_yaml() {
             "deploy/app.yaml",
             "containers:\n  - image: ronaldraygun/myapp:latest\n",
         ),
-        (
-            "k8s/deployment.yml",
-            "image: nginx:latest\n",
-        ),
+        ("k8s/deployment.yml", "image: nginx:latest\n"),
         (
             "docker-compose.yaml",
             "  service:\n    image: redis:latest\n",
@@ -66,12 +63,17 @@ fn coexistence_both_deny_latest_image_tag_in_yaml() {
                 ..
             } => {
                 assert_eq!(pack_id, "image-tag", "denial must come from image-tag pack");
-                assert_eq!(pattern_id, "image-tag-latest", "denial must be for :latest pattern");
+                assert_eq!(
+                    pattern_id, "image-tag-latest",
+                    "denial must be for :latest pattern"
+                );
             }
             other => {
-                panic!("Expected icg to DENY :latest in {file_path}, got {other:?}. \
+                panic!(
+                    "Expected icg to DENY :latest in {file_path}, got {other:?}. \
                        This would be a DIVERGENT verdict (icg allows but org-rule-guard.py denies) \
-                       and FAILS the coexistence test.");
+                       and FAILS the coexistence test."
+                );
             }
         }
 
@@ -90,18 +92,9 @@ fn coexistence_both_allow_pinned_images() {
     let engine = load_image_tag_engine();
 
     for (file_path, content) in [
-        (
-            "deploy/app.yaml",
-            "image: ronaldraygun/myapp:v1.2.3\n",
-        ),
-        (
-            "k8s/deployment.yml",
-            "image: nginx:1.21\n",
-        ),
-        (
-            "docker-compose.yaml",
-            "image: redis@sha256:abc123\n",
-        ),
+        ("deploy/app.yaml", "image: ronaldraygun/myapp:v1.2.3\n"),
+        ("k8s/deployment.yml", "image: nginx:1.21\n"),
+        ("docker-compose.yaml", "image: redis@sha256:abc123\n"),
     ] {
         let result = engine.evaluate_content(&ContentSource::Write {
             file_path: file_path.to_string(),
@@ -114,9 +107,11 @@ fn coexistence_both_allow_pinned_images() {
                 // Good: icg allows pinned images
             }
             other => {
-                panic!("Expected icg to ALLOW pinned image in {file_path}, got {other:?}. \
+                panic!(
+                    "Expected icg to ALLOW pinned image in {file_path}, got {other:?}. \
                        This would be a DIVERGENT verdict (icg denies but org-rule-guard.py allows) \
-                       and FAILS the coexistence test.");
+                       and FAILS the coexistence test."
+                );
             }
         }
 
@@ -204,8 +199,10 @@ fn coexistence_non_yaml_files_consistent_allow() {
                 // Good: icg allows non-YAML content
             }
             other => {
-                panic!("Expected icg to ALLOW :latest in non-YAML {file_path}, got {other:?}. \
-                       This would be a DIVERGENT verdict.");
+                panic!(
+                    "Expected icg to ALLOW :latest in non-YAML {file_path}, got {other:?}. \
+                       This would be a DIVERGENT verdict."
+                );
             }
         }
 

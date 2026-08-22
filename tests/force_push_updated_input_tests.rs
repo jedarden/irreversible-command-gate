@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -90,12 +90,10 @@ fn assert_force_push_rewrite(response: &Value, expected_input: &Value) {
 
     let hook_output = &response["hookSpecificOutput"];
     assert_eq!(hook_output["updatedInput"]["command"], SANITIZED_COMMAND);
-    assert!(
-        !hook_output["updatedInput"]["command"]
-            .as_str()
-            .expect("rewritten command should be a string")
-            .contains("--force")
-    );
+    assert!(!hook_output["updatedInput"]["command"]
+        .as_str()
+        .expect("rewritten command should be a string")
+        .contains("--force"));
     assert!(hook_output.get("permissionDecisionReason").is_none());
     assert_eq!(&hook_output["updatedInput"], expected_input);
     let explanation = hook_output["additionalContext"]

@@ -188,7 +188,13 @@ fn installation_scenario_explain_command_works() {
     fs::write(&pack_path, test_pack).expect("test pack should write");
 
     // Try to explain the pattern (if explain command is implemented)
-    let explain = icg(&["explain", "--pattern", "test-pattern", "--pack", &pack_path.to_string_lossy()]);
+    let explain = icg(&[
+        "explain",
+        "--pattern",
+        "test-pattern",
+        "--pack",
+        &pack_path.to_string_lossy(),
+    ]);
 
     // The command should not crash - it might succeed or fail gracefully
     let stderr = String::from_utf8_lossy(&explain.stderr);
@@ -204,7 +210,10 @@ fn installation_scenario_coverage_list_works() {
     let coverage = icg(&["coverage", "--list"]);
 
     // Should succeed
-    assert!(coverage.status.success(), "icg coverage --list should succeed");
+    assert!(
+        coverage.status.success(),
+        "icg coverage --list should succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&coverage.stdout);
     // Should list available packs

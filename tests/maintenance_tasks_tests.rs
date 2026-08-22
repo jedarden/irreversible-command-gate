@@ -29,7 +29,10 @@ fn maintenance_scenario_1_weekly_health_check() {
     let health = icg(&["health", "status"]);
 
     // Should succeed
-    assert!(health.status.success(), "Weekly health check should succeed");
+    assert!(
+        health.status.success(),
+        "Weekly health check should succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&health.stdout);
     // Should show health status information
@@ -82,7 +85,10 @@ fn maintenance_scenario_2_status_shows_trust_pointer() {
     let stdout = String::from_utf8_lossy(&status.stdout);
     // Should show trust pointer or reference information
     assert!(
-        stdout.contains("Trust") || stdout.contains("Pointer") || stdout.contains("Reference") || stdout.contains("Update"),
+        stdout.contains("Trust")
+            || stdout.contains("Pointer")
+            || stdout.contains("Reference")
+            || stdout.contains("Update"),
         "Status should show trust pointer information"
     );
 }
@@ -107,7 +113,13 @@ fn maintenance_scenario_3_trust_command_works() {
     let trust_path = temp_dir.path().join("test-trust.json");
 
     // Set a trust pointer
-    let set = icg(&["trust", "set", "v0.1.0", "--path", &trust_path.to_string_lossy()]);
+    let set = icg(&[
+        "trust",
+        "set",
+        "v0.1.0",
+        "--path",
+        &trust_path.to_string_lossy(),
+    ]);
     assert!(set.status.success(), "Trust set should succeed");
 
     // Show the trust pointer
@@ -121,7 +133,13 @@ fn maintenance_scenario_3_trust_command_works() {
     );
 
     // Check if a reference is trusted
-    let check = icg(&["trust", "check", "v0.1.0", "--path", &trust_path.to_string_lossy()]);
+    let check = icg(&[
+        "trust",
+        "check",
+        "v0.1.0",
+        "--path",
+        &trust_path.to_string_lossy(),
+    ]);
     assert!(check.status.success(), "Trust check should succeed");
 
     let stdout = String::from_utf8_lossy(&check.stdout);
@@ -139,7 +157,10 @@ fn maintenance_scenario_4_backup_create_command_exists() {
     let stdout = String::from_utf8_lossy(&backup_help.stdout);
     // Should mention create or verify subcommands
     assert!(
-        stdout.contains("create") || stdout.contains("Create") || stdout.contains("verify") || stdout.contains("Verify"),
+        stdout.contains("create")
+            || stdout.contains("Create")
+            || stdout.contains("verify")
+            || stdout.contains("Verify"),
         "Backup help should mention create/verify subcommands"
     );
 }
@@ -163,10 +184,7 @@ fn maintenance_scenario_4_coverage_list_shows_packs() {
 #[test]
 fn maintenance_scenario_regression_suite_generation() {
     // Verify regression suite can be generated for maintenance testing
-    let packs = vec![
-        "packs/image-tag.json",
-        "packs/storage-class.json",
-    ];
+    let packs = vec!["packs/image-tag.json", "packs/storage-class.json"];
 
     for pack_path in packs {
         if PathBuf::from(pack_path).exists() {
@@ -190,8 +208,8 @@ fn maintenance_scenario_regression_suite_generation() {
 
             // If successful, verify output file was created
             if result.status.success() && output_path.exists() {
-                let content = fs::read_to_string(&output_path)
-                    .expect("regression suite should be readable");
+                let content =
+                    fs::read_to_string(&output_path).expect("regression suite should be readable");
                 assert!(
                     content.contains("cases") || content.contains("regression"),
                     "Regression suite should contain cases information"
@@ -208,11 +226,25 @@ fn maintenance_scenario_health_reset_works() {
     let health_path = temp_dir.path().join("test-health.json");
 
     // First, mark some activity
-    let mark_start = icg(&["health", "mark-start", "--path", &health_path.to_string_lossy()]);
-    assert!(mark_start.status.success(), "Health mark-start should succeed");
+    let mark_start = icg(&[
+        "health",
+        "mark-start",
+        "--path",
+        &health_path.to_string_lossy(),
+    ]);
+    assert!(
+        mark_start.status.success(),
+        "Health mark-start should succeed"
+    );
 
     // Then reset (with force flag for testing)
-    let reset = icg(&["health", "reset", "--path", &health_path.to_string_lossy(), "--force"]);
+    let reset = icg(&[
+        "health",
+        "reset",
+        "--path",
+        &health_path.to_string_lossy(),
+        "--force",
+    ]);
     assert!(reset.status.success(), "Health reset should succeed");
 
     let stdout = String::from_utf8_lossy(&reset.stdout);
@@ -228,7 +260,12 @@ fn maintenance_scenario_telemetry_status_works() {
     let temp_dir = tempdir().unwrap();
     let telemetry_path = temp_dir.path().join("test-telemetry.json");
 
-    let status = icg(&["telemetry", "status", "--path", &telemetry_path.to_string_lossy()]);
+    let status = icg(&[
+        "telemetry",
+        "status",
+        "--path",
+        &telemetry_path.to_string_lossy(),
+    ]);
 
     // Should succeed
     assert!(status.status.success(), "Telemetry status should succeed");
@@ -260,7 +297,10 @@ fn maintenance_scenario_redos_check_works() {
             // Should provide output about safety
             let stdout = String::from_utf8_lossy(&result.stdout);
             assert!(
-                stdout.contains("ReDoS") || stdout.contains("PASS") || stdout.contains("pattern") || stdout.contains("safe"),
+                stdout.contains("ReDoS")
+                    || stdout.contains("PASS")
+                    || stdout.contains("pattern")
+                    || stdout.contains("safe"),
                 "ReDoS check should report on pattern safety"
             );
         }
@@ -294,7 +334,10 @@ fn maintenance_scenario_override_command_exists() {
 
     let stdout = String::from_utf8_lossy(&override_help.stdout);
     assert!(
-        stdout.contains("create") || stdout.contains("approve") || stdout.contains("list") || stdout.contains("override"),
+        stdout.contains("create")
+            || stdout.contains("approve")
+            || stdout.contains("list")
+            || stdout.contains("override"),
         "Override help should mention subcommands"
     );
 }
@@ -316,7 +359,10 @@ fn maintenance_scenario_trust_channel_support() {
         &trust_path.to_string_lossy(),
     ]);
 
-    assert!(set.status.success(), "Trust set with channel should succeed");
+    assert!(
+        set.status.success(),
+        "Trust set with channel should succeed"
+    );
 
     // Show for canary channel
     let show = icg(&[
@@ -328,7 +374,10 @@ fn maintenance_scenario_trust_channel_support() {
         &trust_path.to_string_lossy(),
     ]);
 
-    assert!(show.status.success(), "Trust show with channel should succeed");
+    assert!(
+        show.status.success(),
+        "Trust show with channel should succeed"
+    );
 
     let stdout = String::from_utf8_lossy(&show.stdout);
     assert!(

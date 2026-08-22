@@ -54,12 +54,10 @@ Justification: Service down, users affected",
         timestamp
     );
 
-    fs::write(&emergency_file, emergency_record)
-        .expect("emergency record should be written");
+    fs::write(&emergency_file, emergency_record).expect("emergency record should be written");
 
     // Verify record exists and contains required fields
-    let content = fs::read_to_string(&emergency_file)
-        .expect("emergency record should be readable");
+    let content = fs::read_to_string(&emergency_file).expect("emergency record should be readable");
     assert!(content.contains("EMERGENCY BYPASS RECORD"));
     assert!(content.contains("Timestamp:"));
     assert!(content.contains("Service:"));
@@ -77,7 +75,11 @@ fn emergency_scenario_3_bypass_guard_with_disabled_flag() {
 
     let result = Command::new(env!("CARGO_BIN_EXE_icg"))
         .env("ICG_DISABLED", "1")
-        .args(&["check", "--command", "vault policy write auth-policy auth-policy.hcl"])
+        .args(&[
+            "check",
+            "--command",
+            "vault policy write auth-policy auth-policy.hcl",
+        ])
         .output()
         .expect("icg should run even when disabled");
 
@@ -99,10 +101,7 @@ fn emergency_scenario_5_export_denial_for_false_positive_report() {
     let report_file = temp_dir.path().join("false-positive-report.txt");
 
     // Create a test denial scenario
-    let check = icg(&[
-        "check",
-        "--command", "vault kv destroy secret/test",
-    ]);
+    let check = icg(&["check", "--command", "vault kv destroy secret/test"]);
 
     // Should deny the destructive command
     assert!(!check.status.success() || String::from_utf8_lossy(&check.stdout).contains("DENIED"));
@@ -111,14 +110,15 @@ fn emergency_scenario_5_export_denial_for_false_positive_report() {
     // Note: icg doesn't have an explicit "export-denial" command,
     // but we can capture the output for reporting
     let denial_output = String::from_utf8_lossy(&check.stdout);
-    fs::write(&report_file, denial_output.as_bytes())
-        .expect("denial report should be written");
+    fs::write(&report_file, denial_output.as_bytes()).expect("denial report should be written");
 
     // Verify report contains useful information
-    let report_content = fs::read_to_string(&report_file)
-        .expect("denial report should be readable");
+    let report_content =
+        fs::read_to_string(&report_file).expect("denial report should be readable");
     assert!(
-        report_content.contains("vault") || report_content.contains("destroy") || report_content.contains("DENIED"),
+        report_content.contains("vault")
+            || report_content.contains("destroy")
+            || report_content.contains("DENIED"),
         "Report should contain denial information"
     );
 }
@@ -140,7 +140,10 @@ fn emergency_scenario_health_status_shows_recent_denials() {
 
     // Health output should contain status information
     assert!(
-        stdout.contains("icg") || stdout.contains("binary") || stdout.contains("version") || stdout.contains("healthy"),
+        stdout.contains("icg")
+            || stdout.contains("binary")
+            || stdout.contains("version")
+            || stdout.contains("healthy"),
         "Health check should provide status information"
     );
 }
