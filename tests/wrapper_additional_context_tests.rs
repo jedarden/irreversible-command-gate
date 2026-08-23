@@ -7,7 +7,6 @@
 #![cfg(unix)]
 
 use serde_json::json;
-use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
@@ -66,7 +65,7 @@ fn additional_context_warns_on_stderr_and_executes_original_command() {
         .env("ICG_RULE_PACK", &pack_path)
         .env("ICG_HEALTH_PATH", temp.path().join("health.json"))
         .env("ICG_TELEMETRY_PATH", temp.path().join("telemetry.json"))
-        .env("PATH", OsString::from(path));
+        .env("PATH", &path);
     let output = command.output().expect("wrapper should run");
 
     assert!(

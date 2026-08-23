@@ -207,8 +207,8 @@ async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
         .get_trusted_ref()?
         .context("No trust pointer exists. Set one with: icg trust set <reference>")?;
 
-    if config.channel.is_some() {
-        println!("📋 Channel: `{}`", config.channel.as_ref().unwrap());
+    if let Some(channel) = &config.channel {
+        println!("📋 Channel: `{}`", channel);
     }
     println!("📋 Trusted reference: `{}`", trusted_ref);
 
@@ -452,7 +452,7 @@ mod tests {
         let loaded = UpdateCheckState::load(&state_path)?.unwrap();
         assert_eq!(loaded.release_tag, "icg-v0.1.0");
         assert_eq!(loaded.trusted_ref, "v0.1.0");
-        assert!(loaded.last_successful_check.len() > 0); // Should have a timestamp
+        assert!(!loaded.last_successful_check.is_empty()); // Should have a timestamp
 
         Ok(())
     }

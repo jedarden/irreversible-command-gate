@@ -14,7 +14,6 @@
 //! This tests the developer workflow for creating new rule packs.
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::tempdir;
 

@@ -50,10 +50,11 @@ const MAX_COUNTED_RELEASES: usize = 128;
 pub const MAX_POLICY_EVENTS: usize = 256;
 
 /// Fleet policy state loaded by each guard invocation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyMode {
     /// Guard-availability failures allow the operation and emit an alert.
+    #[default]
     FailOpen,
     /// Guard-availability failures deny the operation.
     FailClosed,
@@ -93,12 +94,6 @@ pub struct PolicyEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poison_pill_event_ref: Option<String>,
     pub reason: String,
-}
-
-impl Default for PolicyMode {
-    fn default() -> Self {
-        Self::FailOpen
-    }
 }
 
 impl PolicyMode {
@@ -563,6 +558,7 @@ impl PolicyStore {
         self.ensure_parent()?;
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(self.lock_path())

@@ -75,7 +75,7 @@ fn emergency_scenario_3_bypass_guard_with_disabled_flag() {
 
     let result = Command::new(env!("CARGO_BIN_EXE_icg"))
         .env("ICG_DISABLED", "1")
-        .args(&[
+        .args([
             "check",
             "--command",
             "vault policy write auth-policy auth-policy.hcl",

@@ -82,11 +82,13 @@ impl Default for MonitoringConfig {
 impl MonitoringConfig {
     /// Build configuration from the environment used by the hook/container.
     pub fn from_environment() -> Self {
-        let mut config = Self::default();
-        config.health_path = env_path("ICG_HEALTH_PATH", DEFAULT_HEALTH_PATH);
-        config.telemetry_path = env_path("ICG_TELEMETRY_PATH", DEFAULT_TELEMETRY_PATH);
-        config.denial_log_path = env_path("ICG_DENIAL_LOG", DEFAULT_DENIAL_LOG_PATH);
-        config.rule_pack_path = env_path("ICG_RULE_PACK", DEFAULT_RULE_PACK_PATH);
+        let mut config = Self {
+            health_path: env_path("ICG_HEALTH_PATH", DEFAULT_HEALTH_PATH),
+            telemetry_path: env_path("ICG_TELEMETRY_PATH", DEFAULT_TELEMETRY_PATH),
+            denial_log_path: env_path("ICG_DENIAL_LOG", DEFAULT_DENIAL_LOG_PATH),
+            rule_pack_path: env_path("ICG_RULE_PACK", DEFAULT_RULE_PACK_PATH),
+            ..Self::default()
+        };
         if let Some(instance) =
             std::env::var_os("ICG_MONITOR_INSTANCE").filter(|value| !value.is_empty())
         {
@@ -288,8 +290,10 @@ pub fn collect_snapshot(config: &MonitoringConfig) -> Result<MonitoringSnapshot>
 /// Render a complete Prometheus text exposition scrape.
 pub fn export_prometheus(config: &MonitoringConfig) -> Result<String> {
     let snapshot = collect_snapshot(config)?;
-    let mut metrics_config = MetricsConfig::default();
-    metrics_config.include_rule_metrics = true;
+    let metrics_config = MetricsConfig {
+        include_rule_metrics: true,
+        ..Default::default()
+    };
     let mut output = MetricsExporter::new(metrics_config).export_metrics(&snapshot.metrics)?;
 
     output.push_str("\n# Operational monitoring metrics\n");

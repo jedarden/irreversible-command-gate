@@ -10,7 +10,6 @@
 //! - Safe/guarded pattern conflicts
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::tempdir;
 
@@ -19,24 +18,6 @@ fn icg(args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("icg should run")
-}
-
-fn icg_with_stdin(args: &[&str], input: &str) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
-    command
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
-
-    let mut child = command.spawn().expect("icg should run");
-    use std::io::Write;
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().expect("icg should finish")
 }
 
 #[test]

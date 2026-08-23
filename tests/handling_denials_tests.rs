@@ -12,7 +12,6 @@
 //! This tests how operators interpret and respond to denials.
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::tempdir;
 

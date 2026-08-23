@@ -13,7 +13,6 @@
 //! This tests state-dependent and context-aware pattern matching.
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::tempdir;
 

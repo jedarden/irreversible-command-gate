@@ -16,7 +16,6 @@ use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::rule_pack::{
     load_pack, Channel, Check, GuardedPattern, Pack, Pattern, Redirect, Severity, Tier,
 };
-use std::path::PathBuf;
 use tempfile::tempdir;
 
 #[test]
@@ -135,7 +134,7 @@ fn debugging_scenario_3_identify_overly_broad_patterns() {
         ),
     ];
 
-    for (command, description) in test_cases {
+    for (command, _description) in test_cases {
         let result = engine.evaluate_command(&CommandSource::Hook(command.to_string()));
 
         // With the overly broad pattern, ALL are blocked (false positives)

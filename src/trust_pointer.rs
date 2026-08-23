@@ -141,7 +141,7 @@ impl TrustPointerStore {
         // Check if owned by root
         if owner != 0 {
             // If we're using the default /etc/icg path, this is a security issue
-            if artifact_dir == PathBuf::from("/etc/icg") {
+            if artifact_dir == Path::new("/etc/icg") {
                 anyhow::bail!(
                     "Security violation: Artifact directory {} is NOT owned by root (owned by uid {}). \
                     This reproduces the self-edit gap that org-rule-guard.py has. \
@@ -181,7 +181,7 @@ impl TrustPointerStore {
                 Ok(_) => {
                     // We successfully wrote - this is a security issue for the default path
                     let _ = fs::remove_file(&test_file); // Clean up
-                    if artifact_dir == PathBuf::from("/etc/icg") {
+                    if artifact_dir == Path::new("/etc/icg") {
                         anyhow::bail!(
                             "Security violation: Current user can WRITE to artifact directory {}. \
                             This reproduces the self-edit gap that org-rule-guard.py has. \

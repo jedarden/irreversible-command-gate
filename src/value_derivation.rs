@@ -161,9 +161,7 @@ fn version_from_file(contents: &str) -> Option<String> {
 
 fn is_semver(value: &str) -> bool {
     let value = value.strip_prefix('v').unwrap_or(value);
-    let core_end = value
-        .find(|character| character == '-' || character == '+')
-        .unwrap_or(value.len());
+    let core_end = value.find(['-', '+']).unwrap_or(value.len());
     let core = &value[..core_end];
     let components: Vec<_> = core.split('.').collect();
     if components.len() != 3

@@ -378,7 +378,7 @@ fn prune_recorded_cases_internal(
 
         let contents = retained
             .iter()
-            .map(|case| serde_json::to_string(case))
+            .map(serde_json::to_string)
             .collect::<Result<Vec<_>, _>>()?
             .join("\n");
         let contents = if contents.is_empty() {
@@ -1156,7 +1156,7 @@ fn validate_deny_input(
 /// lets a hand-authored `example_command` exercise the real hook shape too.
 fn command_segments(command: &str) -> Vec<String> {
     command
-        .split(|character| matches!(character, ';' | '&' | '|' | '\n'))
+        .split([';', '&', '|', '\n'])
         .filter_map(|segment| {
             let mut tokens: Vec<&str> = segment.split_whitespace().collect();
             while let Some(first) = tokens.first().copied() {

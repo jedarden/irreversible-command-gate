@@ -5,6 +5,7 @@
 pub mod alerting;
 pub mod coverage;
 pub mod denial_log;
+pub mod documented_commands;
 pub mod engine;
 pub mod fail_closed;
 pub mod health;

@@ -10,7 +10,7 @@
 
 use crate::fail_closed::{PolicyStore, LEGACY_FAIL_CLOSED_ENV};
 use crate::rule_pack::Pack;
-use crate::telemetry::{CheckResultToVerdict, TelemetryStore, Verdict};
+use crate::telemetry::CheckResultToVerdict;
 use crate::value_derivation::render_reason;
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -912,11 +912,6 @@ impl Engine {
         self.fail_open
     }
 
-    fn mark_fail_closed(&mut self, reason: &str) {
-        self.fail_open = true;
-        report_failure(self.fail_closed, reason);
-    }
-
     fn should_fail_closed(&self) -> bool {
         self.fail_open && self.fail_closed
     }
@@ -1302,7 +1297,7 @@ impl Engine {
             let keyword = executable_basename(&keyword).to_string();
             self.keyword_index
                 .entry(keyword)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(pack_id.clone());
         }
 
@@ -2556,7 +2551,7 @@ pub fn check_remote_head_stale() -> Result<bool> {
             let remote_sha = parts[0].trim();
             let remote_ref = parts[1].trim();
 
-            if remote_ref == &branch_ref
+            if remote_ref == branch_ref
                 || remote_ref.ends_with(&format!("/{}", parts[1..].join("/")))
             {
                 // Compare SHAs - if they differ, remote has moved forward

@@ -30,7 +30,7 @@
 //! manager.alert_critical("Guard process crashed", "Crash type: SIGABRT").await?;
 //! ```
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

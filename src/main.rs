@@ -3,14 +3,14 @@ mod documented_commands;
 use anyhow::Context;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use coverage::*;
+use engine::{Engine, InputSource};
+use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
 use icg::{
     coverage, denial_log, engine, fail_closed, health, health_server, monitoring, new_pack,
     overrides, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
     trust_pointer, update,
 };
-use coverage::*;
-use engine::{Engine, InputSource};
-use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{
@@ -1974,7 +1974,10 @@ fn main() -> Result<()> {
             println!("  - ID: {}", merged_pack.id);
             println!("  - Tool keywords: {}", merged_pack.tool_keywords.len());
             println!("  - Safe patterns: {}", merged_pack.safe_patterns.len());
-            println!("  - Guarded patterns: {}", merged_pack.guarded_patterns.len());
+            println!(
+                "  - Guarded patterns: {}",
+                merged_pack.guarded_patterns.len()
+            );
             println!();
 
             icg::rule_pack::save_pack(&merged_pack, &output)
@@ -2030,10 +2033,7 @@ fn main() -> Result<()> {
                 None => {
                     println!("  (not configured)");
                     if let Some(channel) = &channel {
-                        println!(
-                            "  Run `icg update --channel {}` to initialize.",
-                            channel
-                        );
+                        println!("  Run `icg update --channel {}` to initialize.", channel);
                     } else {
                         println!("  Run `icg trust set <reference>` to configure.");
                     }

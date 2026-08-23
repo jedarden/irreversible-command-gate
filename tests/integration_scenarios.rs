@@ -546,7 +546,10 @@ fn scenario_12_runs_override_request_approval_verification_and_expiry() {
     )
     .expect("approved artifact should be verified for its release and repository");
     assert_eq!(manifest.repository, fixture.repository_id);
-    assert_eq!(manifest.exempted_rule_ids, [fixture.pattern_id.clone()]);
+    assert_eq!(
+        manifest.exempted_rule_ids,
+        std::slice::from_ref(&fixture.pattern_id)
+    );
     assert_eq!(manifest.release_ref, fixture.release_ref);
     assert_eq!(manifest.expires_at, fixture.expiration);
     assert!(

@@ -180,10 +180,10 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
     let _cwd_lock = current_dir_lock();
     // Create initial repo and push to remote (use into_path to prevent auto-deletion)
     let repo1 = create_test_repo();
-    let repo1_path = repo1.into_path();
+    let repo1_path = repo1.keep();
 
     let remote = create_bare_remote();
-    let remote_path = remote.into_path();
+    let remote_path = remote.keep();
 
     // Add remote to repo1 and push
     add_remote(&repo1_path, "origin", &remote_path);
@@ -195,7 +195,7 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
 
     // Create a second clone of the remote (use into_path to prevent auto-deletion)
     let repo2_dir = TempDir::new().expect("Failed to create temp dir for second repo");
-    let repo2_path = repo2_dir.into_path();
+    let repo2_path = repo2_dir.keep();
 
     Command::new("git")
         .args([
@@ -277,10 +277,10 @@ fn test_push_guard_allows_after_pull() {
     let _cwd_lock = current_dir_lock();
     // Create initial repo and push to remote (use into_path to prevent auto-deletion)
     let repo1 = create_test_repo();
-    let repo1_path = repo1.into_path();
+    let repo1_path = repo1.keep();
 
     let remote = create_bare_remote();
-    let remote_path = remote.into_path();
+    let remote_path = remote.keep();
 
     // Add remote to repo1 and push
     add_remote(&repo1_path, "origin", &remote_path);
@@ -292,7 +292,7 @@ fn test_push_guard_allows_after_pull() {
 
     // Create a second clone and make a commit (use into_path to prevent auto-deletion)
     let repo2_dir = TempDir::new().expect("Failed to create temp dir for second repo");
-    let repo2_path = repo2_dir.into_path();
+    let repo2_path = repo2_dir.keep();
 
     Command::new("git")
         .args([
@@ -403,7 +403,7 @@ fn test_push_guard_safe_patterns_are_respected() {
     let _cwd_lock = current_dir_lock();
     // Create test repo (use into_path to prevent auto-deletion)
     let repo = create_test_repo();
-    let repo_path = repo.into_path();
+    let repo_path = repo.keep();
 
     let current_dir = std::env::current_dir().expect("Failed to get current dir");
     std::env::set_current_dir(&repo_path).expect("Failed to change to repository");

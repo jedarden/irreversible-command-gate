@@ -234,9 +234,6 @@ fn has_nested_quantifiers(regex: &str) -> bool {
     // This is a simplified check - we look for the pattern \(.*[+*?{].*[\)])[*+?{]
     // which captures most nested quantifier cases
 
-    // Find all parenthesized groups
-    let re = regex::Regex::new(r"\([^)]*[+*?{][^)]*\)[*+?{]").unwrap();
-
     // Look for patterns like: (something_quantified)something_quantified
     // Common cases:
     // (a+)+, (a*)*, (a+?)?, ([a-z]+)*, (\d+)+, etc.
@@ -630,7 +627,7 @@ mod tests {
         // (\w+)+X is dangerous on inputs like "aaaa...X"
         let re = Regex::new(r#"(\w+)+X"#).unwrap();
 
-        let result = fuzz_test_regex(&re, r#"(\w+)+X"#, &config).unwrap();
+        fuzz_test_regex(&re, r#"(\w+)+X"#, &config).unwrap();
 
         // This might timeout (ReDoS) or might not (depending on the input)
         // We're just checking the function runs without error

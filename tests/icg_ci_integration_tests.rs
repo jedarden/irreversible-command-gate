@@ -205,12 +205,14 @@ fn trusted_release_update_replaces_artifact_and_deploys_the_trusted_pack() {
         )
         .expect("trusted release pointer should be written");
 
-    let mut config = UpdateConfig::default();
-    config.repository = "test/release-repo".to_string();
-    config.release_api_base_url = server.base_url();
-    config.artifact_path = artifact_path.clone();
-    config.trust_pointer_path = trust_path.clone();
-    config.state_path = state_path.clone();
+    let config = UpdateConfig {
+        repository: "test/release-repo".to_string(),
+        release_api_base_url: server.base_url(),
+        artifact_path: artifact_path.clone(),
+        trust_pointer_path: trust_path.clone(),
+        state_path: state_path.clone(),
+        ..Default::default()
+    };
 
     let result = run_update(config).expect("trusted release update should succeed");
     assert!(result.updated);
