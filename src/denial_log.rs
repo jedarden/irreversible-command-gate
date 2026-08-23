@@ -178,7 +178,7 @@ pub enum DeniedInput {
 }
 
 /// Execution context for the denial
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecutionContext {
     /// Session ID if available
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,19 +203,6 @@ pub struct ExecutionContext {
     /// Hostname where the denial occurred
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
-}
-
-impl Default for ExecutionContext {
-    fn default() -> Self {
-        Self {
-            session_id: None,
-            user: None,
-            repository: None,
-            branch: None,
-            tool: String::new(),
-            hostname: None,
-        }
-    }
 }
 
 /// System state at the time of denial
@@ -363,12 +350,12 @@ impl DenialStore {
     }
 
     /// Get the default denial log path
+    ///
+    /// Uses /var/cache/icg/ for operational logs (writable by hook identity).
+    /// This is separate from security-critical artifacts in /etc/icg/.
+    /// See docs/plan/plan.md Architecture 'Deploy location'.
     pub fn default_path() -> Result<PathBuf> {
-        let log_dir = dirs::state_dir()
-            .or_else(|| dirs::cache_dir())
-            .context("Failed to determine system state/cache directory")?;
-
-        Ok(log_dir.join("icg").join("denials.jsonl"))
+        Ok(PathBuf::from("/var/cache/icg/denials.jsonl"))
     }
 
     /// Get the path used by this store
@@ -433,7 +420,7 @@ impl DenialStore {
                 }
                 std::fs::rename(
                     &self.log_path,
-                    &parent.join(format!(
+                    parent.join(format!(
                         "{}.{}",
                         self.log_path
                             .file_name()
@@ -442,7 +429,7 @@ impl DenialStore {
                         self.config.max_rotated_files
                     )),
                 )
-                .with_context(|| format!("Failed to rotate denial log"))?;
+                .context("Failed to rotate denial log")?;
                 break;
             }
         }
@@ -668,7 +655,7 @@ fn redact_denial_input(mut record: DenialRecord) -> DenialRecord {
 }
 
 /// Denial log statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DenialStatistics {
     /// Total number of denials in the log
     pub total_denials: usize,
@@ -687,19 +674,6 @@ pub struct DenialStatistics {
 
     /// Time range of denials in the log (first, last)
     pub timestamp_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
-}
-
-impl Default for DenialStatistics {
-    fn default() -> Self {
-        Self {
-            total_denials: 0,
-            unique_patterns: 0,
-            by_category: std::collections::HashMap::new(),
-            by_severity: std::collections::HashMap::new(),
-            most_common_pattern: None,
-            timestamp_range: None,
-        }
-    }
 }
 
 /// Denial log analysis utility
@@ -970,8 +944,10 @@ mod tests {
     fn redacts_payloads_when_full_content_logging_is_disabled() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let log_path = temp_dir.path().join("denials.jsonl");
-        let mut config = DenialLogConfig::default();
-        config.log_full_content = false;
+        let config = DenialLogConfig {
+            log_full_content: false,
+            ..Default::default()
+        };
         let store = DenialStore::new(log_path.clone(), config)?;
         store.record_denial(DenialRecord::new(
             "secrets".to_string(),

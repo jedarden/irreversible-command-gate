@@ -362,7 +362,7 @@ impl Default for DenyRatePolicy {
 }
 
 /// Persistent metadata about rollback activity.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RollbackState {
     /// Release currently recorded after the rollback decision, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,18 +397,6 @@ impl RollbackState {
         self.previous_release = None;
         self.last_rollback_at = None;
         self.last_rollback_reason = None;
-    }
-}
-
-impl Default for RollbackState {
-    fn default() -> Self {
-        Self {
-            current_release: None,
-            previous_release: None,
-            last_rollback_at: None,
-            last_rollback_reason: None,
-            rollback_count: 0,
-        }
     }
 }
 
@@ -650,10 +638,12 @@ impl StateStore {
     }
 
     /// Get the default state-store path.
+    ///
+    /// Uses /var/cache/icg/ for operational state (writable by hook identity).
+    /// This is separate from security-critical artifacts in /etc/icg/.
+    /// See docs/plan/plan.md Architecture 'Deploy location'.
     pub fn default_path() -> Result<PathBuf> {
-        let cache_dir =
-            dirs::cache_dir().context("Failed to determine platform cache directory")?;
-        Ok(cache_dir.join("icg").join("session-state.json"))
+        Ok(PathBuf::from("/var/cache/icg/session-state.json"))
     }
 
     fn parent_dir(&self) -> &Path {
@@ -685,6 +675,7 @@ impl StateStore {
         self.ensure_parent_dir()?;
         let lock_file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(self.lock_path())

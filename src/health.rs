@@ -380,7 +380,7 @@ impl CrashType {
 }
 
 /// Overall health status of the guard process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
     /// Process is healthy with stable history.
@@ -399,13 +399,8 @@ pub enum HealthStatus {
     Dead,
 
     /// Unknown health state (no data yet).
+    #[default]
     Unknown,
-}
-
-impl Default for HealthStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl HealthStatus {
@@ -888,10 +883,12 @@ impl HealthStore {
     }
 
     /// Get the default health state path.
+    ///
+    /// Uses /var/cache/icg/ for operational health data (writable by hook identity).
+    /// This is separate from security-critical artifacts in /etc/icg/.
+    /// See docs/plan/plan.md Architecture 'Deploy location'.
     pub fn default_path() -> Result<PathBuf> {
-        let cache_dir =
-            dirs::cache_dir().context("Failed to determine platform cache directory")?;
-        Ok(cache_dir.join("icg").join("health-state.json"))
+        Ok(PathBuf::from("/var/cache/icg/health-state.json"))
     }
 
     /// Ensure the parent directory exists.
@@ -921,6 +918,7 @@ impl HealthStore {
         self.ensure_parent_dir()?;
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(self.lock_path())
