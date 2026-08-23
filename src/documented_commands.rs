@@ -1470,7 +1470,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize> {
 /// binary, which will then run in wrapper mode when invoked via those symlinks.
 ///
 /// # Arguments
-/// * `install_dir` - Optional directory for symlinks (defaults to ~/.local/bin)
+/// * `install_dir` - Optional directory for symlinks (defaults to /usr/local/bin)
 /// * `pack_paths` - Rule pack files or directories to load for tool keyword discovery
 /// * `force` - Skip confirmation prompt
 /// * `uninstall` - Remove existing symlinks instead of creating them
@@ -1482,11 +1482,7 @@ pub fn run_install(
 ) -> Result<()> {
     let install_dir = match install_dir {
         Some(dir) => dir,
-        None => {
-            let home =
-                dirs::home_dir().context("Could not determine home directory for ~/.local/bin")?;
-            home.join(".local/bin")
-        }
+        None => PathBuf::from("/usr/local/bin"),
     };
 
     if uninstall {
