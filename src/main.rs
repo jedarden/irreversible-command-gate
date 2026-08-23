@@ -1,27 +1,13 @@
-mod coverage;
-mod denial_log;
 mod documented_commands;
-mod engine;
-mod fail_closed;
-mod health;
-mod health_server;
-mod metrics;
-mod monitoring;
-mod new_pack;
-mod overrides;
-mod regex_safety;
-mod regression;
-mod rollback;
-mod rule_pack;
-mod state_store;
-mod telemetry;
-mod trust_pointer;
-mod update;
-mod value_derivation;
 
 use anyhow::Context;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use icg::{
+    coverage, denial_log, engine, fail_closed, health, health_server, monitoring, new_pack,
+    overrides, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
+    trust_pointer, update,
+};
 use coverage::*;
 use engine::{Engine, InputSource};
 use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
@@ -133,6 +119,15 @@ enum Commands {
         /// Report available updates without downloading or installing one.
         #[arg(long)]
         check_only: bool,
+    },
+    /// Build a merged rule-pack.json from individual pack files
+    BuildPack {
+        /// Directory containing individual pack JSON files (default: packs/)
+        #[arg(short, long, default_value = "packs")]
+        pack_dir: PathBuf,
+        /// Output path for the merged rule-pack.json (default: rule-pack.json)
+        #[arg(short, long, default_value = "rule-pack.json")]
+        output: PathBuf,
     },
     /// Show current status and blind-spot self-report
     Status(documented_commands::StatusArgs),
@@ -461,8 +456,8 @@ struct HealthArgs {
     verbose: bool,
 }
 
-fn load_rule_pack(path: PathBuf) -> Result<crate::rule_pack::Pack> {
-    crate::rule_pack::load_pack(&path)
+fn load_rule_pack(path: PathBuf) -> Result<icg::rule_pack::Pack> {
+    icg::rule_pack::load_pack(&path)
 }
 
 const PRACTICE_MODE_ENV: &str = "ICG_PRACTICE";
@@ -744,10 +739,12 @@ fn record_operational_denial(source: &InputSource, result: &engine::CheckResult)
         },
     };
 
-    let mut config = denial_log::DenialLogConfig::default();
-    config.log_full_content = std::env::var("ICG_LOG_FULL_CONTENT")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let config = denial_log::DenialLogConfig {
+        log_full_content: std::env::var("ICG_LOG_FULL_CONTENT")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
+        ..Default::default()
+    };
     let path = std::env::var_os("ICG_DENIAL_LOG")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/cache/icg/denials.jsonl"));
@@ -921,9 +918,11 @@ fn load_runtime_telemetry_store(path: PathBuf) -> telemetry::TelemetryStore {
 /// and early-window safeguards remain fixed conservative defaults; the legacy
 /// names map only to their compatible reaction controls.
 fn poison_pill_config_from_telemetry(config: &telemetry::TelemetryConfig) -> PoisonPillConfig {
-    let mut poison_pill_config = PoisonPillConfig::default();
-    poison_pill_config.enabled = config.auto_rollback_enabled;
-    poison_pill_config.cooldown = config.rollback_cooldown;
+    let mut poison_pill_config = PoisonPillConfig {
+        enabled: config.auto_rollback_enabled,
+        cooldown: config.rollback_cooldown,
+        ..PoisonPillConfig::default()
+    };
     poison_pill_config.policy.minimum_current_evaluations = config.minimum_samples as u64;
     poison_pill_config.policy.minimum_baseline_evaluations = (config.minimum_samples as u64)
         .saturating_mul(poison_pill_config.policy.minimum_baseline_releases as u64);
@@ -1302,7 +1301,7 @@ fn run_shadowed_tool(
     // `exec` replaces this process, so the guard must close its own run
     // marker before handing control to the real tool.  A failure to exec is
     // still reported by the caller as an abnormal guard exit.
-    if let Some(run) = lifecycle.as_deref_mut() {
+    if let Some(run) = lifecycle {
         if halt_for_recovered_crash {
             if let Err(error) = run.finish_error("recovered guard crash triggered fail-closed halt")
             {
@@ -1443,8 +1442,7 @@ fn main() -> Result<()> {
             current_override,
         } => {
             let has_override = previous_override.is_some() || current_override.is_some();
-            let has_regressions;
-            if has_override {
+            let has_regressions = if has_override {
                 let diff = run_release_integrity_diff(
                     previous.clone(),
                     current.clone(),
@@ -1458,7 +1456,7 @@ fn main() -> Result<()> {
                     justification.as_deref(),
                 );
                 print!("{report}");
-                has_regressions = diff.has_regressions();
+                diff.has_regressions()
             } else {
                 let diff = run_coverage_diff(previous.clone(), current.clone())?;
                 let report = render_coverage_diff_report(
@@ -1468,8 +1466,8 @@ fn main() -> Result<()> {
                     justification.as_deref(),
                 );
                 print!("{report}");
-                has_regressions = diff.has_regressions();
-            }
+                diff.has_regressions()
+            };
 
             // A regression may be approved only when the report carries an
             // explicit, non-blank rationale. The report is printed first so
@@ -1963,6 +1961,29 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+        Commands::BuildPack { pack_dir, output } => {
+            println!("🔨 Building merged rule pack");
+            println!("📁 Pack directory: {}", pack_dir.display());
+            println!("📁 Output: {}", output.display());
+            println!();
+
+            let merged_pack = icg::rule_pack::load_and_merge_packs_from_dir(&pack_dir)
+                .context("Failed to load and merge packs")?;
+
+            println!("✅ Merged pack created:");
+            println!("  - ID: {}", merged_pack.id);
+            println!("  - Tool keywords: {}", merged_pack.tool_keywords.len());
+            println!("  - Safe patterns: {}", merged_pack.safe_patterns.len());
+            println!("  - Guarded patterns: {}", merged_pack.guarded_patterns.len());
+            println!();
+
+            icg::rule_pack::save_pack(&merged_pack, &output)
+                .context("Failed to save merged pack")?;
+
+            println!("✅ Merged pack saved to: {}", output.display());
+
+            Ok(())
+        }
         Commands::Status(args) => {
             if args.denials
                 || args.health
@@ -2008,10 +2029,10 @@ fn main() -> Result<()> {
                 }
                 None => {
                     println!("  (not configured)");
-                    if channel.is_some() {
+                    if let Some(channel) = &channel {
                         println!(
                             "  Run `icg update --channel {}` to initialize.",
-                            channel.as_ref().unwrap()
+                            channel
                         );
                     } else {
                         println!("  Run `icg trust set <reference>` to configure.");
@@ -2024,7 +2045,7 @@ fn main() -> Result<()> {
             println!("## Rule Pack Version");
             let artifact_path = PathBuf::from("/etc/icg/rule-pack.json");
             if artifact_path.exists() {
-                match crate::rule_pack::load_pack(&artifact_path) {
+                match icg::rule_pack::load_pack(&artifact_path) {
                     Ok(pack) => {
                         println!("  **Pack ID:** `{}`", pack.id);
                         println!("  **Path:** {}", artifact_path.display());
@@ -2035,10 +2056,10 @@ fn main() -> Result<()> {
                 }
             } else {
                 println!("  (no rule pack found at {})", artifact_path.display());
-                if channel.is_some() {
+                if let Some(channel) = &channel {
                     println!(
                         "  Run `icg update --channel {}` to download the rule pack.",
-                        channel.as_ref().unwrap()
+                        channel
                     );
                 } else {
                     println!("  Run `icg update` to download the rule pack.");
@@ -2057,10 +2078,10 @@ fn main() -> Result<()> {
                 }
                 None => {
                     println!("  (no successful update checks recorded)");
-                    if channel.is_some() {
+                    if let Some(channel) = &channel {
                         println!(
                             "  Run `icg update --channel {}` to check for and download updates.",
-                            channel.as_ref().unwrap()
+                            channel
                         );
                     } else {
                         println!("  Run `icg update` to check for and download updates.");
@@ -2076,7 +2097,7 @@ fn main() -> Result<()> {
             println!("explicitly to avoid overselling protection capability:");
             println!();
 
-            let limitations = vec![
+            let limitations = [
                 ("Cloud-hosted Codex", "Checks run locally on the agent's host; cloud-hosted Claude Code/Claude.ai sessions bypass the wrapper entirely. Protection requires those environments to invoke their own PreToolUse hook integration."),
                 ("Absolute-path wrapper bypass", "If the user invokes a binary by its absolute path (e.g., `/usr/bin/git` instead of `git`), the shell resolves it directly and the wrapper is not triggered. PATH-order shadowing is not a security boundary."),
                 ("Content-mode coverage gaps", "Only YAML files are checked for storage-class violations. Other formats (JSON, manifests with explicit storageClassName references) are not yet covered. Image-tag enforcement similarly has format gaps."),
@@ -2288,7 +2309,7 @@ fn main() -> Result<()> {
             } => {
                 let telemetry_path =
                     path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
-                let mut store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
+                let store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
 
                 // Update configuration with provided values
                 let mut config = store.config().clone();

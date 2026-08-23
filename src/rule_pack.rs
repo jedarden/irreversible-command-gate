@@ -369,6 +369,86 @@ pub fn save_pack<P: AsRef<Path>>(pack: &Pack, path: P) -> Result<()> {
     Ok(())
 }
 
+/// Merge multiple packs into a single combined pack
+///
+/// This combines all tool_keywords, applies_to, safe_patterns, and guarded_patterns
+/// from multiple packs into one unified pack. The merged pack gets a generic id
+/// "rule-pack" and contains all patterns from all input packs.
+pub fn merge_packs(packs: Vec<Pack>) -> Result<Pack> {
+    if packs.is_empty() {
+        return Err(anyhow::anyhow!("Cannot merge empty pack list"));
+    }
+
+    let mut merged_tool_keywords: Vec<String> = Vec::new();
+    let mut merged_applies_to: Vec<String> = Vec::new();
+    let mut merged_safe_patterns: Vec<Pattern> = Vec::new();
+    let mut merged_guarded_patterns: Vec<GuardedPattern> = Vec::new();
+
+    for pack in packs {
+        // Merge tool_keywords, avoiding duplicates
+        for keyword in pack.tool_keywords {
+            if !merged_tool_keywords.contains(&keyword) {
+                merged_tool_keywords.push(keyword);
+            }
+        }
+
+        // Merge applies_to, avoiding duplicates
+        for applies in pack.applies_to {
+            if !merged_applies_to.contains(&applies) {
+                merged_applies_to.push(applies);
+            }
+        }
+
+        // Merge safe_patterns
+        merged_safe_patterns.extend(pack.safe_patterns);
+
+        // Merge guarded_patterns
+        merged_guarded_patterns.extend(pack.guarded_patterns);
+    }
+
+    Ok(Pack {
+        id: "rule-pack".to_string(),
+        tool_keywords: merged_tool_keywords,
+        applies_to: merged_applies_to,
+        safe_patterns: merged_safe_patterns,
+        guarded_patterns: merged_guarded_patterns,
+    })
+}
+
+/// Load all pack files from a directory and merge them into a single pack
+///
+/// This reads all .json files from the specified directory, loads them as packs,
+/// and merges them into a single unified pack suitable for distribution as a
+/// rule-pack.json artifact.
+pub fn load_and_merge_packs_from_dir<P: AsRef<Path>>(dir: P) -> Result<Pack> {
+    let dir = dir.as_ref();
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("Failed to read pack directory: {}", dir.display()))?;
+
+    let mut packs = Vec::new();
+
+    for entry in entries {
+        let entry = entry.context("Failed to read directory entry")?;
+        let path = entry.path();
+
+        // Only load .json files
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let pack = load_pack(&path)
+                .with_context(|| format!("Failed to load pack from: {}", path.display()))?;
+            packs.push(pack);
+        }
+    }
+
+    if packs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No pack files found in directory: {}",
+            dir.display()
+        ));
+    }
+
+    merge_packs(packs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
