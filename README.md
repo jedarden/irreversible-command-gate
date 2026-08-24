@@ -95,3 +95,9 @@ icg new-pack <tool> --pack-type command --output-dir path/to/output
 `<tool>.json` and `<tool>_pack_tests.rs`, pre-filling the pack and guarded-rule
 fields. It refuses to overwrite either file, so an existing scaffold must be
 removed or renamed deliberately before retrying.
+
+---
+
+Part of [jedarden.com](https://jedarden.com)
+
+*This GitHub repo is a read-only mirror of git.ardenone.com/jedarden/irreversible-command-gate — issues and PRs are welcome here either way.*
