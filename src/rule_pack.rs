@@ -379,6 +379,27 @@ pub fn merge_packs(packs: Vec<Pack>) -> Result<Pack> {
         return Err(anyhow::anyhow!("Cannot merge empty pack list"));
     }
 
+    // An unconditional pack (empty tool_keywords -- the secrets pack's
+    // whole-command scan) cannot survive a merge with keyword-dispatched
+    // packs: the merged pack dispatches on the union of tool_keywords, so
+    // the unconditional patterns would only be checked for commands whose
+    // executable matches one of those keywords, silently losing exactly the
+    // coverage the unconditional pack exists for. Refuse the mixed merge
+    // loudly rather than ship a hollow artifact. A uniformly unconditional
+    // set still merges correctly -- the union of empty keyword sets is
+    // empty, so the merged pack keeps whole-command semantics.
+    let mixed = packs.iter().any(|pack| pack.tool_keywords.is_empty())
+        && packs.iter().any(|pack| !pack.tool_keywords.is_empty());
+    if mixed {
+        return Err(anyhow::anyhow!(
+            "refusing to merge unconditional packs (empty tool_keywords, e.g. 'secrets') \
+             with keyword-dispatched packs: the merged pack would dispatch on the union of \
+             tool_keywords and the unconditional whole-command scan would be silently lost. \
+             Distribute the packs directory as-is (ICG_RULE_PACK=/etc/icg/packs) instead of \
+             a merged single-file artifact"
+        ));
+    }
+
     let mut merged_tool_keywords: Vec<String> = Vec::new();
     let mut merged_applies_to: Vec<String> = Vec::new();
     let mut merged_safe_patterns: Vec<Pattern> = Vec::new();
@@ -420,12 +441,18 @@ pub fn merge_packs(packs: Vec<Pack>) -> Result<Pack> {
 /// This reads all .json files from the specified directory, loads them as packs,
 /// and merges them into a single unified pack suitable for distribution as a
 /// rule-pack.json artifact.
+///
+/// Unconditional packs (empty tool_keywords, like 'secrets') are excluded from
+/// the merged artifact since they cannot be mixed with keyword-dispatched packs
+/// without losing coverage. These packs remain available in the packs/ directory
+/// for hook mode, which uses the directory directly rather than the merged artifact.
 pub fn load_and_merge_packs_from_dir<P: AsRef<Path>>(dir: P) -> Result<Pack> {
     let dir = dir.as_ref();
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("Failed to read pack directory: {}", dir.display()))?;
 
     let mut packs = Vec::new();
+    let mut skipped_packs = Vec::new();
 
     for entry in entries {
         let entry = entry.context("Failed to read directory entry")?;
@@ -435,7 +462,15 @@ pub fn load_and_merge_packs_from_dir<P: AsRef<Path>>(dir: P) -> Result<Pack> {
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             let pack = load_pack(&path)
                 .with_context(|| format!("Failed to load pack from: {}", path.display()))?;
-            packs.push(pack);
+
+            // Skip unconditional packs (empty tool_keywords) in merged artifact
+            // They remain available in the packs/ directory for hook mode
+            if pack.tool_keywords.is_empty() {
+                skipped_packs.push(pack.id.clone());
+                eprintln!("ℹ️  Skipping unconditional pack '{}' from merged artifact (will remain in packs/ directory for hook mode)", pack.id);
+            } else {
+                packs.push(pack);
+            }
         }
     }
 
@@ -444,6 +479,12 @@ pub fn load_and_merge_packs_from_dir<P: AsRef<Path>>(dir: P) -> Result<Pack> {
             "No pack files found in directory: {}",
             dir.display()
         ));
+    }
+
+    if !skipped_packs.is_empty() {
+        eprintln!("ℹ️  Excluded {} unconditional pack(s) from merged artifact: {}",
+            skipped_packs.len(),
+            skipped_packs.join(", "));
     }
 
     merge_packs(packs)
@@ -616,6 +657,56 @@ mod tests {
             }
             _ => panic!("Expected ContentRegex check"),
         }
+    }
+
+    #[test]
+    fn test_mixed_unconditional_merge_is_refused() {
+        // The secrets pack is unconditional (empty tool_keywords). Merging it
+        // with keyword-dispatched packs would fold its whole-command scan
+        // behind the merged pack's keyword dispatch and silently drop the
+        // coverage it exists for, so the merge must fail loudly.
+        let unconditional = Pack {
+            id: "secrets".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+        let keyword_dispatched = Pack {
+            id: "git".to_string(),
+            tool_keywords: vec!["git".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+
+        let err = merge_packs(vec![unconditional.clone(), keyword_dispatched])
+            .expect_err("mixed merge must be refused");
+        assert!(
+            err.to_string().contains("unconditional"),
+            "error should explain the unconditional-pack loss, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_uniformly_unconditional_packs_still_merge() {
+        let a = Pack {
+            id: "secrets".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+        let b = Pack {
+            id: "other-unconditional".to_string(),
+            tool_keywords: vec![],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![],
+        };
+
+        let merged = merge_packs(vec![a, b]).expect("uniform merge should succeed");
+        assert!(merged.tool_keywords.is_empty());
     }
 
     #[test]
