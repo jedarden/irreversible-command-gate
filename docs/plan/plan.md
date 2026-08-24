@@ -168,8 +168,14 @@ paths.** The three artifacts must live where the guarded agent's own
 process (running as `coding`) cannot write them — deployment shape 2 from
 `docs/notes/runtime-config-vs-hardcoded.md`, not shape 1. Concretely:
 - **Binary:** `/usr/local/bin/icg` — owned by `root:root`, mode `0755`
-- **Rule pack artifact:** `/etc/icg/rule-pack.json` — owned by `root:root`,
-  mode `0644`
+- **Rule pack artifact:** `/etc/icg/packs/` directory — owned by `root:root`,
+  mode `0755` (directory), with individual pack files owned by `root:root`,
+  mode `0644` (files). The modular pack-per-tool design (`openbao.json`,
+  `git.json`, `docker.json`, etc.) is intentional — it matches the
+  architecture principle of "not a monolithic rule list" and enables
+  per-tool updates without redeploying the entire rule set. A legacy
+  single-file `/etc/icg/rule-pack.json` (also `root:root`, `0644`) is
+  supported for compatibility but is not the recommended deployment shape.
 - **Trust pointer:** `/etc/icg/trust-pointer.json` — owned by `root:root`,
   mode `0644`
 
