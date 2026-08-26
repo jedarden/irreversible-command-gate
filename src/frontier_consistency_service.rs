@@ -307,6 +307,51 @@ pub struct ConsistencyCycleReport {
     pub alert_reason: Option<String>,
 }
 
+/// Structured event for .beads/events.jsonl monitoring
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FrontierConsistencyEvent {
+    /// Event type
+    #[serde(rename = "event")]
+    event_type: String,
+
+    /// Timestamp
+    ts: DateTime<Utc>,
+
+    /// Cycle duration in milliseconds
+    duration_ms: i64,
+
+    /// Service name
+    service: String,
+
+    /// Total database beads checked
+    total_beads: usize,
+
+    /// Beads in ready frontier
+    ready_beads: usize,
+
+    /// Discrepancies found
+    discrepancies: usize,
+
+    /// Diagnoses performed
+    diagnoses: usize,
+
+    /// Repairs attempted
+    repairs: usize,
+
+    /// Persistent issues (beads still invisible after repair)
+    persistent_issues: usize,
+
+    /// Alert triggered
+    alert_triggered: bool,
+
+    /// Alert reason (if any)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alert_reason: Option<String>,
+
+    /// Auto-repair was enabled for this cycle
+    auto_repair_enabled: bool,
+}
+
 /// Bead database frontier consistency service
 pub struct FrontierConsistencyService {
     config: FrontierConsistencyServiceConfig,
@@ -865,6 +910,50 @@ impl FrontierConsistencyService {
         eprintln!(
             "📝 Consistency cycle report logged to {}",
             report_path.display()
+        );
+
+        // Also emit to .beads/events.jsonl for monitoring dashboards
+        self.emit_monitoring_event(report)?;
+
+        Ok(())
+    }
+
+    /// Emit a structured event to .beads/events.jsonl for monitoring dashboards
+    fn emit_monitoring_event(&self, report: &ConsistencyCycleReport) -> Result<()> {
+        let events_path = self.config.workspace_path.join(".beads").join("events.jsonl");
+
+        let event = FrontierConsistencyEvent {
+            event_type: "frontier-consistency-check".to_string(),
+            ts: report.cycle_end,
+            duration_ms: (report.duration_seconds * 1000.0) as i64,
+            service: "frontier-consistency".to_string(),
+            total_beads: report.total_database_beads,
+            ready_beads: report.total_ready_beads,
+            discrepancies: report.discrepancies.len(),
+            diagnoses: report.diagnoses.len(),
+            repairs: report.repairs.len(),
+            persistent_issues: report.persistent_reports.len(),
+            alert_triggered: report.alert_triggered,
+            alert_reason: report.alert_reason.clone(),
+            auto_repair_enabled: self.config.auto_repair_enabled,
+        };
+
+        let json_line = serde_json::to_string(&event)
+            .context("Failed to serialize monitoring event")?;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&events_path)
+            .context("Failed to open events.jsonl file")?;
+
+        use std::io::Write;
+        writeln!(file, "{}", json_line)
+            .context("Failed to write monitoring event")?;
+
+        eprintln!(
+            "📊 Monitoring event emitted to {}",
+            events_path.display()
         );
 
         Ok(())
