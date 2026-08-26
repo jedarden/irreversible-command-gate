@@ -141,8 +141,17 @@ fn installation_scenario_5_health_status_works() {
 
 #[test]
 fn installation_scenario_5_status_command_works() {
-    // Step 5: Verify status command works
-    let status = icg(&["status"]);
+    // Step 5: Verify status command works. The CI image ships a production
+    // trust-pointer location, whose permissions are deliberately validated by
+    // `status`; use an isolated, unconfigured path so this installation test
+    // does not depend on that image-level state.
+    let temp_dir = tempdir().unwrap();
+    let trust_pointer_path = temp_dir.path().join("trust-pointer.json");
+    let status = icg(&[
+        "status",
+        "--trust-pointer-path",
+        &trust_pointer_path.to_string_lossy(),
+    ]);
 
     // Should succeed
     assert!(status.status.success(), "icg status should succeed");
