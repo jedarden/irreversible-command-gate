@@ -46,7 +46,7 @@ Stated plainly, because it's easy to assume more than is actually true:
 
 New to icg? Start here:
 
-**2026-08-26:** CI workflow updated to gate actual packs instead of static fixtures. End-to-end verification in progress (bead irrevers-84b36e47).
+**2026-08-26:** CI workflow updated to gate actual packs instead of static fixtures. All 376+ tests pass locally. Release verification pending - no GitHub release has been created yet. The icg-ci workflow needs to complete successfully end-to-end to create the first release.
 
 - **[Onboarding Guide](docs/onboarding-guide.md)** — Structured learning path for operators and developers (recommended starting point)
 - **[Quick Start Guide](docs/quick-start.md)** — Get up and running in 5 minutes
