@@ -13,6 +13,7 @@
 //! This tests the installation and setup process for new operators.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::tempdir;
@@ -146,6 +147,7 @@ fn installation_scenario_5_status_command_works() {
     // `status`; use an isolated, unconfigured path so this installation test
     // does not depend on that image-level state.
     let temp_dir = tempdir().unwrap();
+    fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let trust_pointer_path = temp_dir.path().join("trust-pointer.json");
     let status = icg(&[
         "status",
