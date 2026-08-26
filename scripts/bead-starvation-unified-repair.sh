@@ -12,9 +12,14 @@
 #
 # ## Automated Repairs
 #
-# 1. Assigned-but-open beads: Clear stale assignees
+# 1. Assigned-but-open beads: Intelligent assignee clearing with worker liveness detection
+#    - Checks if the assigned worker process is still running
+#    - Checks if the assignment has exceeded the timeout threshold (default: 4 hours)
+#    - Only clears assignees if: worker is dead OR assignment timeout exceeded
+#    - Preserves assignments where: worker is alive AND assignment is within timeout
+#    - Timeout threshold configurable via ASSIGNMENT_TIMEOUT_HOURS environment variable
 # 2. Dependency cycles: Identify and break cycles
-# 3. Stale assignees: Detect dead workers and release their beads
+# 3. Stale assignees: Detect dead workers and release their beads (integrated into #1)
 # 4. Checkpoint corruption: Run bead sync import-only from forensic log
 # 5. Query filter issues: Repair filter conditions
 #
@@ -26,6 +31,12 @@
 # ## Escalation
 #
 # Only creates beads for unrecoverable conditions requiring human intervention
+#
+# ## Configuration
+#
+# Environment variables:
+# - DB_PATH: Path to bead database (default: /home/coding/irreversible-command-gate/.beads/beads.db)
+# - ASSIGNMENT_TIMEOUT_HOURS: Hours before assignment considered stale (default: 4)
 
 set -euo pipefail
 
@@ -104,6 +115,9 @@ METRICS='{
     },
     "repairs": {
         "assigned_cleared": 0,
+        "dead_worker_repairs": 0,
+        "timeout_repairs": 0,
+        "preserved_assignments": 0,
         "cycles_broken": 0,
         "workers_recovered": 0,
         "checkpoint_restored": false,
@@ -308,25 +322,129 @@ TOTAL_REPAIRS=0
 SUCCESSFUL_REPAIRS=0
 UNRECOVERABLE_CONDITIONS=0
 
-# 3.1 Fix assigned-but-open beads
+# 3.1 Fix assigned-but-open beads with worker liveness and timeout detection
 if [ "$ASSIGNED_BUT_OPEN" -gt 0 ]; then
-    log_action "Repairing $ASSIGNED_BUT_OPEN assigned-but-open beads..."
+    log_action "Analyzing $ASSIGNED_BUT_OPEN assigned-but-open beads..."
 
-    STUCK_BEADS=$(sqlite3 "$DB_PATH" "
-    SELECT id, assignee
+    # Timeout threshold in hours - default 4 hours
+    ASSIGNMENT_TIMEOUT_HOURS=${ASSIGNMENT_TIMEOUT_HOURS:-4}
+    TIMEOUT_SECONDS=$((ASSIGNMENT_TIMEOUT_HOURS * 3600))
+
+    log_info "Assignment timeout threshold: $ASSIGNMENT_TIMEOUT_HOURS hours - $TIMEOUT_SECONDS seconds"
+
+    # Query beads with full details for liveness and timeout checks
+    STUCK_BEADS=$(sqlite3 "$DB_PATH" '
+    SELECT id, assignee, updated_at
     FROM issues
-    WHERE base_status = 'open'
+    WHERE base_status = "open"
       AND assignee IS NOT NULL
-      AND assignee != '';
-    " 2>/dev/null || true)
+      AND assignee != "";
+    ' 2>/dev/null || true)
 
-    while IFS='|' read -r bead_id assignee; do
-        if [ -n "$bead_id" ]; then
-            TOTAL_REPAIRS=$((TOTAL_REPAIRS + 1))
-            log_action "Clearing assignee for $bead_id (was: $assignee)"
+    # Counters for different repair reasons
+    DEAD_WORKER_REPAIRS=0
+    TIMEOUT_REPAIRS=0
+    PRESERVED_COUNT=0
+
+    while IFS='|' read -r bead_id assignee updated_at; do
+        if [ -z "$bead_id" ]; then
+            continue
+        fi
+
+        TOTAL_REPAIRS=$((TOTAL_REPAIRS + 1))
+
+        # Determine workspace from assignee pattern
+        WORKSPACE_PATH=""
+
+        # Extract workspace identifier from assignee if it follows a pattern
+        if [[ "$assignee" =~ -[a-z0-9]+$ ]]; then
+            WORKER_SUFFIX="${assignee##*-}"
+            case "$WORKER_SUFFIX" in
+                icg*)
+                    WORKSPACE_PATH="/home/coding/irreversible-command-gate"
+                    ;;
+                tg|tradegraph*)
+                    WORKSPACE_PATH="/home/coding/tradegraph"
+                    ;;
+                ibkr*)
+                    WORKSPACE_PATH="/home/coding/ibkr-mcp"
+                    ;;
+                irm*)
+                    WORKSPACE_PATH="/home/coding/investment-research-mcp"
+                    ;;
+                *)
+                    WORKSPACE_PATH=""
+                    ;;
+            esac
+        fi
+
+        # Check if worker is still alive
+        WORKER_ALIVE=false
+        if [ -n "$WORKSPACE_PATH" ]; then
+            WORKER_CHECK=$(ps aux | grep -i "needle.*$WORKSPACE_PATH" | grep -v grep | grep -v "needle-transform" | head -1)
+            if [ -n "$WORKER_CHECK" ]; then
+                WORKER_ALIVE=true
+                log_info "Worker $assignee is alive - workspace: $WORKSPACE_PATH"
+            else
+                log_warn "Worker $assignee appears DEAD - no process found for workspace: $WORKSPACE_PATH"
+            fi
+        else
+            WORKER_CHECK=$(ps aux | grep -i "needle" | grep -i "$assignee" | grep -v grep | grep -v "needle-transform" | head -1)
+            if [ -n "$WORKER_CHECK" ]; then
+                WORKER_ALIVE=true
+                log_info "Worker $assignee is alive - found matching process"
+            else
+                log_warn "Worker $assignee appears DEAD - no matching process found"
+            fi
+        fi
+
+        # Check assignment timeout
+        ASSIGNMENT_TIMEOUT_EXCEEDED=false
+        ASSIGNMENT_AGE=0
+        if [ -n "$updated_at" ]; then
+            UPDATED_UNIX=$(date -d "$updated_at" +%s 2>/dev/null || echo "0")
+            CURRENT_UNIX=$(date +%s)
+
+            if [ "$UPDATED_UNIX" -gt 0 ]; then
+                ASSIGNMENT_AGE=$((CURRENT_UNIX - UPDATED_UNIX))
+
+                if [ "$ASSIGNMENT_AGE" -gt "$TIMEOUT_SECONDS" ]; then
+                    ASSIGNMENT_TIMEOUT_EXCEEDED=true
+                    ASSIGNMENT_AGE_HOURS=$((ASSIGNMENT_AGE / 3600))
+                    log_warn "Bead $bead_id assigned for $ASSIGNMENT_AGE_HOURS hours - exceeds $ASSIGNMENT_TIMEOUT_HOURS hour threshold"
+                else
+                    ASSIGNMENT_AGE_MINUTES=$((ASSIGNMENT_AGE / 60))
+                    log_info "Bead $bead_id assigned for $ASSIGNMENT_AGE_MINUTES minutes - within timeout"
+                fi
+            else
+                log_warn "Could not parse assignment timestamp: $updated_at"
+            fi
+        fi
+
+        # Decide whether to clear assignee
+        SHOULD_CLEAR=false
+        REPAIR_REASON=""
+
+        if [ "$WORKER_ALIVE" = false ]; then
+            SHOULD_CLEAR=true
+            REPAIR_REASON="worker is dead"
+            DEAD_WORKER_REPAIRS=$((DEAD_WORKER_REPAIRS + 1))
+        elif [ "$ASSIGNMENT_TIMEOUT_EXCEEDED" = true ]; then
+            SHOULD_CLEAR=true
+            REPAIR_REASON="assignment timeout exceeded"
+            TIMEOUT_REPAIRS=$((TIMEOUT_REPAIRS + 1))
+        else
+            PRESERVED_COUNT=$((PRESERVED_COUNT + 1))
+            log_info "✓ Preserving assignment for $bead_id - worker alive, within timeout"
+        fi
+
+        if [ "$SHOULD_CLEAR" = true ]; then
+            log_action "Clearing assignee for $bead_id - was: $assignee - Reason: $REPAIR_REASON"
 
             if bead update "$bead_id" --clear-assignee \
-                --notes "Auto-repair: cleared stale assignee during starvation recovery at $TIMESTAMP" \
+                --notes "Auto-repair: cleared assignee - $REPAIR_REASON - during starvation recovery at $TIMESTAMP" \
+                --notes "Previous assignee: $assignee" \
+                --notes "Worker alive: $WORKER_ALIVE, Assignment age: $ASSIGNMENT_AGE seconds" \
                 2>/dev/null; then
                 log_info "✓ Successfully cleared assignee for $bead_id"
                 SUCCESSFUL_REPAIRS=$((SUCCESSFUL_REPAIRS + 1))
@@ -336,7 +454,15 @@ if [ "$ASSIGNED_BUT_OPEN" -gt 0 ]; then
         fi
     done <<< "$STUCK_BEADS"
 
+    log_info "Assignment repair summary:"
+    log_info "  - Cleared due to dead workers: $DEAD_WORKER_REPAIRS"
+    log_info "  - Cleared due to timeout: $TIMEOUT_REPAIRS"
+    log_info "  - Preserved - worker alive, within timeout: $PRESERVED_COUNT"
+
     METRICS=$(echo "$METRICS" | jq ".repairs.assigned_cleared = $SUCCESSFUL_REPAIRS")
+    METRICS=$(echo "$METRICS" | jq ".repairs.dead_worker_repairs = $DEAD_WORKER_REPAIRS")
+    METRICS=$(echo "$METRICS" | jq ".repairs.timeout_repairs = $TIMEOUT_REPAIRS")
+    METRICS=$(echo "$METRICS" | jq ".repairs.preserved_assignments = $PRESERVED_COUNT")
 fi
 
 # 3.2 Fix dependency cycles
