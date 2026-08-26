@@ -58,7 +58,7 @@ fn create_test_repo() -> TempDir {
         .expect("Failed to add test file");
 
     Command::new("git")
-        .args(["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit", "--", "test.txt"])
         .current_dir(repo_path)
         .status()
         .expect("Failed to create initial commit");
@@ -222,7 +222,7 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
         .expect("Failed to add test file 2");
 
     Command::new("git")
-        .args(["commit", "-m", "Second commit"])
+        .args(["commit", "-m", "Second commit", "--", "test2.txt"])
         .current_dir(&repo2_path)
         .status()
         .expect("Failed to create second commit");
@@ -319,7 +319,7 @@ fn test_push_guard_allows_after_pull() {
         .expect("Failed to add test file 2");
 
     Command::new("git")
-        .args(["commit", "-m", "Second commit"])
+        .args(["commit", "-m", "Second commit", "--", "test2.txt"])
         .current_dir(&repo2_path)
         .status()
         .expect("Failed to create second commit");
