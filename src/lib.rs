@@ -15,6 +15,7 @@ pub mod metrics;
 pub mod monitoring;
 pub mod new_pack;
 pub mod overrides;
+pub mod pack_manifest;
 pub mod regex_safety;
 pub mod regression;
 pub mod rollback;

@@ -12,6 +12,7 @@
       "severity": "Critical",
       "explanation": "needle cleanup sends SIGHUP to live workers, interrupting active work and risking incomplete operations or data corruption.",
       "destructive": true,
+      "example_command": "needle cleanup",
       "redirect": {
         "channel": "deny",
         "reason_template": "The `needle cleanup` command is blocked because it would SIGHUP live workers. Let workers finish naturally or wait until they are idle before cleaning up.",

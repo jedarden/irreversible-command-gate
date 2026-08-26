@@ -8,8 +8,8 @@ use engine::{Engine, InputSource};
 use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
 use icg::{
     coverage, denial_log, emergency_bypass, engine, fail_closed, health, health_server, monitoring,
-    new_pack, overrides, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
-    trust_pointer, update,
+    new_pack, overrides, pack_manifest, regex_safety, regression, rollback, rule_pack, state_store,
+    telemetry, trust_pointer, update,
 };
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
@@ -20,6 +20,7 @@ use regression::{
 };
 use rollback::{check_and_rollback, PoisonPillConfig};
 use std::ffi::{OsStr, OsString};
+use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -129,6 +130,18 @@ enum Commands {
         /// Output path for the merged rule-pack.json (default: rule-pack.json)
         #[arg(short, long, default_value = "rule-pack.json")]
         output: PathBuf,
+    },
+    /// Generate or verify the byte-level manifest for a modular rule-pack release.
+    PackManifest {
+        /// Directory containing individual pack JSON files.
+        #[arg(short, long, default_value = "packs")]
+        pack_dir: PathBuf,
+        /// Write a newly generated manifest to this path (stdout by default).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Verify the directory against this existing manifest instead of generating one.
+        #[arg(long)]
+        verify: Option<PathBuf>,
     },
     /// Show current status and blind-spot self-report
     Status(documented_commands::StatusArgs),
@@ -1988,6 +2001,37 @@ fn main() -> Result<()> {
 
             println!("✅ Merged pack saved to: {}", output.display());
 
+            Ok(())
+        }
+        Commands::PackManifest {
+            pack_dir,
+            output,
+            verify,
+        } => {
+            if let Some(path) = verify {
+                let manifest = pack_manifest::PackManifest::from_file(&path)
+                    .context("failed to load pack manifest")?;
+                manifest
+                    .verify_dir(&pack_dir)
+                    .context("failed to verify pack directory against manifest")?;
+                println!(
+                    "Pack directory matches manifest ({} packs)",
+                    manifest.pack_count
+                );
+                return Ok(());
+            }
+
+            let manifest = pack_manifest::PackManifest::from_dir(&pack_dir)
+                .context("failed to generate pack manifest")?;
+            let json = manifest.to_json()?;
+            match output {
+                Some(path) => {
+                    fs::write(&path, json)
+                        .with_context(|| format!("failed to write manifest: {}", path.display()))?;
+                    println!("Manifest saved to {}", path.display());
+                }
+                None => println!("{json}"),
+            }
             Ok(())
         }
         Commands::Status(args) => {

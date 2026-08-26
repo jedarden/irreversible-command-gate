@@ -62,6 +62,7 @@
       "severity": "Critical",
       "explanation": "Permanently destroys secret data, an auth mount, a policy, or the unseal shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that is not written back leaves the instance unable to unseal.",
       "destructive": true,
+      "example_command": "bao kv destroy secret/data/example 1",
       "redirect": {
         "channel": "deny",
         "reason_template": "This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are written back first (see ~/scratch/openbao-rotation/README.md). If this is genuinely intended, a human runs it.",

@@ -52,6 +52,7 @@
       "severity": "High",
       "explanation": "A git commit without an explicit pathspec commits the entire staged index, which may include unrelated pre-staged changes",
       "destructive": true,
+      "example_command": "git commit -m 'release checkpoint'",
       "redirect": {
         "channel": "deny",
         "reason_template": "git commit without a pathspec can sweep unrelated staged changes into the commit. Pass the same file paths to git commit that you passed to git add -- git commit <paths> -m \"...\".",
