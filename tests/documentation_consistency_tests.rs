@@ -87,6 +87,23 @@ fn troubleshooting_direct_tests_target_the_production_pack_directory() {
 }
 
 #[test]
+fn troubleshooting_updater_sections_match_the_archive_deploying_updater() {
+    let doc = repo_relative("docs/operators/troubleshooting.md");
+
+    // `icg update` deploys the modular archive (409ca42): exact asset name,
+    // --pack-dir activation directory, packs.previous rollback sibling.
+    assert!(
+        doc.contains("icg-packs.tar.gz"),
+        "troubleshooting.md should name the updater's exact required asset"
+    );
+    assert!(
+        doc.contains("packs.previous"),
+        "troubleshooting.md rollback guidance should use the updater's \
+         packs.previous sibling, not the legacy single-file restore"
+    );
+}
+
+#[test]
 fn plan_phase_checkboxes_reflect_closed_phase_beads() {
     let plan = repo_relative("docs/plan/plan.md");
 

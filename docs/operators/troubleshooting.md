@@ -243,7 +243,8 @@ decision, not an update check result.
 
 The default updater uses the GitHub repository
 `jedarden/irreversible-command-gate`, requests the exact pointer reference,
-and looks for a release asset whose name contains `rule-pack`.
+and requires a release asset named exactly `icg-packs.tar.gz` (the modular
+pack archive; no substring match is accepted).
 
 ```bash
 icg trust show
@@ -259,18 +260,19 @@ release.
 
 ### A channel deployment changed the wrong pack
 
-`--channel NAME` selects `/etc/icg/trust-pointer-NAME.json`, but the default
-artifact path remains `/etc/icg/rule-pack.json`. Use `--artifact-path` for a
-separate canary pack and pass the same path to `icg hook --rule-pack`.
+`--channel NAME` selects `/etc/icg/trust-pointer-NAME.json` and activates
+into `/etc/icg/packs-NAME` (the channel's own directory), leaving the
+default `/etc/icg/packs` untouched. Use `--pack-dir` (alias
+`--artifact-path`) to override the activation directory explicitly, and
+pass that same directory to `icg hook --rule-pack`.
 
 ```bash
-sudo icg update --channel canary \
-  --artifact-path /etc/icg/rule-pack-canary.json
-sudo icg hook --help
+sudo icg update --channel canary
+sudo icg hook --rule-pack /etc/icg/packs-canary
 ```
 
-`icg status --channel` does not accept an artifact path and reports the default
-artifact location; inspect a custom canary file directly.
+`icg status --channel` does not accept a pack directory and reports the
+default location; inspect a custom canary directory directly.
 
 ## Telemetry and health state
 
@@ -309,12 +311,14 @@ or direct library calls, so keep the native hook and harness controls in place.
 
 ## Rollback
 
-There is no `icg update --rollback-to` flag. Keep a known-good pack and binary,
-then restore both deliberately:
+There is no `icg update --rollback-to` flag. A successful `icg update`
+renames the prior pack tree to `/etc/icg/packs.previous` before activating
+the new one, so that sibling directory is the built-in pack rollback
+target. Restore packs, binary, and pointer deliberately:
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  /etc/icg/rule-pack.previous.json /etc/icg/rule-pack.json
+sudo rm -rf /etc/icg/packs.failed && sudo mv /etc/icg/packs /etc/icg/packs.failed
+sudo mv /etc/icg/packs.previous /etc/icg/packs
 sudo install -o root -g root -m 0755 \
   /usr/local/bin/icg.previous /usr/local/bin/icg
 sudo icg trust set vPREVIOUS --justification "Incident rollback"
