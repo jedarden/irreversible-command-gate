@@ -154,7 +154,11 @@ fn installation_scenario_5_status_command_works() {
     ]);
 
     // Should succeed
-    assert!(status.status.success(), "icg status should succeed");
+    assert!(
+        status.status.success(),
+        "icg status should succeed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&status.stdout);
     // Should contain status information
