@@ -46,3 +46,6 @@ pub mod dependency_cycle_monitor;
 
 // Automated bead database integrity verification service (rehearsal-based repair)
 pub mod bead_database_integrity_service;
+
+// Automated bead frontier consistency checker and repair service
+pub mod frontier_consistency_service;

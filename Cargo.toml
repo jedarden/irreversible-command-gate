@@ -23,5 +23,9 @@ tar = "0.4"
 # Bead dependency validator dependencies
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+[[bin]]
+name = "frontier-consistency-check"
+path = "src/bin/frontier-consistency-check.rs"
+
 [dev-dependencies]
 tempfile = "3.13"
