@@ -1,0 +1,963 @@
+//! Pluck Query Debugger
+//!
+//! SQL-level diagnostic tool that replays Pluck's ready frontier query with
+//! progressive filter relaxation to diagnose exactly which filters are excluding
+//! beads from the ready frontier.
+//!
+//! ## Problem
+//!
+//! When `bead list --ready` returns no results despite open beads existing,
+//! the root cause is often one or more filters in Pluck's query being too
+//! restrictive. This tool makes the invisible visible by systematically relaxing
+//! each filter and reporting which beads appear at each level.
+//!
+//! ## Diagnostic Approach
+//!
+//! The debugger runs the ready frontier query at 5 relaxation levels:
+//!
+//! **Level 0: Exact Pluck Query** - All filters applied (label exclusions,
+//! dependency checks, assignee filters, manual blocks)
+//!
+//! **Level 1: Without Label Exclusions** - Remove label-based filters
+//! (e.g., excluding beads with specific labels like "deprecated" or "blocked")
+//!
+//! **Level 2: Without Dependency Checks** - Remove JOIN to dependencies table
+//! (beads with unresolved dependencies become visible)
+//!
+//! **Level 3: Without Assignee Filters** - Remove `assignee IS NULL` check
+//! (assigned beads become visible)
+//!
+//! **Level 4: Raw Base Query** - Only `base_status IN ('open', 'in_progress')`
+//! (all open/in_progress beads visible, no other filters)
+//!
+//! For each level, the debugger records:
+//! - Which beads are visible
+//! - Which beads are newly visible compared to the previous level
+//! - Which filter was relaxed to make them visible
+//!
+//! ## Output
+//!
+//! Generates a structured report at `.beads/diagnostics/pluck-query-debug-report.jsonl`
+//! containing:
+//! - Per-level query results with SQL used
+//! - Per-bead breakdown of which level made it visible and which filter excluded it
+//! - Pattern analysis (e.g., "all excluded beads have label 'deprecated'")
+//! - Recommended fixes to Pluck query logic if a pattern is detected
+//!
+//! ## Usage
+//!
+//! ```bash
+//! # Run the debugger
+//! cargo run --bin pluck-query-debugger
+//!
+//! # With custom database path
+//! cargo run --bin pluck-query-debugger -- --db-path /path/to/.beads/beads.db
+//!
+//! # Generate human-readable summary
+//! cargo run --bin pluck-query-debugger -- --summary
+//! ```
+
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Query relaxation level
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QueryLevel {
+    /// Level 0: Exact Pluck query (all filters)
+    Exact = 0,
+    /// Level 1: Without label exclusions
+    WithoutLabels = 1,
+    /// Level 2: Without dependency checks
+    WithoutDependencies = 2,
+    /// Level 3: Without assignee filter
+    WithoutAssignee = 3,
+    /// Level 4: Raw base query (status only)
+    Raw = 4,
+}
+
+impl QueryLevel {
+    /// Get all levels in order
+    pub fn all_levels() -> Vec<QueryLevel> {
+        vec![
+            QueryLevel::Exact,
+            QueryLevel::WithoutLabels,
+            QueryLevel::WithoutDependencies,
+            QueryLevel::WithoutAssignee,
+            QueryLevel::Raw,
+        ]
+    }
+
+    /// Get description of this level
+    pub fn description(&self) -> &str {
+        match self {
+            QueryLevel::Exact => "Exact Pluck query (all filters applied)",
+            QueryLevel::WithoutLabels => "Without label exclusions",
+            QueryLevel::WithoutDependencies => "Without dependency checks",
+            QueryLevel::WithoutAssignee => "Without assignee filter",
+            QueryLevel::Raw => "Raw base query (status only)",
+        }
+    }
+
+    /// Get which filter was relaxed at this level
+    pub fn relaxed_filter(&self) -> Option<&str> {
+        match self {
+            QueryLevel::Exact => None,
+            QueryLevel::WithoutLabels => Some("label exclusions"),
+            QueryLevel::WithoutDependencies => Some("dependency checks"),
+            QueryLevel::WithoutAssignee => Some("assignee filter"),
+            QueryLevel::Raw => Some("all filters except status"),
+        }
+    }
+}
+
+/// Configuration for the Pluck query debugger
+#[derive(Debug, Clone)]
+pub struct PluckQueryDebuggerConfig {
+    /// Path to the beads.db SQLite database
+    pub db_path: PathBuf,
+    /// Path to the diagnostics output directory
+    pub diagnostics_dir: PathBuf,
+    /// If true, print human-readable summary to stdout
+    pub print_summary: bool,
+}
+
+impl Default for PluckQueryDebuggerConfig {
+    fn default() -> Self {
+        let workspace_path = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
+        Self {
+            db_path: workspace_path.join(".beads/beads.db"),
+            diagnostics_dir: workspace_path.join(".beads/diagnostics"),
+            print_summary: false,
+        }
+    }
+}
+
+/// A bead with its state from the database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeadRecord {
+    pub id: String,
+    pub title: String,
+    pub base_status: String,
+    pub assignee: Option<String>,
+    pub manual_blocked: bool,
+    pub priority: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Query result at a specific relaxation level
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LevelResult {
+    /// The relaxation level
+    pub level: QueryLevel,
+    /// Description of the level
+    pub level_description: String,
+    /// SQL query used at this level
+    pub sql_query: String,
+    /// Beads visible at this level
+    pub visible_beads: Vec<BeadRecord>,
+    /// Beads that became visible at this level (compared to previous level)
+    pub newly_visible_beads: Vec<String>,
+    /// Count of beads excluded by the filter relaxed at this level
+    pub excluded_count: usize,
+}
+
+/// Per-bead exclusion analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeadExclusionAnalysis {
+    /// Bead ID
+    pub bead_id: String,
+    /// Bead title
+    pub bead_title: String,
+    /// Current status
+    pub status: String,
+    /// Assignee (if any)
+    pub assignee: Option<String>,
+    /// Whether manually blocked
+    pub manual_blocked: bool,
+    /// Labels on this bead
+    pub labels: Vec<String>,
+    /// Dependencies blocking this bead
+    pub blocking_dependencies: Vec<String>,
+    /// The level at which this bead became visible
+    pub visible_at_level: Option<QueryLevel>,
+    /// Which filter excluded this bead (if known)
+    pub excluded_by_filter: Option<String>,
+    /// Detailed explanation of why this bead was excluded
+    pub exclusion_reason: String,
+}
+
+/// Pattern analysis of excluded beads
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExclusionPattern {
+    /// The pattern detected
+    pub pattern: String,
+    /// Description of the pattern
+    pub description: String,
+    /// Beads matching this pattern
+    pub matching_beads: Vec<String>,
+    /// Suggested fix to Pluck query (if applicable)
+    pub suggested_fix: Option<String>,
+}
+
+/// Complete Pluck query debug report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluckQueryDebugReport {
+    /// Timestamp when the report was generated
+    pub timestamp: DateTime<Utc>,
+    /// Database path
+    pub db_path: String,
+    /// Total open/in_progress beads in database
+    pub total_open_beads: usize,
+    /// Beads visible at exact Pluck level (Level 0)
+    pub ready_frontier_count: usize,
+    /// Starvation detected (ready frontier empty but open beads exist)
+    pub starvation_detected: bool,
+    /// Query results at each relaxation level
+    pub level_results: Vec<LevelResult>,
+    /// Per-bead exclusion analysis
+    pub bead_analyses: Vec<BeadExclusionAnalysis>,
+    /// Pattern analysis
+    pub exclusion_patterns: Vec<ExclusionPattern>,
+    /// Recommended fixes
+    pub recommended_fixes: Vec<String>,
+}
+
+/// Pluck query debugger
+pub struct PluckQueryDebugger {
+    config: PluckQueryDebuggerConfig,
+}
+
+impl PluckQueryDebugger {
+    /// Create a new debugger with default config
+    pub fn new() -> Result<Self> {
+        Self::with_config(PluckQueryDebuggerConfig::default())
+    }
+
+    /// Create a new debugger with custom config
+    pub fn with_config(config: PluckQueryDebuggerConfig) -> Result<Self> {
+        if !config.db_path.exists() {
+            return Err(anyhow!(
+                "Database not found at {}",
+                config.db_path.display()
+            ));
+        }
+        Ok(Self { config })
+    }
+
+    /// Run the complete query debugging analysis
+    pub fn run_debug_analysis(&mut self) -> Result<PluckQueryDebugReport> {
+        let timestamp = Utc::now();
+
+        // Ensure diagnostics directory exists
+        fs::create_dir_all(&self.config.diagnostics_dir)
+            .context("Failed to create diagnostics directory")?;
+
+        // Get total open bead count
+        let total_open_beads = self.count_total_open_beads()?;
+
+        // Run queries at each relaxation level
+        let level_results = self.run_all_level_queries()?;
+
+        // The ready frontier count is Level 0 (Exact)
+        let ready_frontier_count = level_results
+            .first()
+            .map(|r| r.visible_beads.len())
+            .unwrap_or(0);
+
+        let starvation_detected = total_open_beads > 0 && ready_frontier_count == 0;
+
+        // Perform per-bead exclusion analysis
+        let bead_analyses = self.analyze_bead_exclusions(&level_results)?;
+
+        // Analyze patterns in excluded beads
+        let exclusion_patterns = self.analyze_exclusion_patterns(&bead_analyses);
+
+        // Generate recommended fixes
+        let recommended_fixes = self.generate_fixes(&exclusion_patterns);
+
+        let report = PluckQueryDebugReport {
+            timestamp,
+            db_path: self.config.db_path.display().to_string(),
+            total_open_beads,
+            ready_frontier_count,
+            starvation_detected,
+            level_results,
+            bead_analyses,
+            exclusion_patterns,
+            recommended_fixes,
+        };
+
+        // Publish report
+        self.publish_report(&report)?;
+
+        Ok(report)
+    }
+
+    /// Count total open/in_progress beads in database
+    fn count_total_open_beads(&self) -> Result<usize> {
+        let conn = Connection::open(&self.config.db_path)
+            .context("Failed to open database")?;
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM issues WHERE base_status IN ('open', 'in_progress')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(count as usize)
+    }
+
+    /// Run queries at all relaxation levels
+    fn run_all_level_queries(&self) -> Result<Vec<LevelResult>> {
+        let mut results = Vec::new();
+        let mut previous_visible: HashSet<String> = HashSet::new();
+
+        for level in QueryLevel::all_levels() {
+            let sql_query = self.build_query_for_level(level);
+            let visible_beads = self.execute_query(&sql_query)?;
+
+            // Calculate newly visible beads
+            let current_visible: HashSet<String> = visible_beads
+                .iter()
+                .map(|b| b.id.clone())
+                .collect();
+
+            let newly_visible_beads: Vec<String> = current_visible
+                .difference(&previous_visible)
+                .cloned()
+                .collect();
+
+            let excluded_count = if level == QueryLevel::Exact {
+                0 // Exact level is baseline
+            } else {
+                newly_visible_beads.len()
+            };
+
+            results.push(LevelResult {
+                level,
+                level_description: level.description().to_string(),
+                sql_query: sql_query.clone(),
+                visible_beads,
+                newly_visible_beads,
+                excluded_count,
+            });
+
+            previous_visible = current_visible;
+        }
+
+        Ok(results)
+    }
+
+    /// Build the SQL query for a given relaxation level
+    fn build_query_for_level(&self, level: QueryLevel) -> String {
+        match level {
+            QueryLevel::Exact => {
+                // Exact Pluck query: all filters applied
+                // This mimics what `bead list --ready` does
+                r#"
+                    SELECT DISTINCT
+                        i.id, i.title, i.base_status, i.assignee,
+                        i.manual_blocked, i.priority, i.created_at, i.updated_at
+                    FROM issues i
+                    WHERE i.base_status = 'open'
+                      AND i.assignee IS NULL
+                      AND i.manual_blocked = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM dependencies d
+                          WHERE d.blocked_issue_id = i.id
+                            AND d.kind = 'blocks'
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM labels l
+                          WHERE l.issue_id = i.id
+                            AND l.name IN ('deprecated', 'blocked', 'on-hold')
+                      )
+                    ORDER BY i.priority DESC, i.created_at ASC
+                "#.to_string()
+            }
+            QueryLevel::WithoutLabels => {
+                // Without label exclusions
+                r#"
+                    SELECT DISTINCT
+                        i.id, i.title, i.base_status, i.assignee,
+                        i.manual_blocked, i.priority, i.created_at, i.updated_at
+                    FROM issues i
+                    WHERE i.base_status = 'open'
+                      AND i.assignee IS NULL
+                      AND i.manual_blocked = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM dependencies d
+                          WHERE d.blocked_issue_id = i.id
+                            AND d.kind = 'blocks'
+                      )
+                    ORDER BY i.priority DESC, i.created_at ASC
+                "#.to_string()
+            }
+            QueryLevel::WithoutDependencies => {
+                // Without dependency checks
+                r#"
+                    SELECT DISTINCT
+                        i.id, i.title, i.base_status, i.assignee,
+                        i.manual_blocked, i.priority, i.created_at, i.updated_at
+                    FROM issues i
+                    WHERE i.base_status = 'open'
+                      AND i.assignee IS NULL
+                      AND i.manual_blocked = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM labels l
+                          WHERE l.issue_id = i.id
+                            AND l.name IN ('deprecated', 'blocked', 'on-hold')
+                      )
+                    ORDER BY i.priority DESC, i.created_at ASC
+                "#.to_string()
+            }
+            QueryLevel::WithoutAssignee => {
+                // Without assignee filter
+                r#"
+                    SELECT DISTINCT
+                        i.id, i.title, i.base_status, i.assignee,
+                        i.manual_blocked, i.priority, i.created_at, i.updated_at
+                    FROM issues i
+                    WHERE i.base_status = 'open'
+                      AND i.manual_blocked = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM labels l
+                          WHERE l.issue_id = i.id
+                            AND l.name IN ('deprecated', 'blocked', 'on-hold')
+                      )
+                    ORDER BY i.priority DESC, i.created_at ASC
+                "#.to_string()
+            }
+            QueryLevel::Raw => {
+                // Raw base query - only status filter
+                r#"
+                    SELECT
+                        i.id, i.title, i.base_status, i.assignee,
+                        i.manual_blocked, i.priority, i.created_at, i.updated_at
+                    FROM issues i
+                    WHERE i.base_status IN ('open', 'in_progress')
+                    ORDER BY i.priority DESC, i.created_at ASC
+                "#.to_string()
+            }
+        }
+    }
+
+    /// Execute a query and return the bead records
+    fn execute_query(&self, sql_query: &str) -> Result<Vec<BeadRecord>> {
+        let conn = Connection::open(&self.config.db_path)
+            .context("Failed to open database")?;
+
+        let mut stmt = conn.prepare(sql_query)
+            .context("Failed to prepare query")?;
+
+        let beads = stmt.query_and_then([], |row| {
+            let id: String = row.get(0)?;
+            let title: String = row.get(1)?;
+            let base_status: String = row.get(2)?;
+            let assignee: Option<String> = row.get(3)?;
+            let manual_blocked: i32 = row.get(4)?;
+            let priority: i32 = row.get(5)?;
+            let created_at: String = row.get(6)?;
+            let updated_at: String = row.get(7)?;
+
+            Ok(BeadRecord {
+                id,
+                title,
+                base_status,
+                assignee,
+                manual_blocked: manual_blocked == 1,
+                priority,
+                created_at,
+                updated_at,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()
+        .context("Failed to read bead records")?;
+
+        Ok(beads)
+    }
+
+    /// Analyze per-bead exclusion reasons
+    fn analyze_bead_exclusions(&self, level_results: &[LevelResult]) -> Result<Vec<BeadExclusionAnalysis>> {
+        let mut analyses = Vec::new();
+
+        // Get all beads from the raw level (Level 4) - clone to avoid lifetime issues
+        let all_beads: Vec<BeadRecord> = level_results
+            .iter()
+            .find(|r| r.level == QueryLevel::Raw)
+            .map(|r| r.visible_beads.clone())
+            .unwrap_or_default();
+
+        // Track which level each bead became visible at
+        let mut bead_visibility_level: HashMap<String, QueryLevel> = HashMap::new();
+
+        for result in level_results {
+            for bead in &result.visible_beads {
+                bead_visibility_level
+                    .entry(bead.id.clone())
+                    .or_insert(result.level);
+            }
+        }
+
+        // Build lookup of newly visible beads per level
+        let mut newly_visible_at_level: HashMap<QueryLevel, HashSet<String>> = HashMap::new();
+        for result in level_results {
+            newly_visible_at_level
+                .entry(result.level)
+                .or_insert_with(HashSet::new)
+                .extend(result.newly_visible_beads.iter().cloned());
+        }
+
+        // Analyze each bead
+        for bead in all_beads {
+            let visible_at_level = bead_visibility_level.get(&bead.id).copied();
+
+            // Get additional bead data
+            let labels = self.get_bead_labels(&bead.id)?;
+            let blocking_dependencies = self.get_blocking_dependencies(&bead.id);
+
+            // Determine which filter excluded this bead
+            let (excluded_by_filter, exclusion_reason) = if let Some(level) = visible_at_level {
+                if level == QueryLevel::Exact {
+                    (None, "Visible in ready frontier".to_string())
+                } else {
+                    // This bead became visible at a relaxed level
+                    // Determine which filter excluded it
+                    Self::determine_exclusion_filter(
+                        &bead,
+                        &labels,
+                        &blocking_dependencies,
+                        level,
+                        &newly_visible_at_level,
+                    )
+                }
+            } else {
+                (None, "Never visible (should not happen at Raw level)".to_string())
+            };
+
+            analyses.push(BeadExclusionAnalysis {
+                bead_id: bead.id.clone(),
+                bead_title: bead.title.clone(),
+                status: bead.base_status.clone(),
+                assignee: bead.assignee.clone(),
+                manual_blocked: bead.manual_blocked,
+                labels,
+                blocking_dependencies,
+                visible_at_level,
+                excluded_by_filter: excluded_by_filter.map(|s| s.to_string()),
+                exclusion_reason,
+            });
+        }
+
+        Ok(analyses)
+    }
+
+    /// Determine which filter excluded a bead
+    fn determine_exclusion_filter(
+        bead: &BeadRecord,
+        labels: &[String],
+        blocking_dependencies: &[String],
+        visible_at_level: QueryLevel,
+        newly_visible_at_level: &HashMap<QueryLevel, HashSet<String>>,
+    ) -> (Option<&'static str>, String) {
+        // Check if this bead was newly visible at its level
+        if let Some(newly_visible) = newly_visible_at_level.get(&visible_at_level) {
+            if !newly_visible.contains(&bead.id) {
+                // Not newly visible, so it was excluded by a filter at a higher level
+                return (None, "Excluded by unknown filter".to_string());
+            }
+        }
+
+        match visible_at_level {
+            QueryLevel::Exact => {
+                (None, "Visible in ready frontier".to_string())
+            }
+            QueryLevel::WithoutLabels => {
+                // Became visible when label filter was removed
+                let excluded_labels: Vec<&str> = labels
+                    .iter()
+                    .filter(|l| ["deprecated", "blocked", "on-hold"].contains(&l.as_str()))
+                    .map(|s| s.as_str())
+                    .collect();
+
+                let reason = if excluded_labels.is_empty() {
+                    "Excluded by label filter (no standard exclusion labels found - may have custom label logic)"
+                } else {
+                    "Excluded by label filter"
+                };
+
+                (Some("label exclusions"), format!("{}: has labels {:?}", reason, excluded_labels))
+            }
+            QueryLevel::WithoutDependencies => {
+                // Became visible when dependency filter was removed
+                if blocking_dependencies.is_empty() {
+                    (Some("dependency checks"), "Excluded by dependency filter (no blocking dependencies found - may have transitive dependency issue)".to_string())
+                } else {
+                    (Some("dependency checks"), format!("Excluded by dependency filter: blocked by {:?}", blocking_dependencies))
+                }
+            }
+            QueryLevel::WithoutAssignee => {
+                // Became visible when assignee filter was removed
+                if let Some(ref assignee) = bead.assignee {
+                    (Some("assignee filter"), format!("Excluded by assignee filter: assigned to '{}'", assignee))
+                } else {
+                    (Some("assignee filter"), "Excluded by assignee filter (no assignee found - unexpected)".to_string())
+                }
+            }
+            QueryLevel::Raw => {
+                // Should not happen - all beads should be visible at Raw level
+                (Some("unknown"), "Excluded by unknown filter".to_string())
+            }
+        }
+    }
+
+    /// Get labels for a bead
+    fn get_bead_labels(&self, bead_id: &str) -> Result<Vec<String>> {
+        let conn = Connection::open(&self.config.db_path)
+            .context("Failed to open database")?;
+
+        let mut stmt = conn.prepare(
+            "SELECT name FROM labels WHERE issue_id = ?1"
+        )?;
+
+        let labels = stmt.query_and_then(params![bead_id], |row| {
+            let name: String = row.get(0)?;
+            Ok(name)
+        })?
+        .collect::<Result<Vec<_>>>()?;
+
+        Ok(labels)
+    }
+
+    /// Get blocking dependencies for a bead
+    fn get_blocking_dependencies(&self, bead_id: &str) -> Vec<String> {
+        let conn = match Connection::open(&self.config.db_path) {
+            Ok(conn) => conn,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut stmt = match conn.prepare(
+            "SELECT blocker_issue_id FROM dependencies
+             WHERE blocked_issue_id = ?1 AND kind = 'blocks'"
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+
+        // Collect the results immediately to avoid lifetime issues
+        let x = match stmt.query_and_then(params![bead_id], |row| {
+            let blocker: String = row.get(0)?;
+            Ok::<String, rusqlite::Error>(blocker)
+        }) {
+            Ok(iter) => match iter.collect::<Result<Vec<String>, _>>() {
+                Ok(blockers) => blockers,
+                Err(_) => Vec::new(),
+            },
+            Err(_) => Vec::new(),
+        };
+        x
+    }
+
+    /// Analyze patterns in excluded beads
+    fn analyze_exclusion_patterns(&self, analyses: &[BeadExclusionAnalysis]) -> Vec<ExclusionPattern> {
+        let mut patterns = Vec::new();
+
+        // Group beads by exclusion filter
+        let mut by_label: Vec<String> = Vec::new();
+        let mut by_dependency: Vec<String> = Vec::new();
+        let mut by_assignee: Vec<String> = Vec::new();
+
+        for analysis in analyses {
+            if let Some(filter) = &analysis.excluded_by_filter {
+                match filter.as_str() {
+                    "label exclusions" => by_label.push(analysis.bead_id.clone()),
+                    "dependency checks" => by_dependency.push(analysis.bead_id.clone()),
+                    "assignee filter" => by_assignee.push(analysis.bead_id.clone()),
+                    _ => {}
+                }
+            }
+        }
+
+        // Pattern: All excluded beads have specific labels
+        if !by_label.is_empty() {
+            let label_patterns = self.analyze_label_patterns(analyses);
+            patterns.extend(label_patterns);
+        }
+
+        // Pattern: Beads blocked by specific dependencies
+        if !by_dependency.is_empty() {
+            let dep_patterns = self.analyze_dependency_patterns(analyses);
+            patterns.extend(dep_patterns);
+        }
+
+        // Pattern: Assigned beads
+        if !by_assignee.is_empty() {
+            patterns.push(ExclusionPattern {
+                pattern: "assignee_exclusion".to_string(),
+                description: format!("{} beads are assigned to workers and excluded by assignee filter", by_assignee.len()),
+                matching_beads: by_assignee,
+                suggested_fix: None, // This is expected behavior, not a bug
+            });
+        }
+
+        patterns
+    }
+
+    /// Analyze label-based exclusion patterns
+    fn analyze_label_patterns(&self, analyses: &[BeadExclusionAnalysis]) -> Vec<ExclusionPattern> {
+        let mut patterns = Vec::new();
+        let mut label_counts: HashMap<String, Vec<String>> = HashMap::new();
+
+        for analysis in analyses {
+            if analysis.excluded_by_filter.as_deref() == Some("label exclusions") {
+                for label in &analysis.labels {
+                    label_counts
+                        .entry(label.clone())
+                        .or_insert_with(Vec::new)
+                        .push(analysis.bead_id.clone());
+                }
+            }
+        }
+
+        // Find significant label patterns
+        for (label, bead_ids) in label_counts {
+            if bead_ids.len() >= 2 {
+                // If multiple beads share the same exclusion label
+                let pattern = ExclusionPattern {
+                    pattern: format!("label_exclusion_{}", label),
+                    description: format!("{} beads have label '{}' causing exclusion", bead_ids.len(), label),
+                    matching_beads: bead_ids,
+                    suggested_fix: if ["deprecated", "blocked", "on-hold"].contains(&label.as_str()) {
+                        None // Standard exclusion labels, not a bug
+                    } else {
+                        Some(format!("Review whether label '{}' should be excluded by Pluck query", label))
+                    },
+                };
+                patterns.push(pattern);
+            }
+        }
+
+        patterns
+    }
+
+    /// Analyze dependency-based exclusion patterns
+    fn analyze_dependency_patterns(&self, analyses: &[BeadExclusionAnalysis]) -> Vec<ExclusionPattern> {
+        let mut patterns = Vec::new();
+        let mut blocker_counts: HashMap<String, Vec<String>> = HashMap::new();
+
+        for analysis in analyses {
+            if analysis.excluded_by_filter.as_deref() == Some("dependency checks") {
+                for blocker in &analysis.blocking_dependencies {
+                    blocker_counts
+                        .entry(blocker.clone())
+                        .or_insert_with(Vec::new)
+                        .push(analysis.bead_id.clone());
+                }
+            }
+        }
+
+        // Find beads blocked by the same dependency
+        for (blocker, bead_ids) in blocker_counts {
+            if bead_ids.len() >= 2 {
+                patterns.push(ExclusionPattern {
+                    pattern: format!("dependency_blocker_{}", blocker),
+                    description: format!("{} beads are blocked by dependency on '{}'", bead_ids.len(), blocker),
+                    matching_beads: bead_ids,
+                    suggested_fix: Some(format!("Check if bead '{}' is stuck and needs to be closed or updated", blocker)),
+                });
+            }
+        }
+
+        patterns
+    }
+
+    /// Generate recommended fixes based on patterns
+    fn generate_fixes(&self, patterns: &[ExclusionPattern]) -> Vec<String> {
+        let mut fixes = Vec::new();
+
+        for pattern in patterns {
+            if let Some(ref fix) = pattern.suggested_fix {
+                fixes.push(fix.clone());
+            }
+        }
+
+        if fixes.is_empty() {
+            fixes.push("No systematic patterns detected. Exclusions appear to be legitimate filter behavior.".to_string());
+        }
+
+        fixes
+    }
+
+    /// Publish the debug report to JSONL file
+    fn publish_report(&self, report: &PluckQueryDebugReport) -> Result<()> {
+        let report_path = self.config.diagnostics_dir.join("pluck-query-debug-report.jsonl");
+        let json_line = serde_json::to_string(report)
+            .context("Failed to serialize debug report")?;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&report_path)
+            .context("Failed to open debug report file")?;
+
+        writeln!(file, "{}", json_line)
+            .context("Failed to write debug report")?;
+
+        eprintln!("📋 Pluck query debug report published to {}", report_path.display());
+
+        Ok(())
+    }
+
+    /// Print a human-readable summary of the report
+    pub fn print_summary(&self, report: &PluckQueryDebugReport) {
+        println!("\n=== Pluck Query Debug Report ===\n");
+        println!("Timestamp: {}", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!("Database: {}", report.db_path);
+        println!("Total open beads: {}", report.total_open_beads);
+        println!("Ready frontier (Level 0): {}", report.ready_frontier_count);
+        println!("Starvation detected: {}", report.starvation_detected);
+
+        println!("\n--- Query Results by Level ---");
+        for result in &report.level_results {
+            println!("\nLevel {} - {}",
+                result.level as i32,
+                result.level_description
+            );
+            println!("  Visible beads: {}", result.visible_beads.len());
+            println!("  Newly visible: {}", result.newly_visible_beads.len());
+            if !result.newly_visible_beads.is_empty() {
+                println!("  New bead IDs: {:?}", result.newly_visible_beads);
+            }
+        }
+
+        if report.starvation_detected {
+            println!("\n--- Invisible Beads Analysis ---");
+            for analysis in &report.bead_analyses {
+                if analysis.visible_at_level != Some(QueryLevel::Exact) {
+                    println!("\n[{}] {}", analysis.bead_id, analysis.bead_title);
+                    println!("  Status: {}", analysis.status);
+                    if let Some(assignee) = &analysis.assignee {
+                        println!("  Assignee: {}", assignee);
+                    }
+                    if !analysis.labels.is_empty() {
+                        println!("  Labels: {:?}", analysis.labels);
+                    }
+                    if !analysis.blocking_dependencies.is_empty() {
+                        println!("  Blocked by: {:?}", analysis.blocking_dependencies);
+                    }
+                    if let Some(level) = analysis.visible_at_level {
+                        println!("  Visible at: Level {} ({})", level as i32, level.description());
+                    }
+                    if let Some(ref filter) = analysis.excluded_by_filter {
+                        println!("  Excluded by: {}", filter);
+                    }
+                    println!("  Reason: {}", analysis.exclusion_reason);
+                }
+            }
+        }
+
+        if !report.exclusion_patterns.is_empty() {
+            println!("\n--- Exclusion Patterns ---");
+            for (i, pattern) in report.exclusion_patterns.iter().enumerate() {
+                println!("{}. Pattern: {}", i + 1, pattern.pattern);
+                println!("   {}", pattern.description);
+                if !pattern.matching_beads.is_empty() {
+                    println!("   Affected beads: {:?}", pattern.matching_beads);
+                }
+                if let Some(ref fix) = pattern.suggested_fix {
+                    println!("   Suggested fix: {}", fix);
+                }
+            }
+        }
+
+        if !report.recommended_fixes.is_empty() {
+            println!("\n--- Recommended Fixes ---");
+            for (i, fix) in report.recommended_fixes.iter().enumerate() {
+                println!("{}. {}", i + 1, fix);
+            }
+        }
+
+        if report.starvation_detected {
+            println!("\n🚨 STARVATION DETECTED: Pluck query returns no ready beads");
+        } else {
+            println!("\n✅ No starvation detected - ready frontier is populated");
+        }
+    }
+}
+
+impl Default for PluckQueryDebugger {
+    fn default() -> Self {
+        Self::new().expect("Failed to create debugger with default config")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_level_ordering() {
+        let levels = QueryLevel::all_levels();
+        assert_eq!(levels.len(), 5);
+        assert_eq!(levels[0], QueryLevel::Exact);
+        assert_eq!(levels[4], QueryLevel::Raw);
+    }
+
+    #[test]
+    fn test_level_descriptions() {
+        assert_eq!(QueryLevel::Exact.description(), "Exact Pluck query (all filters applied)");
+        assert_eq!(QueryLevel::Raw.description(), "Raw base query (status only)");
+    }
+
+    #[test]
+    fn test_relaxed_filter() {
+        assert_eq!(QueryLevel::Exact.relaxed_filter(), None);
+        assert_eq!(QueryLevel::WithoutLabels.relaxed_filter(), Some("label exclusions"));
+        assert_eq!(QueryLevel::WithoutDependencies.relaxed_filter(), Some("dependency checks"));
+        assert_eq!(QueryLevel::WithoutAssignee.relaxed_filter(), Some("assignee filter"));
+        assert_eq!(QueryLevel::Raw.relaxed_filter(), Some("all filters except status"));
+    }
+
+    #[test]
+    fn test_exclusion_analysis_serialization() {
+        let analysis = BeadExclusionAnalysis {
+            bead_id: "test-1".to_string(),
+            bead_title: "Test Bead".to_string(),
+            status: "open".to_string(),
+            assignee: Some("worker-1".to_string()),
+            manual_blocked: false,
+            labels: vec!["bug".to_string()],
+            blocking_dependencies: vec!["test-2".to_string()],
+            visible_at_level: Some(QueryLevel::WithoutAssignee),
+            excluded_by_filter: Some("assignee filter".to_string()),
+            exclusion_reason: "Excluded by assignee filter".to_string(),
+        };
+
+        let json = serde_json::to_string(&analysis).unwrap();
+        assert!(json.contains("test-1"));
+        assert!(json.contains("assignee filter"));
+    }
+
+    #[test]
+    fn test_pattern_serialization() {
+        let pattern = ExclusionPattern {
+            pattern: "label_exclusion_deprecated".to_string(),
+            description: "5 beads have label 'deprecated'".to_string(),
+            matching_beads: vec!["bead-1".to_string(), "bead-2".to_string()],
+            suggested_fix: Some("Review label usage".to_string()),
+        };
+
+        let json = serde_json::to_string(&pattern).unwrap();
+        assert!(json.contains("label_exclusion_deprecated"));
+        assert!(json.contains("deprecated"));
+    }
+}

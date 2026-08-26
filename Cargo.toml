@@ -27,5 +27,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 name = "frontier-consistency-check"
 path = "src/bin/frontier-consistency-check.rs"
 
+[[bin]]
+name = "checkpoint-monitor"
+path = "src/bin/checkpoint-monitor.rs"
+
+[[bin]]
+name = "pluck-query-debugger"
+path = "src/bin/pluck-query-debugger.rs"
+
 [dev-dependencies]
 tempfile = "3.13"
