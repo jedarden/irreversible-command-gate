@@ -40,3 +40,6 @@ pub mod checkpoint_monitor;
 
 // Automated assignment state repair service
 pub mod assignment_repair;
+
+// Automated dependency cycle detection and repair service
+pub mod dependency_cycle_monitor;

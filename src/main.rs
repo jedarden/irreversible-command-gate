@@ -266,6 +266,24 @@ enum Commands {
         #[arg(long)]
         uninstall: bool,
     },
+    /// Dependency cycle detection and repair monitoring
+    DependencyCycleMonitor {
+        /// Interval between checks in seconds (default: 300)
+        #[arg(long, default_value = "300")]
+        interval_secs: u64,
+        /// Path to workspace directory (default: current directory)
+        #[arg(long)]
+        workspace_path: Option<PathBuf>,
+        /// Run once and exit (default: continuous monitoring)
+        #[arg(long)]
+        once: bool,
+        /// Dry-run mode: detect only, no repairs
+        #[arg(long)]
+        dry_run: bool,
+        /// Maximum cycle length to auto-repair (default: 10)
+        #[arg(long, default_value = "10")]
+        max_cycle_length: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1820,6 +1838,46 @@ fn main() -> Result<()> {
             force,
             uninstall,
         } => documented_commands::run_install(dir, packs, force, uninstall),
+        Commands::DependencyCycleMonitor {
+            interval_secs,
+            workspace_path,
+            once,
+            dry_run,
+            max_cycle_length,
+        } => {
+            use icg::dependency_cycle_monitor::DependencyCycleMonitor;
+
+            let workspace = workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let mut config = icg::dependency_cycle_monitor::DependencyCycleConfig::from_environment();
+            config.workspace_path = workspace;
+            config.check_interval = std::time::Duration::from_secs(interval_secs.max(60));
+            config.dry_run = dry_run;
+            config.max_cycle_length = max_cycle_length;
+
+            let mut monitor = DependencyCycleMonitor::with_config(config)?;
+
+            if once {
+                // Run once and exit
+                let report = monitor.run_check()?;
+                monitor.print_summary(&report);
+                std::process::exit(if report.circular_dependencies_found > 0 || report.orphaned_dependencies_found > 0 {
+                    2  // Exit with error code if issues were found
+                } else {
+                    0  // Exit successfully if no issues
+                });
+            } else {
+                // Run continuous monitoring
+                #[cfg(feature = "monitoring")]
+                {
+                    monitor.run().await
+                }
+                #[cfg(not(feature = "monitoring"))]
+                {
+                    eprintln!("Error: Continuous monitoring requires the 'monitoring' feature. Use --once to run a single check.");
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::Trust(subcommand) => match subcommand {
             TrustSubcommand::Show { path, channel } => {
                 let store_path = configured_trust_pointer_path(path, channel.as_deref())?;
