@@ -167,3 +167,121 @@ fn misc_pack_data_matches_the_documented_post_cutover_state() {
     assert_eq!(data["currently_canonical"], "bead");
     assert_eq!(data["deprecated"], serde_json::json!(["bf", "br"]));
 }
+
+fn quick_start() -> String {
+    repo_relative("docs/quick-start.md")
+}
+
+#[test]
+fn quick_start_makes_no_kubectl_coverage_claim() {
+    let doc = quick_start();
+
+    // kubectl is deliberately not a pack (plan.md "Explicitly not
+    // attempted"): mutating-verb blocking stays org-rule-guard.py's job.
+    // These exact claims are what the 2026-08-25 audit found in the wild.
+    for stale in [
+        "kubectl delete pvc",
+        "kubectl-delete-pvc",
+        "**Kubernetes**",
+    ] {
+        assert!(
+            !doc.contains(stale),
+            "quick-start.md must not claim kubectl coverage ({stale:?}): \
+             kubectl is explicitly not a pack"
+        );
+    }
+
+    // The doc should say the quiet part out loud: who owns kubectl instead.
+    assert!(
+        doc.contains("org-rule-guard.py"),
+        "quick-start.md should state that kubectl mutation blocking stays \
+         with org-rule-guard.py"
+    );
+}
+
+#[test]
+fn quick_start_pack_inventory_matches_the_shipped_packs() {
+    let doc = quick_start();
+
+    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let mut shipped_ids: Vec<String> = fs::read_dir(&packs_dir)
+        .unwrap_or_else(|error| panic!("should read {}: {error}", packs_dir.display()))
+        .filter_map(|entry| {
+            let path = entry.expect("directory entry").path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                Some(path.file_stem()?.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(!shipped_ids.is_empty(), "packs/ directory should not be empty");
+    shipped_ids.sort();
+
+    for id in &shipped_ids {
+        assert!(
+            doc.contains(&format!("`{id}`")),
+            "quick-start.md should list the shipped pack `{id}` in its \
+             coverage inventory"
+        );
+    }
+
+    // Fictional inventories the audit found: a "vault" pack id and pattern
+    // counts that never existed. The OpenBao pack's id is `openbao`.
+    for stale in ["vault (", "Pack: vault", "vault-kv-destroy", "(12 patterns)"] {
+        assert!(
+            !doc.contains(stale),
+            "quick-start.md still cites the fictional inventory {stale:?}"
+        );
+    }
+}
+
+#[test]
+fn quick_start_documents_the_real_claude_code_hook_contract() {
+    let doc = quick_start();
+
+    // The documented contract (deployment-guide.md) is a matcher-array
+    // PreToolUse hook in ~/.claude/settings.json invoking `icg hook` by
+    // absolute path. The old `~/.config/claude-code` command/args object is
+    // not a shape any harness reads.
+    assert!(
+        doc.contains("~/.claude/settings.json"),
+        "quick-start.md should configure the hook in ~/.claude/settings.json"
+    );
+    assert!(
+        doc.contains("\"matcher\": \"Bash|Write|Edit\""),
+        "quick-start.md should use the matcher-array hook shape"
+    );
+    assert!(
+        doc.contains("/usr/local/bin/icg hook"),
+        "quick-start.md should invoke the hook by absolute path"
+    );
+    for stale in ["~/.config/claude-code", "\"args\": [\"hook\"]"] {
+        assert!(
+            !doc.contains(stale),
+            "quick-start.md still shows the bogus {stale:?} hook shape"
+        );
+    }
+}
+
+#[test]
+fn quick_start_is_a_single_coherent_guide() {
+    let doc = quick_start();
+
+    // The pre-rewrite file carried both a "Version 2.0" and a "Version 1.0"
+    // half with duplicated Common Tasks / Quick Reference / Support
+    // sections. One doc, one footer.
+    assert_eq!(
+        doc.matches("Quick Start Guide Version").count(),
+        1,
+        "quick-start.md should have exactly one version footer, not the \
+         duplicated v1/v2 halves"
+    );
+    for heading in ["## Common Tasks", "## Quick Reference", "## Support"] {
+        assert_eq!(
+            doc.matches(heading).count(),
+            1,
+            "quick-start.md should contain {heading} exactly once"
+        );
+    }
+}

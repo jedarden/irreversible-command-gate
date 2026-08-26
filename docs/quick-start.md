@@ -1,17 +1,40 @@
 # icg Quick Start Guide
 
-Get started with icg in 5 minutes. This guide covers installation, basic usage, and common tasks for new users.
+Get started with icg in about 5 minutes. This guide covers installation,
+basic usage, and common tasks for new users. Every command and output below
+was verified against the shipped `icg` v0.1.0 surface.
 
 ## What is icg?
 
-**icg (irreversible-command-gate)** is a safety system for AI coding agents that blocks destructive operations before they can cause damage.
+**icg (irreversible-command-gate)** is a safety system for AI coding agents
+that blocks or rewrites destructive operations before they can cause damage.
 
-- **Protects against**: Vault data destruction, git force-pushes, deleting cluster resources, and more
-- **Works with**: Claude Code and Codex CLI (local harnesses only)
-- **Philosophy**: Every denial explains what to do instead (not just "blocked")
-- **Design**: Fail-open by default — allows operations if rule packs aren't loaded or the tool isn't recognized
+- **Protects against**: irreversible OpenBao operations, git force-pushes,
+  credential literals in commands and files, banned image tags and storage
+  classes, and a few fleet-specific footguns (see
+  [What Gets Protected](#what-gets-protected))
+- **Works with**: Claude Code and local Codex CLI harnesses, through their
+  `PreToolUse` hook systems
+- **Philosophy**: every denial explains what to do instead — not just
+  "blocked"
+- **Design**: fail-open by default — if no rule packs are loaded or the tool
+  is not recognized, the operation is allowed rather than blocked
 
----
+icg is a backstop for honest mistakes, not a boundary against a malicious
+process. Keep the harness's own approval and sandbox controls enabled.
+
+### What icg does NOT cover
+
+- **kubectl.** There is deliberately no kubectl pack and there will not be
+  one: mutating-verb blocking (`kubectl delete`, `patch`, `apply`, …) stays
+  with the existing org-level hook (`org-rule-guard.py`), per the plan's
+  "Explicitly not attempted" decision. `icg check --command "kubectl delete
+  pvc data-volume"` returns `ALLOW: no configured rule matched` — that is
+  expected, not a gap.
+- **`.github/workflows/*` creation and `kind: Job`/`CronJob` manifests** —
+  also owned by the org-level hook today.
+- **Cloud-hosted agent sessions** (ChatGPT web, Claude.ai). Only local
+  harnesses invoke local hooks.
 
 ## Installation (2 minutes)
 
@@ -34,9 +57,12 @@ sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
 # Verify installation
 icg --version
+# icg 0.1.0
 ```
 
-Once releases exist, prefer downloading the release binary instead.
+Once releases exist, prefer downloading the release binary. For the full
+production procedure (build verification, ownership model, trust pointers),
+see `docs/operators/deployment-guide.md`.
 
 ---
 
@@ -44,568 +70,388 @@ Once releases exist, prefer downloading the release binary instead.
 
 ### Step 1: Install Rule Packs
 
-```bash
-# Create rule pack directory
-sudo mkdir -p /etc/icg/packs
+The hook loads every JSON manifest in `/etc/icg/packs/` by default. Copy the
+pack files from your checkout — the repo is the source of truth; there is no
+tagged release to download packs from yet.
 
-# Copy the pack files from your checkout (the repo is the source of truth;
-# there is no tagged release to download packs from yet)
-sudo install -o root -g root -m 0644 \
-  packs/openbao.json packs/git.json packs/image-tag.json /etc/icg/packs/
+```bash
+# Create the root-owned pack directory
+sudo install -d -o root -g root -m 0755 /etc/icg /etc/icg/packs
+
+# Install the pack files
+sudo install -o root -g root -m 0644 packs/*.json /etc/icg/packs/
 
 # Verify rule packs are loaded
 icg coverage --list
 ```
 
-### Step 2: Configure Claude Code Hook
+The pack directory must stay root-owned; the guarded agent must not be able
+to edit policy. `icg update` (see
+[Update rule packs](#task-4-update-rule-packs)) is the sanctioned way to
+change its contents later.
 
-```bash
-# Create Claude Code config directory
-mkdir -p ~/.config/claude-code
+### Step 2: Configure the Claude Code Hook
 
-# Configure hook
-cat > ~/.config/claude-code/settings.json <<'EOF'
+Add a `PreToolUse` command hook to `~/.claude/settings.json`. Merge this
+into your existing `hooks` object — do not overwrite unrelated settings:
+
+```json
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["hook"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
-
-# Note: The hook reads PreToolUse JSON from stdin and responds with
-# the decision envelope. No additional flags are needed.
 ```
 
-### Step 3: Test Installation
+- The command must be an **absolute path** — it cannot depend on the agent's
+  working directory or `PATH`.
+- The `Bash` matcher supplies command-mode input. `Write` and `Edit`
+  supply file content for the content-mode packs (`image-tag`,
+  `storage-class`, `secrets`).
+- Confirm the hook appears in Claude Code's hook inspection UI before
+  relying on it. Matchers are case-sensitive.
+- For a local Codex CLI, use the equivalent shape in its hook configuration
+  — see `docs/operators/deployment-guide.md`.
+
+### Step 3: Smoke-Test the Installation
 
 ```bash
-# Test a dangerous command (should be denied)
-echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}' | \
-  icg check --stdin
+# 1. All nine packs should be listed
+icg coverage --list
+# ✓ pack beads (3 patterns)
+# ✓ pack docker (3 patterns)
+# ✓ pack git (3 patterns)
+# ✓ pack image-tag (2 patterns)
+# ✓ pack misc (2 patterns)
+# ✓ pack openbao (3 patterns)
+# ✓ pack secrets (6 patterns)
+# ✓ pack storage-class (1 patterns)
+# ✓ pack tmux (1 patterns)
 
-# Expected output:
-DENIED: vault kv destroy is permanently destructive and cannot be undo
-Pack: vault
-Pattern: vault-kv-destroy
+# 2. A destructive command must be denied
+icg check --command "bao kv destroy secret/app/key"
+# DENIED by icg
+# Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; ...
+# Pack: openbao
+# Pattern: openbao-destructive-verb
+# Severity: Critical
+# ... (Explanation and Redirect lines continue with the full operator guidance)
+
+# 3. A force-push is rewritten, not denied
+icg check --command "git push --force origin main"
+# REWRITE: Removed --force/-f/--force-with-lease from git push; force-pushing can rewrite remote history
+# and lose commits. Retrying as a normal push preserves the requested commits without rewriting the remote.
+# Suggested input: git push origin main
+# Pack: git
+# Pattern: git-force-push
+
+# 4. A safe command must pass
+icg check --command "git status"
+# ALLOW: no configured rule matched
 ```
 
-**How the test works**:
-1. `icg check --stdin` reads PreToolUse JSON from stdin
-2. Extracts the Bash command from `toolInput.command`
-3. Evaluates it against rule pack patterns
-4. Returns the denial decision with pack/pattern details
+Notes on reading these results:
+
+- `icg check` communicates the decision on **stdout**; its exit code is `0`
+  for `ALLOW`, `REWRITE`, and `DENIED` alike. Scripts must parse the output,
+  not the exit status.
+- Warnings on **stderr** about `/var/cache/icg` mean telemetry could not be
+  persisted (the directory is missing or not writable by the hook identity).
+  The decision on stdout is unaffected. The deployment guide covers the
+  cache-directory ownership model.
+- `icg check` and `icg coverage` exit `1` with
+  `Error: no rule packs found; pass --pack <path>` when run outside a
+  checkout with no packs installed. The **hook**, by contrast, fails open:
+  with `/etc/icg/packs` absent it silently allows everything. Always run
+  `icg coverage --list` after installing to confirm the hook will actually
+  load policy.
 
 ---
 
 ## Basic Usage
 
-### Checking Commands
+### Checking commands
 
-Test if a command would be allowed or denied:
+`icg check` evaluates a command, file, or PreToolUse request without
+executing it:
 
 ```bash
-# Check a specific command
+# A command string
 icg check --command "git push --force origin main"
 
-# Output:
-DENIED: git push --force would rewrite public history
-Pack: git
-Pattern: git-force-push
+# A PreToolUse JSON document from stdin
+echo '{"toolName":"Bash","toolInput":{"command":"bao kv destroy secret/test"}}' \
+  | icg check --stdin
 
-# Check a safe command
-icg check --command "git status"
+# File content (content-mode packs: image-tag, storage-class, secrets)
+printf 'image: ronaldraygun/armor:latest\n' | icg check --file -
+# DENIED by icg
+# Reason: The :latest image tag is banned — it silently changes what runs and makes rollback impossible. ...
+# Pack: image-tag
+# Pattern: image-tag-latest
+# Severity: High
 
-# Output:
-ALLOW: no configured rule matched
+# Extra evaluation detail while debugging
+icg check --command "..." --debug
 ```
 
-### Understanding Denials
+The three outcomes:
 
-Learn why a command was denied:
+- `ALLOW: no configured rule matched` — nothing to say about this input.
+- `REWRITE: <why> … Suggested input: <replacement>` — the guard produced a
+  safe alternative (redirect channel `UpdatedInput`).
+- `DENIED by icg` with `Reason`, `Pack`, `Pattern`, `Severity`,
+  `Explanation`, and `Redirect` lines — blocked, with the operator
+  explanation and what to do instead.
+
+### Understanding a decision
+
+Every pattern has a standing explanation:
 
 ```bash
-# Get detailed explanation
-icg explain --pattern vault-kv-destroy
-
-# Output:
-Pattern: vault-kv-destroy
-Pack: vault
-Enabled: true
-Tier: Tier1
-Severity: Critical
-Why: vault kv destroy is permanently destructive and cannot be undo
-Redirect channel: Alternative
-Alternative: Use vault kv patch to reconcile secrets without destroying versions
+icg explain --pattern git-force-push --show-redirect
+# Pattern: git-force-push
+# Pack: git
+# Enabled: true
+# Tier: Tier1
+# Severity: Critical
+# Why: Force-push flags can rewrite git history and lose commits
+# Redirect channel: UpdatedInput
+# Alternative: Removed --force/-f/--force-with-lease from git push; ...
+# Replacement: {command_without_force}
 ```
 
-### Viewing Rule Pack Coverage
+`icg explain --pattern <id> --show-regex` adds the raw matcher.
+`icg explain --denial <telemetry-id>` explains a recorded denial instead of
+a pattern.
 
-See what operations are protected:
+### Viewing rule pack coverage
 
 ```bash
 # List all loaded rule packs
 icg coverage --list
 
-# Output:
-✓ vault (8 patterns)
-✓ git (12 patterns)
-✓ image-tag (6 patterns)
+# List packs from an explicit file or directory
+icg coverage --list --pack /etc/icg/packs
 ```
+
+`check`, `explain`, and `coverage` take `--pack <path>` (defaulting to the
+installed pack plus the repository's `packs/` directory when present). The
+`hook` subcommand's equivalent flag is `--rule-pack` — see
+[Hook mode vs check mode](#hook-mode-vs-check-mode).
 
 ---
 
 ## What Gets Protected
 
-### Critical Operations (Always Blocked)
+Nine packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
 
-- **Vault**: `vault kv destroy`, `vault policy delete`
-- **Git**: `git push --force`, `git push -f`, `git rebase` (on protected branches)
-- **Kubernetes**: `kubectl delete pvc` (persistent data)
-- **Images**: Using `:latest` tags in YAML files
-- **Storage**: Using `ssd` storage class on Rackspace Spot
+| Pack | Patterns | What it blocks |
+| --- | --- | --- |
+| `openbao` | 3 | Irreversible verbs (`kv destroy`, `metadata delete`, policy/mount deletion, rekey) — `openbao-destructive-verb` (Critical); secret literals passed as arguments — `openbao-inline-secret-literal` (Critical); `kv get` dumped to stdout — `openbao-kv-get-to-stdout` (Medium) |
+| `git` | 3 | Force-push flags (rewritten to a plain push) — `git-force-push` (Critical); committing without explicit pathspecs — `git-commit-without-pathspec` (High); pushing when the remote head is stale — `git-stale-remote-head-push` (High) |
+| `secrets` | 6 | Credential literals in commands and file content: GitHub tokens and PATs, AWS access keys, Slack tokens, Anthropic API keys, PEM private-key blocks (all Critical) |
+| `image-tag` | 2 | `:latest` and bare-SHA image references in file content (High) |
+| `storage-class` | 1 | `ssd`/`ssd-large` storage classes in manifests — use `sata`/`sata-large` (High) |
+| `docker` | 3 | `docker system prune --all`, `docker volume rm`, `docker image rm --force` (Critical) |
+| `tmux` | 1 | Sending input to the operator's bare NATO tmux sessions — `bare-nato-session` (Medium) |
+| `beads` | 3 | Hand-editing the shared `.beads` store (`beads-shared-checkout-write`, Critical); recovery misordering (`beads-repair-requires-flush`, `beads-flush-requires-pull`, High) |
+| `misc` | 2 | `needle cleanup` against a live fleet (`needle-cleanup`, Critical); deprecated bead CLIs `bf`/`br` (`deprecated-bead-cli`, Medium) |
 
-### Safe Operations (Always Allowed)
+**Not covered by icg** (see [What icg does NOT cover](#what-icg-does-not-cover)):
+kubectl mutations, `.github/workflows/*` creation, and `kind: Job`/`CronJob`
+manifests remain the org-level hook's job.
 
-- **Vault**: `vault kv get`, `vault kv list`
-- **Git**: `git status`, `git log`, `git diff`
-- **Kubernetes**: `kubectl get`, `kubectl describe`, `kubectl logs`
-- **Images**: Using semantic version tags (`v1.2.3`)
-- **Storage**: Using `sata` or `sata-large`
-
----
-
-## Common Tasks
-
-### Task 1: Handling a Denied Command
-
-When a command is denied, follow these steps:
-
-1. **Read the denial message**
-   ```
-   DENIED: vault kv destroy is permanently destructive and cannot be undo
-   Pack: vault
-   Pattern: vault-kv-destroy
-   ```
-
-2. **Get more details**
-   ```bash
-   icg explain --pattern vault-kv-destroy --show-redirect
-   ```
-
-3. **Use the suggested alternative**
-   ```bash
-   vault kv patch secret/app/api-key -remove=expired_field
-   ```
-
-4. **Verify the fix**
-   ```bash
-   vault kv get secret/app/api-key
-   ```
-
-### Task 2: Checking Rule Pack Coverage
-
-See what operations are protected:
-
-```bash
-# List all rule packs
-icg coverage --list
-
-# Check specific pack directory
-icg coverage --list --pack /etc/icg/packs
-```
-
-### Task 3: Health Check
-
-Verify icg is working correctly:
-
-```bash
-# Check health status
-icg health status
-
-# Output:
-# Guard Health Status
-#
-# **Path:** /var/cache/icg/health-state.json
-#
-# ## Health Status
-# **Status:** Running
-# **Running:** true
-# **Healthy:** true
-# **Stable:** true
-```
-
-### Task 4: Viewing Denial Logs
-
-See what operations have been blocked:
-
-```bash
-# Denials are logged to the state store
-# View recent denials (if state store exists)
-cat /var/lib/icg/state.json | jq '.denials[] | {timestamp, pack_id, pattern_id, reason}'
-```
+**Safe operations** are not enumerated in a blocklist-facing doc — anything
+no pattern matches is allowed (`git status`, `kubectl get`, `bao kv get -field=…`
+into a config, semver image tags, `sata` storage classes, …). The
+`openbao` and `git` packs additionally carry explicit safe-pattern lists that
+keep read-only verbs fast.
 
 ---
 
 ## Integration with AI Harnesses
 
-### Claude Code Integration
+Claude Code and local Codex CLIs invoke `icg hook` as a `PreToolUse` command
+hook (configuration in
+[Step 2](#step-2-configure-the-claude-code-hook)).
 
-Claude Code invokes icg through the PreToolUse hook system. The hook protocol:
+**Request** (JSON on the hook's stdin):
 
-1. **Request Format** (JSON from stdin):
 ```json
 {
   "toolName": "Bash",
   "toolInput": {
-    "command": "vault kv destroy secret/test"
+    "command": "bao kv destroy secret/test"
   },
   "toolUseId": "toolu_0123456789"
 }
 ```
 
-2. **Response Format** (JSON to stdout):
+**Response** (JSON on stdout). A denial:
+
 ```json
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "vault kv destroy is permanently destructive [pack=vault, pattern=vault-kv-destroy]"
+    "permissionDecisionReason": "This is an irreversible OpenBao operation. ... [pack=openbao, pattern=openbao-destructive-verb]"
   }
 }
 ```
 
-3. **Decision Types**:
-   - `allow` — Operation permitted
-   - `deny` — Operation blocked
-   - `updatedInput` — Safe alternative provided
-   - `additionalContext` — Warning, operation allowed
-
-### Codex CLI Integration
-
-Codex CLI uses the same PreToolUse hook protocol. Configure it in your Codex settings:
+A rewrite returns the safe alternative for the harness to retry with (the
+`Reason` text is elided here for brevity; the real response carries the full
+explanation):
 
 ```json
 {
-  "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["hook"]
+  "hookSpecificOutput": {
+    "additionalContext": "Removed --force/-f/--force-with-lease from git push; ... [pack=git, pattern=git-force-push]",
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": {
+      "command": "git push origin main"
     }
   }
 }
 ```
 
-**Important**: icg only protects **local** harnesses (Claude Code CLI, Codex CLI). Cloud-hosted sessions (ChatGPT web, Claude.ai) are not covered.
+An unmatched input returns `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}`.
 
-### Hook Mode vs Check Mode
+### Hook mode vs check mode
 
-- **Hook mode** (`icg hook`): Used by AI harnesses, reads PreToolUse JSON from stdin
-- **Check mode** (`icg check`): Manual testing, accepts `--stdin`, `--command`, or `--file`
+- **Hook mode** (`icg hook`): used by harnesses; reads one PreToolUse JSON
+  from stdin, emits one decision envelope, exits. Loads `/etc/icg/packs` by
+  default (the legacy `/etc/icg/rule-pack.json` when the directory is
+  absent). Override with `--rule-pack <path>` or `ICG_RULE_PACK`.
+- **Check mode** (`icg check`): manual testing with `--command`, `--stdin`,
+  or `--file`; prints human-readable decisions. Loads the installed pack
+  plus the repository's `packs/` directory when present; override with
+  `--pack`.
 
-Both evaluate the same rule packs, but hook mode returns the harness-specific response envelope.
-
----
-
-## Example Workflows
-
-### Workflow 1: Daily Development
-
-```bash
-# Morning: Verify rule packs are loaded
-icg coverage --list
-
-# During work: Test commands before running
-icg check --command "kubectl delete pvc data-volume"
-
-# If denied: Get details
-icg explain --pattern kubectl-delete-pvc --show-redirect
-```
-
-### Workflow 2: Handling a Denial
-
-```bash
-# Step 1: See the denial
-# Agent output: DENIED: git push --force would rewrite public history
-
-# Step 2: Understand why
-icg explain --pattern git-force-push --show-redirect
-
-# Step 3: Use the alternative
-git merge origin/main
-git push origin main
-```
-
-### Workflow 3: Emergency Bypass
-
-```bash
-# ONLY for genuine emergencies:
-ICG_DISABLED=1 <dangerous-command>
-
-# Follow up: Document why
-echo "$(date): Emergency bypass for <reason>" >> /var/log/icg/emergency.log
-```
-
----
-
-## Troubleshooting
-
-### Problem: icg Doesn't Seem to Be Running
-
-**Solution**: Check if the hook is configured
-
-```bash
-# Verify Claude Code config
-cat ~/.config/claude-code/settings.json
-
-# Test icg directly
-icg check --command "echo test"
-```
-
-### Problem: A Command Was Wrongly Denied
-
-**Solution**: Check the pattern explanation
-
-```bash
-icg explain --pattern <pattern-id> --show-redirect
-```
-
-If it's a false positive, file an issue:
-
-```bash
-gh issue create \
-  --title "False positive: <pattern-id>" \
-  --body "Command was: <command>" \
-  --repo jedarden/irreversible-command-gate
-```
-
-### Problem: Rule Packs Not Loading
-
-**Solution**: Check pack directory
-
-```bash
-# Verify packs exist
-ls -la /etc/icg/packs/
-
-# Test loading
-icg coverage --list --pack /etc/icg/packs
-```
-
----
-
-## Next Steps
-
-### Learn More
-
-- **Full Operator Guide**: `docs/operators/README.md` — Comprehensive operations manual
-- **Training Manual**: `docs/operators/training-manual.md` — 8-hour learning path
-- **Examples**: `docs/examples/README.md` — Real-world scenarios
-- **Onboarding Guide**: `docs/onboarding-guide.md` — Structured learning path
-
-### Advanced Setup
-
-- **Multi-harness support**: Protect both Claude Code and Codex CLI
-- **Repository overrides**: Allow exceptions for specific repos (see `icg override`)
-- **Custom rule packs**: Create rules for your tools (see `icg new-pack`)
-- **Trust pointer management**: Track trusted rule pack versions (see `icg trust`)
-
-### Contribute
-
-- **Report issues**: https://github.com/jedarden/irreversible-command-gate/issues
-- **Contributing guide**: See `docs/developers/README.md`
-- **Rule pack authoring**: See `docs/developers/rule-pack-best-practices.md`
-
----
-
-## Quick Reference Card
-
-### Essential Commands
-
-```bash
-icg --version                    # Show version
-icg coverage --list              # List rule packs
-icg check --command "<cmd>"     # Test a command
-icg check --stdin                # Test via PreToolUse JSON
-icg explain --pattern <id>      # Explain a pattern
-icg health status                # Check health
-```
-
-### Denial Response
-
-When you see a denial:
-
-1. **Read the message** — It explains why and what to do
-2. **Use the alternative** — Follow the redirect suggestion
-3. **Ask for help** — If unsure, check docs or file an issue
-
-### Response Types
-
-- **ALLOW** — Operation permitted
-- **DENIED** — Operation blocked (critical/high severity)
-- **REWRITE** — Safe alternative provided
-- **WARNING** — Allowed with context (tier 3 patterns)
-
-### Emergency Disable
-
-```bash
-# Last resort for genuine emergencies
-ICG_DISABLED=1 <command>
-```
-
-Document why you needed this and follow up with a review.
-
----
-
-## Support
-
-### Getting Help
-
-- **Documentation**: `docs/` directory
-- **Issues**: https://github.com/jedarden/irreversible-command-gate/issues
-- **Training Manual**: `docs/operators/training-manual.md`
-
-### Before Asking
-
-1. Check the denial message explanation
-2. Review the operator documentation
-3. Search existing GitHub issues
-4. Gather information: version, OS, exact command
-
----
-
-**Quick Start Guide Version**: 2.0
-**Last Updated**: 2026-08-17
-**For**: icg v0.1.0+
-
-Welcome to icg! You're now protected against destructive operations. If you have questions, start with the documentation or file an issue.
+Both evaluate the same rule packs. Never rely on the hook until
+`icg coverage --list` proves the packs load — an empty pack directory makes
+the hook fail open.
 
 ---
 
 ## Common Tasks
 
-### Task 1: Fixing a Denied Command
+### Task 1: Handle a denied command
 
-When a command is denied, follow these steps:
-
-1. **Read the denial message**
-   ```
-   DENIED: vault kv destroy is permanently destructive
-   Redirect: Use 'vault kv patch' to reconcile
-   ```
-
-2. **Use the suggested alternative**
+1. **Read the denial message** — it names the pack and pattern and states
+   what to do instead.
+2. **Get the full explanation**:
    ```bash
-   vault kv patch secret/app/api-key -remove=expired_field
+   icg explain --pattern openbao-destructive-verb --show-redirect
    ```
-
-3. **Verify the fix**
+3. **Use the suggested alternative** — e.g. for `bao kv destroy`, use the
+   soft-delete (`kv delete`) path the redirect describes, or have a human
+   run the destructive operation if it is genuinely intended.
+4. **See the incident history** for context:
    ```bash
-   vault kv get secret/app/api-key
+   icg status --denials --since 1h
    ```
 
-### Task 2: Checking Rule Pack Coverage
-
-See what operations are protected:
+### Task 2: Review denial history
 
 ```bash
-# List all rule packs
-icg coverage --list
+# Recent denials
+icg status --denials --since 1h
 
-# Output:
-# ✓ vault (8 patterns)
-# ✓ git (12 patterns)
-# ✓ image-tag (6 patterns)
-# ✓ storage-class (4 patterns)
-# ✓ beads (2 patterns)
+# Grouped by pattern
+icg status --denials --pattern-summary --since 1d
+
+# Machine-readable
+icg status --denials --since 7d --format json
 ```
 
-### Task 3: Updating Rule Packs
-
-Check for and apply updates:
+### Task 3: Health check
 
 ```bash
-# Check for updates
-icg update --check-only
+# Validate the configured Claude Code hook and every rule pack
+icg health --check-hooks
 
-# Apply updates (when ready)
-icg update
-```
-
-### Task 4: Health Check
-
-Verify icg is working correctly:
-
-```bash
-# Run health check
+# Complete operator health inventory
 icg health --verbose
 
-# Output:
-# ✓ icg binary: /usr/local/bin/icg v0.1.0
-# ✓ Rule packs: 5 packs loaded
-# ✓ Claude Code hook: Configured
-# ✓ State store: /var/lib/icg/state.db
+# Health/crash status only
+icg health status
 ```
 
----
+### Task 4: Update rule packs
 
-## What Gets Protected
+```bash
+# See what an update would do
+icg update --check-only
 
-### Critical Operations (Always Blocked)
+# Download and atomically activate the modular pack archive
+sudo icg update
+```
 
-- **Vault**: `vault kv destroy`, `vault policy delete`
-- **Git**: `git push --force`, `git push -f`
-- **Kubernetes**: `kubectl delete pvc` (persistent data)
-- **Images**: Using `:latest` tags
-- **Storage**: Using `ssd` storage class on Rackspace Spot
-
-### Safe Operations (Always Allowed)
-
-- **Vault**: `vault kv get`, `vault kv list`
-- **Git**: `git status`, `git log`, `git diff`
-- **Kubernetes**: `kubectl get`, `kubectl describe`, `kubectl logs`
-- **Images**: Using semantic version tags (`v1.2.3`)
-- **Storage**: Using `sata` or `sata-large`
+`icg update` downloads the exact `icg-packs.tar.gz` release asset, validates
+every manifest, atomically swaps the whole `/etc/icg/packs` directory, and
+retains the previous one at `/etc/icg/packs.previous/` for rollback. It
+requires a trust pointer set to the approved release — the full procedure is
+in `docs/operators/deployment-guide.md`.
 
 ---
 
 ## Example Workflows
 
-### Workflow 1: Daily Development
+### Workflow 1: Daily development
 
 ```bash
-# Morning: Check health
-icg health
+# Morning: confirm the guard is armed
+icg coverage --list
+icg health --check-hooks
 
-# During work: View denials periodically
-icg status --denials --since 1h
+# During work: test a borderline command before running it
+icg check --command "docker volume rm pgdata"
 
-# Evening: Review patterns
-icg status --denials --pattern-summary --since 1d
+# End of day: skim what was blocked
+icg status --denials --since 1h --pattern-summary
 ```
 
-### Workflow 2: Handling a Denial
+### Workflow 2: Handling a force-push rewrite
 
 ```bash
-# Step 1: See the denial
-# Agent output: DENIED: git push --force would rewrite public history
+# The agent tries:
+git push --force origin main
 
-# Step 2: Understand why
-icg explain --pattern git-force-push
+# The hook returns updatedInput and the harness retries:
+git push origin main
 
-# Step 3: Use the alternative
-git merge origin/main
+# If the push is rejected because the remote is ahead, reconcile —
+# never force-push:
+git pull --no-rebase
 git push origin main
 ```
 
-### Workflow 3: Emergency Bypass
+### Workflow 3: Emergency bypass
 
 ```bash
-# ONLY for genuine emergencies:
+# Last resort, one invocation only:
 ICG_DISABLED=1 <dangerous-command>
+```
 
-# Follow up: File incident report
+`ICG_DISABLED` is an operator-controlled escape hatch that disables
+enforcement for a single invocation. It prints a warning and must be
+justified afterward — export the denial record for the review:
+
+```bash
 icg export-denial <telemetry-id> > incident.txt
 ```
 
@@ -613,25 +459,29 @@ icg export-denial <telemetry-id> > incident.txt
 
 ## Troubleshooting
 
-### Problem: icg Doesn't Seem to Be Running
-
-**Solution**: Check if the hook is configured
+### icg doesn't seem to be running
 
 ```bash
+# Validate the configured hook
 icg health --check-hooks
+
+# Test the hook exactly as the harness invokes it
+echo '{"toolName":"Bash","toolInput":{"command":"bao kv destroy secret/test"}}' \
+  | icg hook
 ```
 
-If not configured, see "Initial Setup" above.
+If the hook returns `"permissionDecision":"allow"` for that input, the pack
+directory is not loading: the hook fails open when `/etc/icg/packs` is
+absent. Check `icg coverage --list` and
+[Step 1](#step-1-install-rule-packs).
 
-### Problem: A Command Was Wrongly Denied
-
-**Solution**: Check the pattern explanation
+### A command was wrongly denied
 
 ```bash
-icg explain --pattern <pattern-id>
+icg explain --pattern <pattern-id> --show-redirect
 ```
 
-If it's a false positive, file an issue:
+If it is a false positive, file an issue:
 
 ```bash
 gh issue create \
@@ -640,93 +490,71 @@ gh issue create \
   --repo jedarden/irreversible-command-gate
 ```
 
-### Problem: Can't Update Rule Packs
-
-**Solution**: Check permissions
+### Rule packs not loading
 
 ```bash
-# Rule pack directory must stay root-owned and read-only to the agent
-sudo ls -la /etc/icg/packs
+# Verify the directory and its ownership
+ls -la /etc/icg/packs/
 
-# Fix permissions if they drifted; never hand ownership to the guarded user
+# List what icg can actually see
+icg coverage --list --pack /etc/icg/packs
+
+# Fix drifted ownership; the pack directory stays root-owned
 sudo chown -R root:root /etc/icg/packs && sudo chmod -R a=rX /etc/icg/packs
 ```
+
+More depth: `docs/operators/troubleshooting.md`.
+
+---
+
+## Quick Reference
+
+```bash
+icg --version                     # icg 0.1.0
+icg coverage --list               # list loaded rule packs
+icg check --command "<cmd>"       # test a command string
+icg check --stdin                 # test a PreToolUse JSON document
+icg check --file <file-or-dash>   # test file content ('-' reads stdin)
+icg explain --pattern <id>        # explain a pattern (--show-redirect, --show-regex)
+icg hook                          # hook mode (harnesses; --rule-pack)
+icg status --denials --since 1h   # denial history (--pattern-summary, --format json)
+icg health --check-hooks          # validate hook + packs (--verbose)
+icg update --check-only           # check for pack updates
+```
+
+Outcomes: `ALLOW` (no rule matched) · `REWRITE` (safe alternative supplied) ·
+`DENIED` (blocked with explanation). Emergency escape hatch:
+`ICG_DISABLED=1`.
 
 ---
 
 ## Next Steps
 
-### Learn More
+- **Deployment**: `docs/operators/deployment-guide.md` — the full production
+  procedure (ownership model, trust pointers, updater, offline bootstrap)
+- **Operator guide**: `docs/operators/README.md`
+- **Denial messages**: `docs/operators/deny-messages.md`
+- **Troubleshooting**: `docs/operators/troubleshooting.md`
+- **Training**: `docs/operators/training-manual.md`
+- **Examples**: `docs/examples/README.md`
+- **Onboarding**: `docs/onboarding-guide.md`
 
-- **Full Operator Guide**: `docs/operators/README.md` - Comprehensive operations manual
-- **Denial Messages**: `docs/operators/deny-messages.md` - Complete denial reference
-- **Examples**: `docs/examples/README.md` - Real-world scenarios
-
-### Advanced Setup
-
-- **Multi-harness support**: Protect both Claude Code and Codex CLI
-- **Repository overrides**: Allow exceptions for specific repos
-- **Custom rule packs**: Create rules for your tools
-
-### Contribute
-
-- **Report issues**: https://github.com/jedarden/irreversible-command-gate/issues
-- **Contributing guide**: See `docs/developers/README.md`
-- **Rule pack authoring**: See `docs/developers/rule-pack-best-practices.md`
-
----
-
-## Quick Reference Card
-
-### Common Commands
-
-```bash
-icg --version                    # Show version
-icg health                      # Check health
-icg check --command "<cmd>"     # Test a command
-icg status --denials            # View recent denials
-icg explain --pattern <id>      # Explain a pattern
-icg update --check-only         # Check for updates
-```
-
-### Denial Response
-
-When you see a denial:
-
-1. **Read the message** - It explains why and what to do
-2. **Follow the redirect** - Use the suggested alternative
-3. **Ask for help** - If unsure, check docs or file an issue
-
-### Emergency Disable
-
-```bash
-# Last resort for genuine emergencies
-ICG_DISABLED=1 <command>
-```
-
-Document why you needed this and follow up with a review.
-
----
+Advanced surfaces, each with its own subcommand help: repository exceptions
+(`icg override`), authoring packs (`icg new-pack`, plus
+`docs/developers/rule-pack-best-practices.md`), trusted release references
+(`icg trust`), and PATH-wrapper symlinks (`icg install`).
 
 ## Support
 
-### Getting Help
-
 - **Documentation**: `docs/` directory
 - **Issues**: https://github.com/jedarden/irreversible-command-gate/issues
-- **Operator Guide**: `docs/operators/README.md`
 
-### Before Asking
-
-1. Check the denial message explanation
-2. Review the operator documentation
-3. Search existing GitHub issues
-4. Gather information: version, OS, exact command
+Before asking: check the denial message (it names pack and pattern), run
+`icg explain --pattern <id> --show-redirect`, and gather the version, OS,
+and exact command.
 
 ---
 
-**Quick Start Guide Version**: 1.0
-**Last Updated**: 2026-08-16
-**For**: icg v0.1.0+
-
-Welcome to icg! You're now protected against destructive operations. If you have questions, start with the documentation or file an issue.
+**Quick Start Guide Version**: 3.0
+**Last Updated**: 2026-08-25
+**For**: icg v0.1.0
