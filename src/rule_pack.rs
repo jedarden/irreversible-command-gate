@@ -482,9 +482,11 @@ pub fn load_and_merge_packs_from_dir<P: AsRef<Path>>(dir: P) -> Result<Pack> {
     }
 
     if !skipped_packs.is_empty() {
-        eprintln!("ℹ️  Excluded {} unconditional pack(s) from merged artifact: {}",
+        eprintln!(
+            "ℹ️  Excluded {} unconditional pack(s) from merged artifact: {}",
             skipped_packs.len(),
-            skipped_packs.join(", "));
+            skipped_packs.join(", ")
+        );
     }
 
     merge_packs(packs)

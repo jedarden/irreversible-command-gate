@@ -65,6 +65,7 @@ fn installation_scenario_2_verify_rule_packs_load() {
         "packs/image-tag.json",
         "packs/storage-class.json",
         "packs/beads.json",
+        "packs/secrets.json",
     ];
 
     for pack_path in packs {

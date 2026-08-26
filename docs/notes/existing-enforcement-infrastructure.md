@@ -17,14 +17,15 @@ project's predecessor is a single file.
 ## What `org-rule-guard.py` actually does
 
 Verified by reading the source directly (`~/.claude/hooks/org-rule-guard.py`,
-204 lines), not CLAUDE.md's summary of it:
+332 lines as of 2026-08-26), not CLAUDE.md's summary of it:
 
 - **Fails open by design**, explicitly: any unparseable input or internal
   exception exits 0 (allow). Rationale stated in its own docstring — "a
   NEEDLE fleet must never be wedged by this hook — a missed violation is
   recoverable, a stuck fleet is not."
-- **Five rules total**, all hardcoded as module-level regex/set constants
-  in one Python file, no config file, no plugin architecture:
+- **Six rules total** (five when this note was first written; the sixth is
+  a stopgap added 2026-08-14), all hardcoded as module-level regex/set
+  constants in one Python file, no config file, no plugin architecture:
   1. No `.github/workflows/*` writes.
   2. No `kind: Job`/`kind: CronJob` in `.yaml`/`.yml` writes (real manifest
      lines only, via a line-anchored regex — comments don't trip it).
@@ -39,11 +40,23 @@ Verified by reading the source directly (`~/.claude/hooks/org-rule-guard.py`,
      private key header), with placeholder detection (`example`, `your`,
      `changeme`, all-one-character bodies) and a `gitleaks:allow` escape
      hatch.
-- Rule 5 only fires on the `Write`/`Edit` path (`check_write` →
-  `check_secrets`). **The `Bash` path never calls `check_secrets` at all** —
-  only `check_bash`, which checks kubectl verbs and nothing else. A
-  credential value written via `Bash` (`echo "ghp_..." >> notes.md`, a
-  heredoc, a `curl -d` body) is invisible to this hook entirely.
+  6. No `git commit -a`/`--all` and no bare `git commit -m` without a
+     trailing pathspec — a stopgap (2026-08-14, ahead of this project's
+     own commit-without-pathspec rule, `irrevers-57af0680`) so a
+     precisely-scoped `git add` can't be defeated by an imprecise
+     `git commit` in a shared checkout.
+- Rule 5 originally fired only on the `Write`/`Edit` path — **the `Bash`
+  path didn't call `check_secrets` at all**, which was the specific gap
+  this project's `secrets` pack was scoped to close. That gap no longer
+  exists in the hook itself: a stopgap (2026-08-26, ahead of this
+  project's pack) added `check_secrets` at the top of `check_bash`, so
+  `echo "ghp_..." >> notes.md`, heredocs, and `curl -d` bodies are now
+  scanned there too. During coexistence both implementations run on the
+  Bash channel — the hook's per-match placeholder exemption and this
+  project's pack-wide safe-pattern skip differ only on a command carrying
+  both a fixture and a real token (see `tests/secrets_pack_tests.rs`'s
+  `safe_pattern_skip_is_pack_wide`), where the hook is the stricter of
+  the two.
 
 ## Coverage gap analysis
 
@@ -62,7 +75,7 @@ prohibitions" section (eleven items):
 | No `needle cleanup` | **No** |
 | No touching bare NATO tmux sessions | **No** |
 | No per-worker git worktrees | **No** (arguably not mechanically detectable as a single command anyway — it's a workflow pattern, not one invocation) |
-| No committed credential values | **Yes on Write/Edit, no on Bash** (see above) |
+| No committed credential values | **Yes** — Write/Edit since inception; the Bash channel via a 2026-08-26 stopgap in the hook itself, plus this project's `secrets` pack (Phase 1) as the permanent form |
 
 **Zero coverage for HashiCorp Vault/OpenBao destructive operations** —
 `vault kv destroy`, `bao secrets disable`, `vault policy delete`, token/lease
@@ -91,8 +104,14 @@ absorbs pieces of the five rules above rather than avoiding them:
   covers both halves of rule 3, not just the gap.
 - **Rule 5 (credential values)** — Phase 1 reuses `org-rule-guard.py`'s own
   secret-scanning regex machinery to close exactly the Bash-channel gap
-  documented above (rule 5 only fires on the Write/Edit path today). The
-  Write/Edit path itself isn't moving yet.
+  documented above. Shipped as the `secrets` pack: the same six
+  credential-shape regexes, hook-front-end-only (the PATH-wrapper's
+  argv[0]-shadow dispatch structurally cannot scan a command line for a
+  binary it doesn't shadow). A stopgap in `org-rule-guard.py` itself
+  (2026-08-26, added ahead of the pack landing) covers the same channel in
+  the interim, so the two run redundantly during coexistence — the pack is
+  the permanent form; the stopgap retires with the hook. The Write/Edit
+  path itself isn't moving yet.
 - **Rule 4 (mutating `kubectl`)** — deliberately excluded, not scheduled for
   absorption at all: plan.md's "Explicitly not attempted" phase item rules
   out narrowing the blanket kubectl-mutation block, because doing so
