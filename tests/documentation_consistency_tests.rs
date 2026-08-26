@@ -179,11 +179,7 @@ fn quick_start_makes_no_kubectl_coverage_claim() {
     // kubectl is deliberately not a pack (plan.md "Explicitly not
     // attempted"): mutating-verb blocking stays org-rule-guard.py's job.
     // These exact claims are what the 2026-08-25 audit found in the wild.
-    for stale in [
-        "kubectl delete pvc",
-        "kubectl-delete-pvc",
-        "**Kubernetes**",
-    ] {
+    for stale in ["kubectl delete pvc", "kubectl-delete-pvc", "**Kubernetes**"] {
         assert!(
             !doc.contains(stale),
             "quick-start.md must not claim kubectl coverage ({stale:?}): \
@@ -215,7 +211,10 @@ fn quick_start_pack_inventory_matches_the_shipped_packs() {
             }
         })
         .collect();
-    assert!(!shipped_ids.is_empty(), "packs/ directory should not be empty");
+    assert!(
+        !shipped_ids.is_empty(),
+        "packs/ directory should not be empty"
+    );
     shipped_ids.sort();
 
     for id in &shipped_ids {
@@ -228,7 +227,12 @@ fn quick_start_pack_inventory_matches_the_shipped_packs() {
 
     // Fictional inventories the audit found: a "vault" pack id and pattern
     // counts that never existed. The OpenBao pack's id is `openbao`.
-    for stale in ["vault (", "Pack: vault", "vault-kv-destroy", "(12 patterns)"] {
+    for stale in [
+        "vault (",
+        "Pack: vault",
+        "vault-kv-destroy",
+        "(12 patterns)",
+    ] {
         assert!(
             !doc.contains(stale),
             "quick-start.md still cites the fictional inventory {stale:?}"

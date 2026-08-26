@@ -604,7 +604,10 @@ fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
         .count();
-    assert!(pack_files > 0, "packs directory should contain at least one pack file");
+    assert!(
+        pack_files > 0,
+        "packs directory should contain at least one pack file"
+    );
 
     // Generate a manifest for the actual packs being released
     let actual_manifest = temp.path().join("actual-manifest.json");
@@ -620,10 +623,10 @@ fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
     );
 
     // Load and verify the manifest
-    let manifest_content = fs::read_to_string(&actual_manifest)
-        .expect("generated manifest should be readable");
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
-        .expect("generated manifest should be valid JSON");
+    let manifest_content =
+        fs::read_to_string(&actual_manifest).expect("generated manifest should be readable");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_content).expect("generated manifest should be valid JSON");
 
     // Verify manifest structure
     assert_eq!(manifest["version"], "v1", "manifest should use version v1");
@@ -668,10 +671,10 @@ fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
     );
 
     // Verify the suite was generated
-    let suite_content = fs::read_to_string(&suite_path)
-        .expect("regression suite should be readable");
-    let suite: serde_json::Value = serde_json::from_str(&suite_content)
-        .expect("regression suite should be valid JSON");
+    let suite_content =
+        fs::read_to_string(&suite_path).expect("regression suite should be readable");
+    let suite: serde_json::Value =
+        serde_json::from_str(&suite_content).expect("regression suite should be valid JSON");
 
     // The suite should have cases (unless packs have no guarded patterns)
     let cases = suite.get("cases").and_then(|c| c.as_array());

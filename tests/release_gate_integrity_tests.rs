@@ -46,16 +46,15 @@ fn mutating_real_pack_causes_coverage_gate_to_fail() {
         .and_then(|v| v.as_array_mut())
     {
         guarded_patterns.retain(|pattern| {
-            pattern
-                .get("id")
-                .and_then(|id| id.as_str())
-                .unwrap_or("")
-                != "git-force-push"
+            pattern.get("id").and_then(|id| id.as_str()).unwrap_or("") != "git-force-push"
         });
     }
 
-    fs::write(&mutated_pack, serde_json::to_string_pretty(&pack_value).expect("pack should serialize"))
-        .expect("mutated pack should be written");
+    fs::write(
+        &mutated_pack,
+        serde_json::to_string_pretty(&pack_value).expect("pack should serialize"),
+    )
+    .expect("mutated pack should be written");
 
     // Build merged pack from the mutated packs (this is what CI does)
     let current_merged = temp.path().join("current-merged.json");
@@ -118,15 +117,12 @@ fn widening_safe_pattern_in_real_pack_causes_coverage_gate_to_fail() {
         serde_json::from_str(&pack_content).expect("pack should be valid JSON");
 
     // Widen safe-git-status from "^git status" to ".*" (catch-all)
-    if let Some(safe_patterns) = pack_value.get_mut("safe_patterns").and_then(|v| v.as_array_mut())
+    if let Some(safe_patterns) = pack_value
+        .get_mut("safe_patterns")
+        .and_then(|v| v.as_array_mut())
     {
         for pattern in safe_patterns.iter_mut() {
-            if pattern
-                .get("id")
-                .and_then(|id| id.as_str())
-                .unwrap_or("")
-                == "safe-git-status"
-            {
+            if pattern.get("id").and_then(|id| id.as_str()).unwrap_or("") == "safe-git-status" {
                 if let Some(regex) = pattern.get_mut("regex") {
                     *regex = serde_json::json!(".*");
                 }
@@ -134,8 +130,11 @@ fn widening_safe_pattern_in_real_pack_causes_coverage_gate_to_fail() {
         }
     }
 
-    fs::write(&mutated_pack, serde_json::to_string_pretty(&pack_value).expect("pack should serialize"))
-        .expect("mutated pack should be written");
+    fs::write(
+        &mutated_pack,
+        serde_json::to_string_pretty(&pack_value).expect("pack should serialize"),
+    )
+    .expect("mutated pack should be written");
 
     // Build merged pack from the mutated packs (this is what CI does)
     let current_merged = temp.path().join("current-merged.json");
@@ -187,9 +186,13 @@ fn pack_manifest_provides_cryptographic_verification() {
     fs::create_dir(&packs_dir).expect("packs directory should be created");
 
     // Copy a real pack to the temporary workspace
-    let real_storage_class_pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/storage-class.json");
-    fs::copy(&real_storage_class_pack, packs_dir.join("storage-class.json"))
-        .expect("pack should be copied");
+    let real_storage_class_pack =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/storage-class.json");
+    fs::copy(
+        &real_storage_class_pack,
+        packs_dir.join("storage-class.json"),
+    )
+    .expect("pack should be copied");
 
     // Generate manifest
     let manifest_path = temp.path().join("manifest.json");
@@ -207,7 +210,8 @@ fn pack_manifest_provides_cryptographic_verification() {
 
     // Verify the manifest contains SHA-256 hashes
     let manifest_content = fs::read_to_string(&manifest_path).expect("manifest should be readable");
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_content).expect("manifest should be valid JSON");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_content).expect("manifest should be valid JSON");
 
     assert_eq!(manifest["version"], "v1");
     assert!(manifest["generated_at"].is_string());
@@ -216,10 +220,7 @@ fn pack_manifest_provides_cryptographic_verification() {
     if let Some(packs) = manifest.get("packs").and_then(|p| p.as_object()) {
         for (_pack_id, entry) in packs {
             let sha256 = entry.get("sha256").and_then(|s| s.as_str());
-            assert!(
-                sha256.is_some(),
-                "pack entry should have SHA-256 hash"
-            );
+            assert!(sha256.is_some(), "pack entry should have SHA-256 hash");
             let hash = sha256.unwrap();
             assert_eq!(hash.len(), 64, "SHA-256 hash should be 64 hex characters");
             assert!(
