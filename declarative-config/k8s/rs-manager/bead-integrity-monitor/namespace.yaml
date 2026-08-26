@@ -1,0 +1,8 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bead-integrity-monitor
+  labels:
+    name: bead-integrity-monitor
+    component: monitoring

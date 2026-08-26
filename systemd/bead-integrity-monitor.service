@@ -1,0 +1,82 @@
+# Bead Integrity Monitor Service
+#
+# Continuous bead database health monitoring with auto-repair and Prometheus metrics.
+#
+# ## Installation
+#
+# ```bash
+# sudo cp systemd/bead-integrity-monitor.service /etc/systemd/system/
+# sudo systemctl daemon-reload
+# sudo systemctl enable bead-integrity-monitor
+# sudo systemctl start bead-integrity-monitor
+# ```
+#
+# ## Configuration
+#
+# Create /etc/default/bead-integrity-monitor with:
+#
+# ```bash
+# ICG_WORKSPACE_PATH=/path/to/workspace
+# ICG_CHECK_INTERVAL_SECONDS=300
+# ICG_ALERT_THRESHOLD=10
+# ICG_AUTO_REPAIR_ENABLED=true
+# ICG_MONITOR_HOST=0.0.0.0
+# ICG_MONITOR_PORT=9095
+# ```
+#
+# ## Management
+#
+# ```bash
+# sudo systemctl status bead-integrity-monitor
+# sudo journalctl -u bead-integrity-monitor -f
+# sudo systemctl restart bead-integrity-monitor
+# ```
+
+[Unit]
+Description=Bead Integrity Verification Service
+Documentation=https://github.com/jedarden/irreversible-command-gate
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=icg
+Group=icg
+WorkingDirectory=/home/coding/irreversible-command-gate
+
+# Environment file for configuration
+EnvironmentFile=/etc/default/bead-integrity-monitor
+# Fallback to defaults if environment file doesn't exist
+Environment=ICG_WORKSPACE_PATH=/home/coding/irreversible-command-gate
+Environment=ICG_CHECK_INTERVAL_SECONDS=300
+Environment=ICG_ALERT_THRESHOLD=10
+Environment=ICG_AUTO_REPAIR_ENABLED=true
+Environment=ICG_MONITOR_HOST=0.0.0.0
+Environment=ICG_MONITOR_PORT=9095
+
+# Main binary
+ExecStart=/usr/local/bin/bead-integrity-monitor
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/coding/irreversible-command-gate/.beads
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=512M
+CPUQuota=100%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bead-integrity-monitor
+
+[Install]
+WantedBy=multi-user.target

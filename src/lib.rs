@@ -28,3 +28,6 @@ pub mod value_derivation;
 
 // Bead dependency validator (standalone tool for bead-rs dependency issues)
 pub mod bead_dependency_validator;
+
+// Bead integrity verification service (continuous monitoring)
+pub mod bead_integrity_monitor;
