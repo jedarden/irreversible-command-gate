@@ -114,16 +114,51 @@ pub fn generate_regression_suite(pack: &Pack) -> Result<RegressionSuite> {
 /// Generate a suite from a JSON rule-pack manifest on disk.
 pub fn generate_regression_suite_from_manifest<P: AsRef<Path>>(path: P) -> Result<RegressionSuite> {
     let path = path.as_ref();
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read rule pack from {}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse JSON from {}", path.display()))?;
-    let pack: Pack = serde_json::from_value(value.clone())
-        .with_context(|| format!("failed to parse rule pack from {}", path.display()))?;
-    let examples = example_inputs_from_manifest(&value)?;
+    let (pack, examples) = load_manifest_and_examples(path)?;
 
     generate_regression_suite_with_inputs(&pack, &examples)
         .with_context(|| format!("failed to generate suite for {}", path.display()))
+}
+
+/// Generate the fixed deny corpus used to gate a production pack release.
+///
+/// A release ships the modular `packs/` directory, so this reads each source
+/// manifest directly instead of serializing it through the legacy merged
+/// `rule-pack.json` compatibility artifact. That preserves hand-authored
+/// regression examples, which are intentionally not part of the runtime Pack
+/// schema. Only enabled, destructive deny rules with a regex check participate:
+/// predicate rules require live state and UpdatedInput rules do not deny.
+///
+/// `path` may name one manifest or a directory of JSON manifests. Directory
+/// entries are processed in lexical order to keep the emitted artifact stable.
+pub fn generate_release_regression_suite<P: AsRef<Path>>(path: P) -> Result<RegressionSuite> {
+    let paths = release_manifest_paths(path.as_ref())?;
+    let mut cases = Vec::new();
+
+    for path in paths {
+        let (mut pack, examples) = load_manifest_and_examples(&path)?;
+        pack.guarded_patterns
+            .retain(requires_release_regression_case);
+        if pack.guarded_patterns.is_empty() {
+            continue;
+        }
+
+        let suite = generate_regression_suite_with_inputs(&pack, &examples)
+            .with_context(|| format!("failed to generate release suite for {}", path.display()))?;
+        cases.extend(suite.cases);
+    }
+
+    if cases.is_empty() {
+        bail!(
+            "no enabled destructive deny regex rules found in {}",
+            path.as_ref().display()
+        );
+    }
+
+    Ok(RegressionSuite {
+        version: SUITE_VERSION,
+        cases,
+    })
 }
 
 /// Generate suites for several manifests, preserving manifest and pattern
@@ -140,6 +175,58 @@ pub fn generate_regression_suite_from_manifests<P: AsRef<Path>>(
         version: SUITE_VERSION,
         cases,
     })
+}
+
+fn load_manifest_and_examples(
+    path: &Path,
+) -> Result<(Pack, std::collections::HashMap<String, RegressionInput>)> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read rule pack from {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse JSON from {}", path.display()))?;
+    let pack: Pack = serde_json::from_value(value.clone())
+        .with_context(|| format!("failed to parse rule pack from {}", path.display()))?;
+    let examples = example_inputs_from_manifest(&value)?;
+    Ok((pack, examples))
+}
+
+fn release_manifest_paths(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    if !path.is_dir() {
+        bail!(
+            "release regression source {} does not exist",
+            path.display()
+        );
+    }
+
+    let mut paths = fs::read_dir(path)
+        .with_context(|| format!("failed to read release pack directory {}", path.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.retain(|entry| {
+        entry.is_file()
+            && entry.extension().and_then(|extension| extension.to_str()) == Some("json")
+    });
+    paths.sort();
+    if paths.is_empty() {
+        bail!(
+            "release pack directory {} contains no JSON manifests",
+            path.display()
+        );
+    }
+    Ok(paths)
+}
+
+fn requires_release_regression_case(pattern: &GuardedPattern) -> bool {
+    pattern.enabled
+        && pattern.destructive
+        && pattern.redirect.channel == Channel::Deny
+        && matches!(
+            &pattern.check,
+            Check::CommandRegex { .. } | Check::ContentRegex { .. }
+        )
 }
 
 /// Verify a previously generated suite against a rule pack.

@@ -14,9 +14,10 @@ use icg::{
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{
-    generate_regression_suite_from_manifest, prune_recorded_cases,
-    prune_recorded_cases_against_packs, record_denial_as_test, write_regression_suite,
-    ExpectedVerdict, RecordOutcome, RegressionTestCase, DEFAULT_RECORDED_CASE_LIMIT,
+    generate_regression_suite_from_manifest, generate_release_regression_suite,
+    prune_recorded_cases, prune_recorded_cases_against_packs, record_denial_as_test,
+    write_regression_suite, ExpectedVerdict, RecordOutcome, RegressionTestCase,
+    DEFAULT_RECORDED_CASE_LIMIT,
 };
 use rollback::{check_and_rollback, PoisonPillConfig};
 use std::ffi::{OsStr, OsString};
@@ -70,8 +71,15 @@ enum Commands {
     },
     /// Generate and validate the fixed deny-regression suite for a rule pack
     RegressionSuite {
-        /// Path to the rule-pack JSON manifest
+        /// Path to the rule-pack JSON manifest, or a pack directory with --release-gate
         manifest: PathBuf,
+        /// Generate the production release corpus from modular source packs.
+        ///
+        /// This retains source-only examples and includes enabled destructive
+        /// deny regex rules only; predicates and UpdatedInput rules are covered
+        /// by their dedicated engine tests.
+        #[arg(long)]
+        release_gate: bool,
         /// Optional path for the generated JSON suite (stdout by default)
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -1475,12 +1483,24 @@ fn main() -> Result<()> {
         }
         Commands::RegressionSuite {
             manifest,
+            release_gate,
             output,
             override_file,
             repository,
             trusted_ref,
         } => {
-            let suite = generate_regression_suite_from_manifest(&manifest)?;
+            if release_gate
+                && (override_file.is_some() || repository.is_some() || trusted_ref.is_some())
+            {
+                anyhow::bail!(
+                    "--release-gate cannot be combined with override regression arguments"
+                );
+            }
+            let suite = if release_gate {
+                generate_release_regression_suite(&manifest)?
+            } else {
+                generate_regression_suite_from_manifest(&manifest)?
+            };
             match (override_file, repository, trusted_ref) {
                 (None, None, None) => {}
                 (Some(path), Some(repository), Some(trusted_ref)) => {

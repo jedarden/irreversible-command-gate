@@ -11,7 +11,7 @@ use flate2::Compression;
 use icg::coverage::{load_rule_pack, run_release_integrity_diff};
 use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::regression::{verify_regression_suite, ExpectedVerdict, RegressionSuite};
-use icg::rule_pack::Pack;
+use icg::rule_pack::{Channel, Check, Pack};
 use icg::trust_pointer::TrustPointerStore;
 use icg::update::{run_update, UpdateCheckState, UpdateConfig};
 use serde_json::{json, Value};
@@ -622,28 +622,28 @@ fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
         "packs directory should contain at least one pack file"
     );
 
-    // Build the merged rule pack the regression-suite command accepts, using
-    // the actual source packs that will be released.
-    let actual_merged_pack = temp.path().join("actual-merged-pack.json");
-    let merge_output = run_icg(&[
-        "build-pack".to_string(),
-        format!("--pack-dir={}", real_packs_dir.display()),
-        format!("--output={}", actual_merged_pack.display()),
+    // The release gate must read the modular source manifests directly. The
+    // production release packages this same directory, whereas the legacy
+    // merged compatibility artifact deliberately omits source-only examples.
+    let suite_path = temp.path().join("icg-release-regression-suite.json");
+    let suite_output = run_icg(&[
+        "regression-suite".to_string(),
+        real_packs_dir.display().to_string(),
+        "--release-gate".to_string(),
+        "--output".to_string(),
+        suite_path.display().to_string(),
     ]);
     assert!(
-        merge_output.status.success(),
-        "merged pack generation for actual packs should succeed: {}",
-        String::from_utf8_lossy(&merge_output.stderr)
+        suite_output.status.success(),
+        "release regression suite generation should succeed: {}",
+        String::from_utf8_lossy(&suite_output.stderr)
     );
+    let suite: RegressionSuite = serde_json::from_slice(
+        &fs::read(&suite_path).expect("release regression suite should exist"),
+    )
+    .expect("release regression suite should be valid JSON");
 
-    // Build a fixed-corpus input from each actual modular pack. Keep only
-    // destructive deny regexes: stateful predicates require live session or
-    // remote state, and updated-input rules deliberately do not deny. The
-    // source JSON is retained so a hand-authored example_command survives the
-    // check instead of being dropped by the legacy merged artifact.
-    let corpus_dir = temp.path().join("release-regression-packs");
-    fs::create_dir_all(&corpus_dir).expect("regression corpus directory should be created");
-    let mut generated_case_count = 0;
+    let mut expected_case_count = 0;
     for entry in fs::read_dir(&real_packs_dir).expect("packs directory should be readable") {
         let entry = entry.expect("pack directory entry should be readable");
         let path = entry.path();
@@ -651,72 +651,53 @@ fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
             continue;
         }
 
-        let mut pack: Value =
-            serde_json::from_slice(&fs::read(&path).expect("source pack should be readable"))
-                .expect("source pack should be valid JSON");
-        let guarded_patterns = pack["guarded_patterns"]
-            .as_array_mut()
-            .expect("source pack should contain guarded_patterns");
-        guarded_patterns.retain(|pattern| {
-            pattern["destructive"] == Value::Bool(true)
-                && pattern["redirect"]["channel"] == Value::String("deny".to_string())
-                && pattern["type"] != Value::String("predicate".to_string())
-        });
-        if guarded_patterns.is_empty() {
-            continue;
-        }
-
-        let corpus_pack = corpus_dir.join(
-            path.file_name()
-                .expect("source pack should have a file name"),
+        let pack = icg::rule_pack::load_pack(&path).expect("source pack should load");
+        let eligible = |pattern: &icg::rule_pack::GuardedPattern| {
+            pattern.enabled
+                && pattern.destructive
+                && pattern.redirect.channel == Channel::Deny
+                && matches!(
+                    &pattern.check,
+                    Check::CommandRegex { .. } | Check::ContentRegex { .. }
+                )
+        };
+        let expected_pattern_ids = pack
+            .guarded_patterns
+            .iter()
+            .filter(|pattern| eligible(pattern))
+            .map(|pattern| pattern.id.clone())
+            .collect::<Vec<_>>();
+        let cases = suite
+            .cases
+            .iter()
+            .filter(|case| case.pack_id == pack.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cases
+                .iter()
+                .map(|case| case.pattern_id.clone())
+                .collect::<Vec<_>>(),
+            expected_pattern_ids,
+            "release suite should cover exactly the eligible source rules in {}",
+            path.display()
         );
-        fs::write(
-            &corpus_pack,
-            serde_json::to_vec_pretty(&pack).expect("filtered pack should serialize"),
-        )
-        .expect("filtered pack should be written");
-
-        let suite_path = corpus_pack.with_extension("suite.json");
-        let suite_output = run_icg(&[
-            "regression-suite".to_string(),
-            corpus_pack.display().to_string(),
-            format!("--output={}", suite_path.display()),
-        ]);
-        assert!(
-            suite_output.status.success(),
-            "regression suite generation for actual pack {} should succeed: {}",
-            path.display(),
-            String::from_utf8_lossy(&suite_output.stderr)
-        );
-
-        let suite: Value = serde_json::from_slice(
-            &fs::read(&suite_path).expect("regression suite should be readable"),
-        )
-        .expect("regression suite should be valid JSON");
-        let cases = suite["cases"]
-            .as_array()
-            .expect("regression suite should contain cases");
-        generated_case_count += cases.len();
-        for case in cases {
-            assert!(
-                case.get("pack_id").and_then(|i| i.as_str()).is_some(),
-                "regression case should have pack_id"
-            );
-            assert!(
-                case.get("pattern_id").and_then(|i| i.as_str()).is_some(),
-                "regression case should have pattern_id"
-            );
-            assert!(
-                case.get("expected").and_then(|e| e.as_str()) == Some("deny"),
-                "regression case should expect 'deny' verdict"
+        expected_case_count += cases.len();
+        if !cases.is_empty() {
+            let mut release_pack = pack.clone();
+            release_pack.guarded_patterns.retain(eligible);
+            assert_denies_generated_cases(
+                release_pack,
+                &RegressionSuite {
+                    version: suite.version,
+                    cases,
+                },
             );
         }
     }
     assert!(
-        generated_case_count > 0,
+        expected_case_count > 0,
         "actual source packs should produce fixed deny regression cases"
     );
-
-    // This test passes: the CI workflow now gates the actual pack bytes,
-    // not static fixtures that don't match what's released.
+    assert_eq!(suite.cases.len(), expected_case_count);
 }
