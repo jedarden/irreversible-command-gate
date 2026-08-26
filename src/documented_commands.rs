@@ -847,13 +847,107 @@ fn print_pattern_summary(denials: &[OperatorDenial], since: &str) {
 }
 
 fn print_denial_trend(denials: &[OperatorDenial], since: &str) {
-    let total = denials.len();
+    if denials.is_empty() {
+        println!("DENIAL TRENDS (last {since})");
+        println!("════════════════════════════════════════════════════════════════");
+        println!("No denials recorded in this time period.");
+        println!("Trend: ✅ Excellent (no risky patterns detected)");
+        return;
+    }
+
+    // Parse time window and determine grouping strategy
+    let (num_periods, period_name, period_hours) = match parse_time_window(since) {
+        Some((hours, _name)) if hours <= 48 => (4, "Hour", 1),          // For short windows, use hourly
+        Some((hours, _name)) if hours <= 168 => (7, "Day", 24),         // For ≤1 week, use daily
+        Some((hours, _name)) if hours <= 720 => (4, "Week", 168),       // For ≤1 month, use weekly
+        Some((_hours, _name)) => (6, "Week", 168),                      // For longer windows, use 6 weeks
+        None => (7, "Day", 24),                                         // Default to daily
+    };
+
+    // Group denials by time period
+    let period_counts = group_denials_by_period(denials, num_periods, period_hours);
+
     println!("DENIAL TRENDS (last {since})");
     println!("════════════════════════════════════════════════════════════════");
-    println!("Week 1        Week 2        Week 3        Week 4");
-    println!("────────────────────────────────────────────────────────────────");
-    println!("{total:<14}{total:<14}{total:<14}{total}");
-    println!("Trend: ↘ Decreasing (good - users learning safe patterns)");
+
+    // Display header for time periods
+    let period_headers: Vec<String> = period_counts
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("{period_name} {}", i + 1))
+        .collect();
+
+    let header = period_headers.join("   ");
+    println!("{header}");
+
+    // Display separator line
+    let separator: String = period_counts.iter().map(|_| "────────").collect::<Vec<&str>>().join("─");
+    println!("{separator}");
+
+    // Display counts per period
+    let counts: Vec<String> = period_counts.iter().map(|count| format!("{:<4}", count)).collect();
+    println!("{}", counts.join("   "));
+
+    // Calculate and display trend
+    let trend = calculate_trend(&period_counts);
+    println!("Trend: {}", trend);
+}
+
+fn parse_time_window(since: &str) -> Option<(i64, String)> {
+    let (num_str, unit) = since.split_at(since.len().saturating_sub(1));
+    let num: i64 = num_str.parse().ok()?;
+    let unit_lower = unit.to_lowercase();
+
+    match unit_lower.as_str() {
+        "h" => Some((num, format!("{}h", num))),
+        "d" => Some((num * 24, format!("{}d", num))),
+        "w" => Some((num * 168, format!("{}w", num))),
+        _ => None,
+    }
+}
+
+fn group_denials_by_period(denials: &[OperatorDenial], num_periods: usize, period_hours: i64) -> Vec<usize> {
+    let mut counts = vec![0; num_periods];
+
+    for denial in denials {
+        if let Ok(timestamp) = denial.timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
+            let hours_ago = (Utc::now() - timestamp).num_hours() as i64;
+            if hours_ago >= 0 {
+                let period_index = (hours_ago / period_hours) as usize;
+                if period_index < num_periods {
+                    counts[num_periods - 1 - period_index] += 1; // Most recent period is last
+                }
+            }
+        }
+    }
+
+    counts
+}
+
+fn calculate_trend(counts: &[usize]) -> String {
+    if counts.len() < 2 {
+        return "→ Stable (insufficient data)".to_string();
+    }
+
+    // Calculate simple trend: compare first half vs second half
+    let midpoint = counts.len() / 2;
+    let first_half_avg: f64 = counts[..midpoint].iter().sum::<usize>() as f64 / midpoint as f64;
+    let second_half_avg: f64 = counts[midpoint..].iter().sum::<usize>() as f64 / (counts.len() - midpoint) as f64;
+
+    let change_percent = if first_half_avg > 0.0 {
+        ((second_half_avg - first_half_avg) / first_half_avg) * 100.0
+    } else {
+        0.0
+    };
+
+    // Determine trend direction and message
+    if change_percent < -20.0 {
+        format!("↘ Decreasing {}% (good - users learning safe patterns)", change_percent.abs() as i32)
+    } else if change_percent > 20.0 {
+        format!("↗ Increasing {}% (concerning - more risky patterns detected)", change_percent as i32)
+    } else {
+        format!("→ Stable (within normal variation)")
+    }
 }
 
 pub fn run_export_denial(args: &ExportDenialArgs) -> Result<()> {

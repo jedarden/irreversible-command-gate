@@ -2,7 +2,7 @@
   "scenario": "Maintenance Tasks",
   "trend": {
     "header": "DENIAL TRENDS (last 30d)",
-    "summary": "Trend: ↘ Decreasing (good - users learning safe patterns)"
+    "summary": "Trend: → Stable (within normal variation)"
   },
   "updates": [
     {"pack": "vault", "from": "v0.1.0", "to": "v0.1.1", "description": "fixes false positive in kv patch"},
