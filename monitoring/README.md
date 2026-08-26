@@ -29,7 +29,26 @@ receivers; the repository does not assume a particular pager or chat backend.
 
 Import [icg-overview.json](grafana/icg-overview.json) into Grafana with a
 Prometheus data source. The dashboard shows guard state, uptime/crashes,
-deny-rate versus baseline, rule-pack availability, and top denied rules.
+rolling deny-rate telemetry, rule-pack availability, and top denied rules.
+
+## Operational telemetry semantics
+
+`icg_baseline_*` is a descriptive rolling window over the retained individual
+evaluations in `ICG_TELEMETRY_PATH` (up to the configured `window_size`, 1,000
+by default). Each evaluation is one equally weighted sample: a denial is `1`,
+and an allow, warning, or rewrite is `0`. Consequently,
+`icg_baseline_mean`, `icg_baseline_deny_rate`, and
+`icg_current_deny_rate` are the same value. `icg_baseline_stddev` is the
+population standard deviation of those individual outcomes;
+`icg_baseline_min` and `icg_baseline_max` are observed outcome indicators, not
+per-release rates.
+
+These metrics are useful for describing recent guard behavior and supporting
+the high-deny-rate alert. They are not a confidence interval, a statistical
+significance test, or release-comparison evidence. Automatic poison-pill
+rollback uses the separate durable per-release baseline in
+`session-state.json`; inspect it with `icg telemetry status` and follow the
+[rollback runbook](../docs/runbooks/rollback.md).
 
 ## Denial log aggregation
 

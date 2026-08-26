@@ -486,6 +486,7 @@ mod tests {
             Some("git"),
             Some("force-push"),
         );
+        telemetry.record_evaluation(crate::telemetry::Verdict::Allowed, None, None);
         telemetry.persist()?;
 
         let denial_store = DenialStore::new(denial_path.clone(), DenialLogConfig::default())?;
@@ -522,9 +523,17 @@ mod tests {
         assert_eq!(snapshot.operational.total_denials, 1);
         assert_eq!(snapshot.operational.recent_critical_denials, 1);
         assert_eq!(snapshot.operational.rule_pack_loaded, 1);
-        assert_eq!(snapshot.metrics.telemetry.baseline_deny_rate, 1.0);
+        assert_eq!(snapshot.metrics.telemetry.baseline_evaluations, 2);
+        assert_eq!(snapshot.metrics.telemetry.baseline_deny_rate, 0.5);
+        assert_eq!(snapshot.metrics.telemetry.baseline_mean, 0.5);
+        assert_eq!(snapshot.metrics.telemetry.baseline_stddev, 0.5);
+        assert_eq!(snapshot.metrics.telemetry.baseline_min, 0.0);
+        assert_eq!(snapshot.metrics.telemetry.baseline_max, 1.0);
 
         let output = export_prometheus(&config)?;
+        assert!(output.contains("icg_baseline_stddev 0.5"));
+        assert!(output.contains("icg_baseline_min 0"));
+        assert!(output.contains("icg_baseline_max 1"));
         assert!(output.contains("icg_rule_pack_loaded 1"));
         assert!(output.contains("icg_rule_deny_count{pack_id=\"git\",pattern_id=\"force-push\"} 1"));
         assert!(output

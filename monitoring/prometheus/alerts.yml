@@ -46,18 +46,7 @@ groups:
           service: irreversible-command-gate
         annotations:
           summary: "ICG denial rate is high"
-          description: "{{ $labels.instance }} denied {{ $value | humanizePercentage }} of recent evaluations."
-          runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/rollback.md"
-
-      - alert: ICGDenyRateSpike
-        expr: icg_baseline_evaluations{job="icg"} >= 100 and icg_current_deny_rate{job="icg"} > (icg_baseline_mean{job="icg"} + 3 * icg_baseline_stddev{job="icg"}) and icg_current_deny_rate{job="icg"} > 0.05
-        for: 5m
-        labels:
-          severity: critical
-          service: irreversible-command-gate
-        annotations:
-          summary: "ICG denial rate spiked above baseline"
-          description: "{{ $labels.instance }} has a statistically significant deny-rate increase; inspect the active release and rollback evidence."
+          description: "{{ $labels.instance }} denied {{ $value | humanizePercentage }} of the retained evaluation window. This is a descriptive operational alert, not a statistical-significance or automatic-rollback decision."
           runbook: "https://github.com/jedarden/irreversible-command-gate/blob/main/docs/runbooks/rollback.md"
 
       - alert: ICGRulePackLoadFailed

@@ -144,19 +144,19 @@ pub struct TelemetryMetrics {
     /// Number of denies in the baseline window
     pub baseline_denies: u64,
 
-    /// Baseline deny rate (0.0 to 1.0)
+    /// Deny rate across the retained individual-evaluation window (0.0 to 1.0)
     pub baseline_deny_rate: f64,
 
-    /// Baseline mean deny rate
+    /// Mean individual deny indicator; equal to `baseline_deny_rate`
     pub baseline_mean: f64,
 
-    /// Baseline standard deviation
+    /// Population standard deviation of individual deny indicators
     pub baseline_stddev: f64,
 
-    /// Minimum deny rate in baseline
+    /// Minimum individual deny indicator in the retained window
     pub baseline_min: f64,
 
-    /// Maximum deny rate in baseline
+    /// Maximum individual deny indicator in the retained window
     pub baseline_max: f64,
 
     /// Baseline window start timestamp
@@ -165,7 +165,7 @@ pub struct TelemetryMetrics {
     /// Baseline window end timestamp
     pub baseline_window_end: Option<f64>,
 
-    /// Current deny rate
+    /// Alias for the deny rate across the retained evaluation window
     pub current_deny_rate: f64,
 
     /// Whether rollback is on cooldown
@@ -396,7 +396,7 @@ impl MetricsExporter {
             output.push('\n');
 
             output.push_str(&format!(
-                "# HELP {}baseline_deny_rate Baseline deny rate (0.0 to 1.0)\n",
+                "# HELP {}baseline_deny_rate Deny rate across the retained individual-evaluation window (0.0 to 1.0)\n",
                 prefix
             ));
             output.push_str(&format!("# TYPE {}baseline_deny_rate gauge\n", prefix));
@@ -407,7 +407,7 @@ impl MetricsExporter {
             output.push('\n');
 
             output.push_str(&format!(
-                "# HELP {}baseline_mean Baseline mean deny rate\n",
+                "# HELP {}baseline_mean Mean individual deny indicator in the retained window; equals baseline_deny_rate\n",
                 prefix
             ));
             output.push_str(&format!("# TYPE {}baseline_mean gauge\n", prefix));
@@ -418,7 +418,7 @@ impl MetricsExporter {
             output.push('\n');
 
             output.push_str(&format!(
-                "# HELP {}baseline_stddev Baseline standard deviation\n",
+                "# HELP {}baseline_stddev Population standard deviation of individual deny indicators in the retained window\n",
                 prefix
             ));
             output.push_str(&format!("# TYPE {}baseline_stddev gauge\n", prefix));
@@ -429,7 +429,7 @@ impl MetricsExporter {
             output.push('\n');
 
             output.push_str(&format!(
-                "# HELP {}baseline_min Minimum deny rate in baseline\n",
+                "# HELP {}baseline_min Minimum individual deny indicator in the retained window\n",
                 prefix
             ));
             output.push_str(&format!("# TYPE {}baseline_min gauge\n", prefix));
@@ -440,7 +440,7 @@ impl MetricsExporter {
             output.push('\n');
 
             output.push_str(&format!(
-                "# HELP {}baseline_max Maximum deny rate in baseline\n",
+                "# HELP {}baseline_max Maximum individual deny indicator in the retained window\n",
                 prefix
             ));
             output.push_str(&format!("# TYPE {}baseline_max gauge\n", prefix));
@@ -451,7 +451,7 @@ impl MetricsExporter {
             output.push('\n');
 
             output.push_str(&format!(
-                "# HELP {}current_deny_rate Current deny rate (0.0 to 1.0)\n",
+                "# HELP {}current_deny_rate Deny rate across the same retained evaluation window as baseline_deny_rate (0.0 to 1.0)\n",
                 prefix
             ));
             output.push_str(&format!("# TYPE {}current_deny_rate gauge\n", prefix));
@@ -724,6 +724,9 @@ mod tests {
         assert!(output.contains("icg_uptime_seconds 3600"));
         assert!(output.contains("icg_total_crashes 2"));
         assert!(output.contains("icg_baseline_deny_rate 0.01"));
+        assert!(output.contains(
+            "# HELP icg_baseline_stddev Population standard deviation of individual deny indicators"
+        ));
         assert!(output.contains("# TYPE icg_uptime_seconds gauge"));
         assert!(output.contains("# HELP icg_uptime_seconds"));
     }

@@ -276,6 +276,14 @@ pack and pattern. Configure its files with `ICG_HEALTH_PATH`,
 `ICG_TELEMETRY_PATH`, `ICG_DENIAL_LOG`, and `ICG_RULE_PACK` when the defaults
 do not match the deployment.
 
+The rolling telemetry metrics are descriptive: the window contains up to 1,000
+individual evaluations by default, with each denial sampled as `1` and each
+other verdict as `0`. Its mean and deny rate are therefore identical, and its
+standard deviation is a population value for individual outcomes, not a
+confidence interval or a release-level anomaly test. The high-deny-rate alert
+is an operational prompt to inspect the durable release evidence; poison-pill
+rollback uses the separate per-release baseline shown by `icg telemetry status`.
+
 Use the checked-in integration assets:
 
 - `monitoring/prometheus/scrape.yml` — scrape job for the monitor.

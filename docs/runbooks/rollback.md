@@ -7,17 +7,23 @@ runbook covers verification, failed automatic rollback, and post-rollback
 containment.
 
 A single normal denial is not a poison pill. A poison pill is a release-bound
-deny-rate anomaly after the configured minimum sample count. A release rollback
-also differs from fail-closed policy demotion: reverting a bad pack does not
-change the crash policy. In Fail-Closed state, the fleet remains Fail-Closed
-after the pack is rolled back.
+deny-rate anomaly after the configured minimum sample count. The monitor's
+high-deny-rate alert is descriptive of its retained individual-evaluation
+window; it is not statistical-significance evidence and does not by itself
+authorize or prove an automatic rollback. Confirm the durable release signal
+below before treating an alert as a poison pill. A release rollback also differs
+from fail-closed policy demotion: reverting a bad pack does not change the crash
+policy. In Fail-Closed state, the fleet remains Fail-Closed after the pack is
+rolled back.
 
 ## Automatic trigger and invariants
 
 After each evaluation, the durable state store records the verdict and, when
-available, the active release reference. The poison-pill consumer only arms for
-a fresh pointer target during its early observation window (the default maximum
-is 1,000 evaluations) and requires all of the following before it can act:
+available, the active release reference. Its baseline is the population of
+retained prior-release aggregate deny rates, not the monitor's per-evaluation
+window. The poison-pill consumer only arms for a fresh pointer target during
+its early observation window (the default maximum is 1,000 evaluations) and
+requires all of the following before it can act:
 
 - at least 100 current-release evaluations;
 - at least three prior releases and 300 prior-release evaluations;
@@ -44,8 +50,10 @@ never use `latest`.
 1. Freeze promotion of the triggering release and declare an incident if the
    anomaly affects production.
 2. Capture the alert/report before resetting anything. Record detection time,
-   active and previous references, current and baseline deny rates, threshold,
-   sample count, severity, channel/cohort, and rollback result.
+   active and previous references, current and durable prior-release baseline
+   deny rates, threshold, sample count, severity, channel/cohort, and rollback
+   result. Label a monitor alert as operational evidence until the durable
+   release signal independently meets the trigger conditions.
 3. Inspect the local evidence:
 
    ```bash

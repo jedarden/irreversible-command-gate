@@ -1,17 +1,18 @@
-//! Rolling baseline telemetry for deny-rate monitoring and auto-rollback
+//! Rolling evaluation-window telemetry for deny-rate monitoring.
 //!
 //! This module implements:
 //! - Telemetry collection for engine evaluation results
-//! - Rolling baseline calculation over a configurable time window
-//! - Anomaly detection for deny-rate spikes
-//! - Poison-pill auto-rollback integration with trust pointer
+//! - Descriptive population statistics over a configurable evaluation window
+//! - Legacy standalone anomaly helpers
+//! - Configuration shared with durable poison-pill auto-rollback
 //!
 //! ## Architecture
 //!
 //! The telemetry system works in three phases:
 //! 1. **Collection**: Engine records evaluation results (allow/deny/warning/rewrite)
-//! 2. **Analysis**: Rolling baseline statistics calculated over sliding window
-//! 3. **Reaction**: Anomaly detection triggers automatic trust pointer rollback
+//! 2. **Analysis**: Descriptive population statistics calculated over the window
+//! 3. **Reaction**: Runtime maps this configuration onto the durable,
+//!    release-level poison-pill rollback policy
 //!
 //! ## Data Flow
 //!
@@ -19,9 +20,8 @@
 //! Engine::evaluate_*()
 //!   → Telemetry::record_result()
 //!   → TelemetryStore::persist()
-//!   → BaselineCalculator::compute_baseline()
-//!   → AnomalyDetector::check_spike()
-//!   → RollbackHandler::revert_trust_pointer()
+//!   → compute_baseline() → telemetry status / monitoring scrape
+//!   → StateStore release aggregates → rollback::check_and_rollback()
 //! ```
 //!
 //! ## Configuration
@@ -46,9 +46,11 @@ pub struct TelemetryConfig {
     /// Recommended: 500-2000 for production fleets
     pub window_size: usize,
 
-    /// Spike threshold as multiplier above baseline mean
+    /// Sigma multiplier for the durable per-release poison-pill baseline
     ///
-    /// If current deny rate > (baseline_mean * threshold), trigger rollback
+    /// The runtime maps this to the durable policy's population-standard-
+    /// deviation multiplier. It does not make the operational evaluation-window
+    /// metrics into an independent rollback signal.
     /// Recommended: 2.5-5.0 depending on tolerance for false positives
     pub spike_threshold: f64,
 
@@ -138,7 +140,13 @@ impl Verdict {
     }
 }
 
-/// Rolling window of evaluation records with bounded size
+/// Rolling window of evaluation records with bounded size.
+///
+/// Each retained evaluation is one equally weighted sampling bucket for the
+/// operational baseline. A denied evaluation contributes `1.0`; allowed,
+/// warning, and rewrite evaluations contribute `0.0`. The window is bounded
+/// by record count, not by elapsed time or release, and the oldest evaluation
+/// is evicted when it reaches capacity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationWindow {
     /// Records in the window, oldest first
@@ -217,7 +225,7 @@ impl EvaluationWindow {
 /// Rolling baseline statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineStats {
-    /// Number of samples in the baseline
+    /// Number of individual evaluation samples in the baseline
     pub sample_count: usize,
 
     /// Total evaluations in baseline
@@ -229,16 +237,16 @@ pub struct BaselineStats {
     /// Deny rate (deny_count / total_evaluations)
     pub deny_rate: f64,
 
-    /// Mean deny rate
+    /// Mean deny indicator across individual evaluations (equal to deny_rate)
     pub mean: f64,
 
-    /// Standard deviation of deny rate
+    /// Population standard deviation of individual deny indicators
     pub std_dev: f64,
 
-    /// Minimum observed deny rate in window
+    /// Minimum observed individual deny indicator (0.0 or 1.0)
     pub min: f64,
 
-    /// Maximum observed deny rate in window
+    /// Maximum observed individual deny indicator (0.0 or 1.0)
     pub max: f64,
 
     /// Timestamp of oldest record in baseline
@@ -596,7 +604,18 @@ impl TelemetryStore {
     }
 }
 
-/// Calculate baseline statistics from an evaluation window
+/// Calculate descriptive population statistics from an evaluation window.
+///
+/// The operational window is a bounded sequence of individual evaluations,
+/// not a sequence of release aggregates or time buckets. Each evaluation is
+/// encoded as a deny indicator (`1.0` for [`Verdict::Denied`], `0.0` for every
+/// other verdict), and all retained evaluations have equal weight. Therefore
+/// `mean` equals `deny_rate`; `std_dev`, `min`, and `max` describe variation in
+/// individual outcomes within this exact window.
+///
+/// These values are descriptive statistics, not a confidence interval or an
+/// independent release comparison. Poison-pill rollback uses the durable
+/// per-release baseline in `state_store` instead.
 pub fn compute_baseline(window: &EvaluationWindow) -> BaselineStats {
     let records = window.records();
 
@@ -615,37 +634,48 @@ pub fn compute_baseline(window: &EvaluationWindow) -> BaselineStats {
         };
     }
 
-    let total_evaluations = records.len();
-    let deny_count = records.iter().filter(|r| r.verdict.is_deny()).count();
-    let deny_rate = if total_evaluations > 0 {
-        deny_count as f64 / total_evaluations as f64
-    } else {
-        0.0
-    };
+    let samples = records
+        .iter()
+        .map(|record| if record.verdict.is_deny() { 1.0 } else { 0.0 })
+        .collect::<Vec<_>>();
+    let total_evaluations = samples.len();
+    let deny_count = samples.iter().filter(|&&sample| sample == 1.0).count();
+    let mean = samples.iter().sum::<f64>() / total_evaluations as f64;
+    let variance = samples
+        .iter()
+        .map(|sample| {
+            let difference = sample - mean;
+            difference * difference
+        })
+        .sum::<f64>()
+        / total_evaluations as f64;
+    let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = samples.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
     let window_start = records.first().map(|r| r.timestamp);
     let window_end = records.last().map(|r| r.timestamp);
-
-    // For now, use simple deny rate as the mean
-    // TODO: Implement sliding window mean/std_dev calculation
-    let mean = deny_rate;
-    let std_dev = 0.0; // Will be calculated properly in the full implementation
 
     BaselineStats {
         sample_count: total_evaluations,
         total_evaluations,
         deny_count,
-        deny_rate,
+        deny_rate: mean,
         mean,
-        std_dev,
-        min: deny_rate, // Same for now
-        max: deny_rate, // Same for now
+        std_dev: variance.sqrt(),
+        min,
+        max,
         window_start,
         window_end,
     }
 }
 
-/// Check if current deny rate represents an anomaly compared to baseline
+/// Check if an externally supplied current deny rate exceeds a baseline.
+///
+/// ICG's runtime rollback path uses the durable per-release implementation in
+/// [`crate::rollback::check_and_rollback`]. This helper remains for callers
+/// that deliberately supply an independent current rate; the evaluation window
+/// passed to [`compute_baseline`] is descriptive telemetry and must not be used
+/// as both sides of this comparison.
 pub fn check_anomaly(
     current_deny_rate: f64,
     baseline: &BaselineStats,
@@ -799,10 +829,11 @@ pub fn handle_rollback(
     Ok(Some(report))
 }
 
-/// Process evaluation results and check for anomalies
+/// Process evaluation results with the legacy standalone anomaly helper.
 ///
-/// This is the main integration function that should be called after each
-/// batch of evaluations. It:
+/// ICG's runtime uses `rollback::check_and_rollback` with durable per-release
+/// aggregates instead. This helper is only appropriate for a caller that has
+/// an independent current rate. It:
 /// 1. Computes the current baseline from the telemetry window
 /// 2. Calculates the current deny rate
 /// 3. Checks for anomalies
@@ -943,6 +974,10 @@ mod tests {
         assert_eq!(baseline.total_evaluations, 0);
         assert_eq!(baseline.deny_count, 0);
         assert_eq!(baseline.deny_rate, 0.0);
+        assert_eq!(baseline.mean, 0.0);
+        assert_eq!(baseline.std_dev, 0.0);
+        assert_eq!(baseline.min, 0.0);
+        assert_eq!(baseline.max, 0.0);
     }
 
     #[test]
@@ -972,6 +1007,59 @@ mod tests {
         assert_eq!(baseline.total_evaluations, 12);
         assert_eq!(baseline.deny_count, 2);
         assert!((baseline.deny_rate - 0.1667).abs() < 0.01);
+        assert!((baseline.mean - baseline.deny_rate).abs() < f64::EPSILON);
+        assert!((baseline.std_dev - (5.0_f64.sqrt() / 6.0)).abs() < f64::EPSILON);
+        assert_eq!(baseline.min, 0.0);
+        assert_eq!(baseline.max, 1.0);
+    }
+
+    #[test]
+    fn baseline_uses_population_statistics_for_individual_evaluation_samples() {
+        let mut window = EvaluationWindow::new(4);
+        for verdict in [
+            Verdict::Allowed,
+            Verdict::Warning,
+            Verdict::Rewrite,
+            Verdict::Denied,
+        ] {
+            window.push(EvaluationRecord {
+                timestamp: Utc::now(),
+                verdict,
+                release_ref: None,
+                session_id: None,
+            });
+        }
+
+        let baseline = compute_baseline(&window);
+
+        assert_eq!(baseline.sample_count, 4);
+        assert_eq!(baseline.deny_count, 1);
+        assert!((baseline.mean - 0.25).abs() < f64::EPSILON);
+        assert!((baseline.std_dev - 3.0_f64.sqrt() / 4.0).abs() < f64::EPSILON);
+        assert_eq!(baseline.min, 0.0);
+        assert_eq!(baseline.max, 1.0);
+    }
+
+    #[test]
+    fn baseline_reflects_the_bounded_retained_window() {
+        let mut window = EvaluationWindow::new(2);
+        for verdict in [Verdict::Denied, Verdict::Allowed, Verdict::Allowed] {
+            window.push(EvaluationRecord {
+                timestamp: Utc::now(),
+                verdict,
+                release_ref: None,
+                session_id: None,
+            });
+        }
+
+        let baseline = compute_baseline(&window);
+
+        assert_eq!(baseline.sample_count, 2);
+        assert_eq!(baseline.deny_count, 0);
+        assert_eq!(baseline.mean, 0.0);
+        assert_eq!(baseline.std_dev, 0.0);
+        assert_eq!(baseline.min, 0.0);
+        assert_eq!(baseline.max, 0.0);
     }
 
     #[test]
@@ -1040,12 +1128,12 @@ mod tests {
         let anomaly = check_anomaly(0.01, &baseline, &config);
         assert!(anomaly.is_none());
 
-        // Current rate at 10% (10x baseline) should trigger anomaly
-        let anomaly = check_anomaly(0.10, &baseline, &config);
+        // A 100% current rate exceeds the real population-variance threshold.
+        let anomaly = check_anomaly(1.0, &baseline, &config);
         assert!(anomaly.is_some());
 
         let report = anomaly.unwrap();
-        assert_eq!(report.current_deny_rate, 0.10);
+        assert_eq!(report.current_deny_rate, 1.0);
         assert!(!report.rollback_triggered);
     }
 

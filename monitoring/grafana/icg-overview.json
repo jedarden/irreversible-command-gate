@@ -33,12 +33,11 @@
     },
     {
       "type": "timeseries",
-      "title": "Deny rate versus baseline",
+      "title": "Rolling deny rate and outcome variation (descriptive)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
       "targets": [
-        {"expr": "icg_current_deny_rate{job=\"icg\"}", "legendFormat": "current", "refId": "A"},
-        {"expr": "icg_baseline_mean{job=\"icg\"}", "legendFormat": "baseline", "refId": "B"},
-        {"expr": "icg_baseline_mean{job=\"icg\"} + 3 * icg_baseline_stddev{job=\"icg\"}", "legendFormat": "3σ threshold", "refId": "C"}
+        {"expr": "icg_current_deny_rate{job=\"icg\"}", "legendFormat": "deny rate", "refId": "A"},
+        {"expr": "icg_baseline_stddev{job=\"icg\"}", "legendFormat": "population std. dev. (individual outcomes)", "refId": "B"}
       ],
       "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []}
     },

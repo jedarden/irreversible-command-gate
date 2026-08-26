@@ -244,7 +244,7 @@ knobs are:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--window-size` | `1000` | Legacy evaluation-window capacity used by telemetry status. |
+| `--window-size` | `1000` | Capacity of the descriptive individual-evaluation window shown by telemetry status and monitoring; it is not the durable per-release rollback baseline. |
 | `--spike-threshold` | `3.0` | Sigma multiplier mapped into poison-pill detection on normal hook reconciliation. |
 | `--minimum-samples` | `100` | Current-release minimum mapped into poison-pill detection. |
 | `--cooldown-seconds` | `3600` | Rollback cooldown in seconds. |
