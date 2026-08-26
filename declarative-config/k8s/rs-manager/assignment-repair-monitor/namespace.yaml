@@ -1,0 +1,8 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: assignment-repair-monitor
+  labels:
+    name: assignment-repair-monitor
+    component: monitoring
