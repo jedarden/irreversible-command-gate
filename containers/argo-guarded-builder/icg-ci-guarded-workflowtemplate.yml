@@ -111,19 +111,59 @@ spec:
             cargo clippy --all-targets -- -D warnings
             cargo test
 
+            # Build the merged pack from the ACTUAL packs being released
+            # This ensures the gates test what's actually being shipped
+            echo "=== Building merged pack from actual packs ==="
+            cargo run --quiet -- build-pack --pack-dir packs --output /tmp/current-merged.json
+
+            # Generate deterministic manifest for the actual packs being released
+            echo "=== Generating current pack manifest ==="
+            cargo run --quiet -- pack-manifest --pack-dir packs --output /tmp/current-manifest.json
+
+            # Download the previous release's merged pack from GitHub Releases
+            # This is the trusted baseline - not a static fixture
+            echo "=== Fetching previous release pack ==="
+            PREVIOUS_VERSION=$(gh release view --repo jedarden/irreversible-command-gate --json tagName --jq '.tagName' | head -1)
+            if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "null" ]; then
+              echo "Previous release: $PREVIOUS_VERSION"
+              # Try to download the previous release's merged pack
+              if gh release download "$PREVIOUS_VERSION" --repo jedarden/irreversible-command-gate --pattern rule-pack.json --dir /tmp --clobber 2>/dev/null; then
+                PREVIOUS_PACK=/tmp/rule-pack.json
+                echo "Using previous pack: $PREVIOUS_PACK"
+              else
+                echo "⚠️  No previous release pack found - this is the first release or pack was not included"
+                # For the first release or when previous pack is missing,
+                # we skip regression checks but still verify the current packs
+                PREVIOUS_PACK=/tmp/empty-pack.json
+                echo '{"id":"empty","tool_keywords":[],"applies_to":[],"safe_patterns":[],"guarded_patterns":[]}' > "$PREVIOUS_PACK"
+              fi
+            else
+              echo "⚠️  No previous release found - this is the first release"
+              PREVIOUS_PACK=/tmp/empty-pack.json
+              echo '{"id":"empty","tool_keywords":[],"applies_to":[],"safe_patterns":[],"guarded_patterns":[]}' > "$PREVIOUS_PACK"
+            fi
+
             # Generate and validate the fixed deny-must-still-fire suite
+            # This now gates the ACTUAL packs being released, not static fixtures
             echo "=== Generating regression suite ==="
             cargo run --quiet -- regression-suite \
-              tests/fixtures/previous-release.json \
+              /tmp/current-merged.json \
               --output /tmp/icg-regression-suite.json
 
             # Compare the previous and current rule-pack manifests
+            # This ensures no coverage regressions in the actual release
             echo "=== Checking coverage diffs ==="
             cargo run --quiet -- coverage-diff \
-              tests/fixtures/previous-release.json \
-              tests/fixtures/current-release-clean.json
+              "$PREVIOUS_PACK" \
+              /tmp/current-merged.json
 
-            echo "✅ CI passed!"
+            # Check every released pack for ReDoS (catastrophic backtracking) vulnerabilities
+            echo "=== Checking for ReDoS vulnerabilities ==="
+            cargo run --quiet -- redos-check \
+              /tmp/current-merged.json \
+              --timeout-ms 100
+
+            echo "✅ CI passed - actual packs are gated!"
 
             # Extract version from workspace Cargo.toml
             VERSION=$(grep -A10 '\[workspace.package\]' Cargo.toml | grep '^version' | head -1 | sed 's/.*"\(.*\)".*/\1/')
@@ -160,8 +200,28 @@ spec:
             # merged without losing their unconditional/content coverage.
             echo "=== Building legacy merged rule-pack artifact ==="
             cargo run --quiet -- build-pack --output /tmp/rule-pack.json
-            echo "=== Packaging modular rule-pack directory ==="
+
+            # Package the modular rule-pack directory that was already gated above
+            # The archive must be produced from the exact bytes that passed coverage-diff
+            echo "=== Packaging gated modular rule-pack directory ==="
             tar -C /workspace -czf /tmp/icg-packs.tar.gz packs
+
+            # Verify the archive contains the exact bytes that were gated
+            echo "=== Verifying archive integrity ==="
+            VERIFY_DIR=$(mktemp -d)
+            tar -xzf /tmp/icg-packs.tar.gz -C "$VERIFY_DIR"
+            cargo run --quiet -- pack-manifest --pack-dir "$VERIFY_DIR/packs" --output /tmp/verify-manifest.json
+
+            # The verified manifest must match the gated manifest exactly
+            if ! diff -q /tmp/current-manifest.json /tmp/verify-manifest.json; then
+              echo "❌ ARCHIVE VERIFICATION FAILED: Archive bytes do not match gated manifest!"
+              echo "This indicates a critical security issue - the archive was not produced from the gated bytes."
+              exit 1
+            fi
+            echo "✅ Archive verified - contains exact gated bytes"
+
+            # Include the pack manifest in the release for verification
+            cp /tmp/current-manifest.json /tmp/pack-manifest.json
 
 
             # Create GitHub release with binary, compatibility artifact, and
@@ -178,15 +238,21 @@ spec:
             protection in Argo Workflows. The guard protecting everything else is itself
             protected.
 
+            **Release Integrity**: This release was gated against the actual pack bytes
+            included in icg-packs.tar.gz, not static fixtures. The pack-manifest.json
+            provides cryptographic verification (SHA-256) of all released packs.
+
             Binaries:
             - icg: Main guard binary (supports: hook, wrapper, and admin subcommands)
             - icg-packs.tar.gz: Complete modular pack directory for production `icg hook`
             - rule-pack.json: Legacy merged compatibility artifact (for legacy `icg update`)
+            - pack-manifest.json: Deterministic manifest with SHA-256 hashes of all packs
             " \
               --target main \
               ./target/release/icg \
               /tmp/icg-packs.tar.gz \
-              /tmp/rule-pack.json
+              /tmp/rule-pack.json \
+              /tmp/pack-manifest.json
 
             echo "✅ Release v${VERSION} created!"
 

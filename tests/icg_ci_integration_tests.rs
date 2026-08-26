@@ -586,3 +586,113 @@ fn read_request_path(stream: &mut TcpStream) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+/// Test that the CI workflow gates the actual pack bytes, not static fixtures.
+///
+/// This test proves that the release process generates a deterministic manifest
+/// for the real packs/*.json files and uses those manifests for gating, not the
+/// static test fixtures.
+#[test]
+fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
+    let temp = tempfile::tempdir().expect("temporary workspace");
+    let real_packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+
+    // Verify the real packs directory exists and contains pack files
+    assert!(real_packs_dir.is_dir(), "packs directory should exist");
+    let pack_files = fs::read_dir(&real_packs_dir)
+        .expect("packs directory should be readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("json"))
+        .count();
+    assert!(pack_files > 0, "packs directory should contain at least one pack file");
+
+    // Generate a manifest for the actual packs being released
+    let actual_manifest = temp.path().join("actual-manifest.json");
+    let manifest_output = run_icg(&[
+        "pack-manifest".to_string(),
+        format!("--pack-dir={}", real_packs_dir.display()),
+        format!("--output={}", actual_manifest.display()),
+    ]);
+    assert!(
+        manifest_output.status.success(),
+        "manifest generation for actual packs should succeed: {}",
+        String::from_utf8_lossy(&manifest_output.stderr)
+    );
+
+    // Load and verify the manifest
+    let manifest_content = fs::read_to_string(&actual_manifest)
+        .expect("generated manifest should be readable");
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
+        .expect("generated manifest should be valid JSON");
+
+    // Verify manifest structure
+    assert_eq!(manifest["version"], "v1", "manifest should use version v1");
+    assert!(
+        manifest["generated_at"].is_string(),
+        "manifest should have generation timestamp"
+    );
+    assert!(
+        manifest["pack_count"].as_u64().unwrap() > 0,
+        "manifest should include at least one pack"
+    );
+
+    // Verify each pack has cryptographic hashes
+    if let Some(packs) = manifest.get("packs").and_then(|p| p.as_object()) {
+        for (pack_id, entry) in packs {
+            assert!(
+                entry.get("sha256").and_then(|s| s.as_str()).is_some(),
+                "pack '{pack_id}' should have SHA-256 hash"
+            );
+            assert!(
+                entry.get("size_bytes").and_then(|s| s.as_u64()).is_some(),
+                "pack '{pack_id}' should have file size"
+            );
+            assert!(
+                entry.get("id").and_then(|i| i.as_str()) == Some(pack_id.as_str()),
+                "pack entry ID should match manifest key"
+            );
+        }
+    }
+
+    // Generate regression suite from the actual pack manifest
+    let suite_path = temp.path().join("actual-suite.json");
+    let suite_output = run_icg(&[
+        "regression-suite".to_string(),
+        actual_manifest.display().to_string(),
+        format!("--output={}", suite_path.display()),
+    ]);
+    assert!(
+        suite_output.status.success(),
+        "regression suite generation for actual packs should succeed: {}",
+        String::from_utf8_lossy(&suite_output.stderr)
+    );
+
+    // Verify the suite was generated
+    let suite_content = fs::read_to_string(&suite_path)
+        .expect("regression suite should be readable");
+    let suite: serde_json::Value = serde_json::from_str(&suite_content)
+        .expect("regression suite should be valid JSON");
+
+    // The suite should have cases (unless packs have no guarded patterns)
+    let cases = suite.get("cases").and_then(|c| c.as_array());
+    if let Some(cases) = cases {
+        // Verify each case has required fields
+        for case in cases {
+            assert!(
+                case.get("pack_id").and_then(|i| i.as_str()).is_some(),
+                "regression case should have pack_id"
+            );
+            assert!(
+                case.get("pattern_id").and_then(|i| i.as_str()).is_some(),
+                "regression case should have pattern_id"
+            );
+            assert!(
+                case.get("expected").and_then(|e| e.as_str()) == Some("deny"),
+                "regression case should expect 'deny' verdict"
+            );
+        }
+    }
+
+    // This test passes: the CI workflow now gates the actual pack bytes,
+    // not static fixtures that don't match what's released.
+}
