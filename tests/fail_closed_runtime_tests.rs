@@ -42,6 +42,11 @@ fn run_hook(directory: &TempDir, policy_mode: Option<PolicyMode>, input: &[u8]) 
         .env("ICG_HEALTH_PATH", &health_path)
         .env("ICG_FAIL_CLOSED_POLICY", &policy_path)
         .env("ICG_TELEMETRY_PATH", &telemetry_path)
+        // The CI executor configures its production pack location globally.
+        // These lifecycle tests deliberately exercise crash recovery without
+        // loading a pack, so do not let a missing executor-local directory
+        // turn the hook's ordinary startup error into a second crash record.
+        .env_remove("ICG_RULE_PACK")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
