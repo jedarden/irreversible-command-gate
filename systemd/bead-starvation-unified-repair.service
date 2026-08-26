@@ -1,0 +1,31 @@
+[Unit]
+Description=Unified Bead Starvation Diagnostic and Auto-Repair Service
+Documentation=https://github.com/jedarden/irreversible-command-gate
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/coding/irreversible-command-gate
+Environment="DB_PATH=/home/coding/irreversible-command-gate/.beads/beads.db"
+Environment="PATH=/home/coding/.cargo/bin:/home/coding/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="CHECKPOINT_AUTO_FLUSH=false"
+ExecStart=/home/coding/irreversible-command-gate/scripts/bead-starvation-unified-repair.sh
+StandardOutput=journal
+StandardError=journal
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+SyslogIdentifier=bead-starvation-unified-repair
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictNamespaces=true
+
+MemoryMax=256M
+CPUQuota=50%
+
+[Install]
+WantedBy=default.target
