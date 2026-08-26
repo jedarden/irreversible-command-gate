@@ -52,7 +52,7 @@ if [ -z "$BEAD_ID" ]; then
     exit 1
 fi
 
-if [ "$2" = "--dry-run" ] || [ "$DRY_RUN" = "true" ]; then
+if [ "${2:-}" = "--dry-run" ] || [ "$DRY_RUN" = "true" ]; then
     DRY_RUN=true
     log_warn "DRY RUN MODE - No changes will be made"
 fi

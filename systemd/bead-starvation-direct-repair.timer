@@ -1,0 +1,15 @@
+[Unit]
+Description=Direct Bead Starvation Repair Timer
+Documentation=file:///home/coding/irreversible-command-gate/scripts/bead-starvation-direct-repair.sh
+Requires=bead-starvation-direct-repair.service
+
+[Timer]
+# Run every 15 minutes
+OnCalendar=*:0/15
+# Also run on boot if the last run was missed
+Persistent=true
+# Randomize start time by up to 60 seconds to avoid drift
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=Direct Bead Starvation Repair Service
+Documentation=file:///home/coding/irreversible-command-gate/scripts/bead-starvation-direct-repair.sh
+After=network.target
+
+[Service]
+Type=oneshot
+User=coding
+Group=coding
+WorkingDirectory=/home/coding/irreversible-command-gate
+Environment="DB_PATH=/home/coding/irreversible-command-gate/.beads/beads.db"
+Environment="PATH=/home/coding/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="CHECKPOINT_AUTO_FLUSH=false"
+ExecStart=/home/coding/irreversible-command-gate/scripts/bead-starvation-direct-repair.sh
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/coding/irreversible-command-gate/.beads
+ReadWritePaths=/home/coding/irreversible-command-gate/scripts
+
+[Install]
+WantedBy=multi-user.target
