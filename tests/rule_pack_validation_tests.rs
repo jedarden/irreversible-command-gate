@@ -10,6 +10,7 @@
 //! - Safe/guarded pattern conflicts
 
 use std::fs;
+use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::tempdir;
 
@@ -18,6 +19,15 @@ fn icg(args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("icg should run")
+}
+
+fn icg_with_env(args: &[&str], envs: &[(&str, &Path)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().expect("icg should run")
 }
 
 #[test]
@@ -428,13 +438,22 @@ fn validation_rejects_duplicate_pattern_ids() {
 
     fs::write(&pack_path, duplicate_ids).expect("pack should write");
 
-    let result = icg(&[
-        "check",
-        "--pack",
-        &pack_path.to_string_lossy(),
-        "--command",
-        "test dangerous1",
-    ]);
+    // The command is denied, which attempts a denial-log write to
+    // /var/cache/icg. On a non-root run that write fails and the
+    // icg_monitoring_event line lands on stderr, shadowing the stdout
+    // denial text this assertion reads. A private log path keeps the
+    // scenario isolated from the host, root or not.
+    let denial_log = temp_dir.path().join("denials.jsonl");
+    let result = icg_with_env(
+        &[
+            "check",
+            "--pack",
+            &pack_path.to_string_lossy(),
+            "--command",
+            "test dangerous1",
+        ],
+        &[("ICG_DENIAL_LOG", &denial_log)],
+    );
 
     let stderr = String::from_utf8_lossy(&result.stderr);
     let output = if !stderr.is_empty() {
