@@ -74,7 +74,7 @@ pub struct DependencyCycleConfig {
     /// Path to the workspace root (contains .beads directory)
     pub workspace_path: PathBuf,
 
-    /// Interval between cycle detection checks (default: 5 minutes)
+    /// Interval between cycle detection checks (default: 1 hour)
     #[serde(default = "default_check_interval")]
     pub check_interval: Duration,
 
@@ -89,10 +89,14 @@ pub struct DependencyCycleConfig {
     /// Maximum cycle length to attempt auto-repair (default: 10)
     #[serde(default = "default_max_cycle_length")]
     pub max_cycle_length: usize,
+
+    /// Convert blocking edges to non-blocking references instead of removing
+    #[serde(default = "default_convert_to_non_blocking")]
+    pub convert_to_non_blocking: bool,
 }
 
 fn default_check_interval() -> Duration {
-    Duration::from_secs(300) // 5 minutes
+    Duration::from_secs(3600) // 1 hour
 }
 
 fn default_auto_repair_enabled() -> bool {
@@ -107,6 +111,10 @@ fn default_max_cycle_length() -> usize {
     10
 }
 
+fn default_convert_to_non_blocking() -> bool {
+    false // By default, remove blocking edges
+}
+
 impl Default for DependencyCycleConfig {
     fn default() -> Self {
         Self {
@@ -115,6 +123,7 @@ impl Default for DependencyCycleConfig {
             auto_repair_enabled: default_auto_repair_enabled(),
             dry_run: default_dry_run(),
             max_cycle_length: default_max_cycle_length(),
+            convert_to_non_blocking: default_convert_to_non_blocking(),
         }
     }
 }
@@ -146,6 +155,10 @@ impl DependencyCycleConfig {
             if let Ok(max_len) = max_len.parse::<usize>() {
                 config.max_cycle_length = max_len.max(3);
             }
+        }
+
+        if let Ok(convert) = std::env::var("ICG_CONVERT_TO_NON_BLOCKING") {
+            config.convert_to_non_blocking = convert.eq_ignore_ascii_case("true") || convert == "1";
         }
 
         config
@@ -181,6 +194,7 @@ pub struct Bead {
     pub created_at: DateTime<Utc>,
     pub assignee: Option<String>,
     pub manual_blocked: bool,
+    pub priority: i32,
 }
 
 /// A dependency relationship between beads
@@ -196,14 +210,16 @@ pub struct Dependency {
 pub struct DetectedCycle {
     /// The cycle as a list of bead IDs in order
     pub cycle: Vec<String>,
-    /// The bead that will have its dependency cleared
-    pub younger_bead: String,
-    /// The blocker dependency that will be removed
+    /// The bead that will have its dependency cleared (lowest priority in cycle)
+    pub bead_to_modify: String,
+    /// The blocker dependency that will be removed or converted
     pub blocker_to_remove: String,
     /// Cycle length
     pub length: usize,
     /// Whether this cycle is safe to auto-repair
     pub safe_to_repair: bool,
+    /// Priority of the bead being modified (for reporting)
+    pub priority: i32,
 }
 
 /// An orphaned dependency (blocked by non-existent or closed bead)
@@ -364,7 +380,7 @@ impl DependencyCycleMonitor {
     /// Load all beads from the database
     fn load_beads(&self, conn: &Connection) -> Result<HashMap<String, Bead>> {
         let mut stmt = conn.prepare(
-            "SELECT id, title, base_status, created_at, assignee, manual_blocked
+            "SELECT id, title, base_status, created_at, assignee, manual_blocked, priority
              FROM issues"
         )?;
 
@@ -375,6 +391,7 @@ impl DependencyCycleMonitor {
             let created_at_str: String = row.get(3)?;
             let assignee: Option<String> = row.get(4)?;
             let manual_blocked: i32 = row.get(5)?;
+            let priority: i32 = row.get(6)?;
 
             let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -389,6 +406,7 @@ impl DependencyCycleMonitor {
                     created_at,
                     assignee,
                     manual_blocked: manual_blocked == 1,
+                    priority,
                 },
             ))
         })?
@@ -454,14 +472,16 @@ impl DependencyCycleMonitor {
 
         // Convert cycles to DetectedCycle structs
         for cycle in cycles_found {
-            if let Some((younger_bead, blocker_to_remove)) = self.resolve_cycle(&cycle, beads) {
+            if let Some((bead_to_modify, blocker_to_remove)) = self.resolve_cycle(&cycle, beads) {
                 let safe_to_repair = cycle.len() <= self.config.max_cycle_length;
+                let priority = beads.get(&bead_to_modify).map(|b| b.priority).unwrap_or(2);
                 detected_cycles.push(DetectedCycle {
                     cycle: cycle.clone(),
-                    younger_bead,
+                    bead_to_modify,
                     blocker_to_remove,
                     length: cycle.len(),
                     safe_to_repair,
+                    priority,
                 });
             }
         }
@@ -508,7 +528,10 @@ impl DependencyCycleMonitor {
         rec_stack.remove(node);
     }
 
-    /// Resolve a cycle by determining which edge to remove
+    /// Resolve a cycle by determining which edge to remove based on priority
+    ///
+    /// Uses priority (0=highest, 4=lowest) to determine the lowest-priority edge.
+    /// Falls back to creation time for beads with equal priority.
     fn resolve_cycle(
         &self,
         cycle: &[String],
@@ -518,26 +541,31 @@ impl DependencyCycleMonitor {
             return None;
         }
 
-        // Find the youngest bead in the cycle
-        let mut youngest = &cycle[0];
-        let mut youngest_time = beads.get(youngest)?.created_at;
+        // Find the lowest-priority bead in the cycle (priority 4 = lowest, 0 = highest)
+        let mut lowest_priority_bead = &cycle[0];
+        let mut lowest_priority = beads.get(lowest_priority_bead)?.priority;
+        let mut created_at = beads.get(lowest_priority_bead)?.created_at;
 
         for bead_id in cycle.iter().skip(1) {
             if let Some(bead) = beads.get(bead_id) {
-                if bead.created_at > youngest_time {
-                    youngest = bead_id;
-                    youngest_time = bead.created_at;
+                // Lower priority (higher number) wins
+                // If priorities are equal, younger bead wins (more recent)
+                if bead.priority > lowest_priority
+                    || (bead.priority == lowest_priority && bead.created_at > created_at) {
+                    lowest_priority_bead = bead_id;
+                    lowest_priority = bead.priority;
+                    created_at = bead.created_at;
                 }
             }
         }
 
-        // Find who blocks the youngest bead
+        // Find who blocks the lowest-priority bead
         for (i, bead_id) in cycle.iter().enumerate() {
-            if bead_id == youngest {
+            if bead_id == lowest_priority_bead {
                 // The blocker is the next bead in the cycle
                 let blocker_idx = if i + 1 < cycle.len() { i + 1 } else { 0 };
                 let blocker = &cycle[blocker_idx];
-                return Some((youngest.clone(), blocker.clone()));
+                return Some((lowest_priority_bead.clone(), blocker.clone()));
             }
         }
 
@@ -600,14 +628,17 @@ impl DependencyCycleMonitor {
 
             let repair_result = self.fix_circular_dependency(conn, cycle);
 
+            let was_converted = repair_result.as_ref().ok().copied().unwrap_or(false);
+            let action = if was_converted { "Converted to non-blocking" } else { "Removed" };
+
             let repair = DependencyRepair {
                 timestamp: Utc::now(),
                 repair_type: "circular_dependency".to_string(),
-                bead_id: cycle.younger_bead.clone(),
+                bead_id: cycle.bead_to_modify.clone(),
                 bead_title: cycle.cycle.first()
                     .and_then(|id| conn.query_row(
                         "SELECT title FROM issues WHERE id = ?1",
-                        &[&cycle.younger_bead],
+                        &[&cycle.bead_to_modify],
                         |row| row.get(0)
                     ).ok())
                     .unwrap_or_default(),
@@ -619,19 +650,19 @@ impl DependencyCycleMonitor {
                 ),
                 success: repair_result.is_ok(),
                 message: repair_result
-                    .map(|_| "Dependency removed successfully".to_string())
-                    .unwrap_or_else(|e| format!("Failed to remove dependency: {}", e)),
+                    .map(|_| format!("Dependency {} successfully", action.to_lowercase()))
+                    .unwrap_or_else(|e| format!("Failed to fix dependency: {}", e)),
             };
 
             if repair.success {
                 self.log_repair(&repair)?;
                 eprintln!(
-                    "  ✅ [{}] Removed circular dependency: {} was blocked by {}",
-                    repair.bead_id, repair.bead_id, repair.previous_blocker.as_ref().unwrap()
+                    "  ✅ [{}] {} circular dependency: {} was blocked by {}",
+                    repair.bead_id, action, repair.bead_id, repair.previous_blocker.as_ref().unwrap()
                 );
             } else {
                 eprintln!(
-                    "  ❌ [{}] Failed to remove circular dependency: {}",
+                    "  ❌ [{}] Failed to fix circular dependency: {}",
                     repair.bead_id, repair.message
                 );
             }
@@ -675,20 +706,32 @@ impl DependencyCycleMonitor {
         Ok(repairs)
     }
 
-    /// Fix a circular dependency by removing the blocking edge
+    /// Fix a circular dependency by removing the blocking edge or converting to non-blocking
     fn fix_circular_dependency(
         &self,
         conn: &Connection,
         cycle: &DetectedCycle,
-    ) -> Result<()> {
-        conn.execute(
-            "DELETE FROM dependencies
-             WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2 AND kind = 'blocks'",
-            params![&cycle.younger_bead, &cycle.blocker_to_remove],
-        )
-        .context("Failed to delete circular dependency")?;
-
-        Ok(())
+    ) -> Result<bool> {
+        if self.config.convert_to_non_blocking {
+            // Convert the blocking edge to a non-blocking reference
+            conn.execute(
+                "UPDATE dependencies
+                 SET kind = 'reference'
+                 WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2 AND kind = 'blocks'",
+                params![&cycle.bead_to_modify, &cycle.blocker_to_remove],
+            )
+            .context("Failed to convert circular dependency to non-blocking")?;
+            Ok(true) // Indicate conversion was performed
+        } else {
+            // Remove the blocking edge entirely
+            conn.execute(
+                "DELETE FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2 AND kind = 'blocks'",
+                params![&cycle.bead_to_modify, &cycle.blocker_to_remove],
+            )
+            .context("Failed to delete circular dependency")?;
+            Ok(false) // Indicate removal was performed
+        }
     }
 
     /// Fix an orphaned dependency by removing it
@@ -777,7 +820,7 @@ impl DependencyCycleMonitor {
                     "⚠ Too long (skipped)"
                 };
                 println!("{}. Cycle (length {}): {}", i + 1, cycle.length, cycle.cycle.join(" -> "));
-                println!("   Youngest bead: {}, Blocker to remove: {}", cycle.younger_bead, cycle.blocker_to_remove);
+                println!("   Bead to modify: {} (priority {}), Blocker to remove: {}", cycle.bead_to_modify, cycle.priority, cycle.blocker_to_remove);
                 println!("   Status: {}", status);
             }
         }
@@ -930,7 +973,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DependencyCycleConfig::default();
-        assert_eq!(config.check_interval.as_secs(), 300);
+        assert_eq!(config.check_interval.as_secs(), 3600);
         assert!(config.auto_repair_enabled);
         assert!(!config.dry_run);
         assert_eq!(config.max_cycle_length, 10);
@@ -959,17 +1002,18 @@ mod tests {
     fn test_detected_cycle_serialization() {
         let cycle = DetectedCycle {
             cycle: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            younger_bead: "b".to_string(),
+            bead_to_modify: "b".to_string(),
             blocker_to_remove: "c".to_string(),
             length: 3,
             safe_to_repair: true,
+            priority: 2,
         };
 
         let json = serde_json::to_string(&cycle).unwrap();
         assert!(json.contains("cycle"));
-        assert!(json.contains("younger_bead"));
+        assert!(json.contains("bead_to_modify"));
         assert!(json.contains("safe_to_repair"));
-        assert!(json.contains("safe_to_repair"));
+        assert!(json.contains("priority"));
     }
 
     #[test]

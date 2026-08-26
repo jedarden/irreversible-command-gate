@@ -268,8 +268,8 @@ enum Commands {
     },
     /// Dependency cycle detection and repair monitoring
     DependencyCycleMonitor {
-        /// Interval between checks in seconds (default: 300)
-        #[arg(long, default_value = "300")]
+        /// Interval between checks in seconds (default: 3600)
+        #[arg(long, default_value = "3600")]
         interval_secs: u64,
         /// Path to workspace directory (default: current directory)
         #[arg(long)]
@@ -283,6 +283,9 @@ enum Commands {
         /// Maximum cycle length to auto-repair (default: 10)
         #[arg(long, default_value = "10")]
         max_cycle_length: usize,
+        /// Convert blocking edges to non-blocking references instead of removing
+        #[arg(long)]
+        convert_to_non_blocking: bool,
     },
     /// Bead database integrity verification with rehearsal-based repair
     DatabaseIntegrity {
@@ -1859,6 +1862,7 @@ fn main() -> Result<()> {
             once,
             dry_run,
             max_cycle_length,
+            convert_to_non_blocking,
         } => {
             use icg::dependency_cycle_monitor::DependencyCycleMonitor;
 
@@ -1868,6 +1872,7 @@ fn main() -> Result<()> {
             config.check_interval = std::time::Duration::from_secs(interval_secs.max(60));
             config.dry_run = dry_run;
             config.max_cycle_length = max_cycle_length;
+            config.convert_to_non_blocking = convert_to_non_blocking;
 
             let mut monitor = DependencyCycleMonitor::with_config(config)?;
 
