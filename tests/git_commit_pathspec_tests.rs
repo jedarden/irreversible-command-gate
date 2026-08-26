@@ -85,7 +85,7 @@ fn commit_without_pathspec_is_denied_by_hook_and_wrapper_front_ends() {
 }
 
 #[test]
-fn explicit_pathspecs_and_unrelated_git_commands_remain_allowed() {
+fn explicit_pathspecs_and_non_push_git_commands_remain_allowed() {
     let engine = load_git_engine();
 
     for command in [
@@ -95,7 +95,6 @@ fn explicit_pathspecs_and_unrelated_git_commands_remain_allowed() {
         "git commit -m \"mention --all in the message\" src/main.rs",
         "git commit --dry-run",
         "git status",
-        "git push origin main",
     ] {
         assert_eq!(
             engine.evaluate_command(&CommandSource::Hook(command.to_string())),
