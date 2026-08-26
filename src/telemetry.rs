@@ -100,6 +100,20 @@ pub struct EvaluationRecord {
     pub session_id: Option<String>,
 }
 
+/// Audit record for an explicit `ICG_DISABLED` activation.
+///
+/// This intentionally contains no command, arguments, tool input, working
+/// directory, or environment values. Emergency commands often carry secrets;
+/// retaining only the time and enforcement front end makes the activation
+/// auditable without leaking those values into a shared telemetry store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergencyBypassEvent {
+    pub timestamp: DateTime<Utc>,
+    pub front_end: String,
+}
+
+const EMERGENCY_BYPASS_EVENT_CAPACITY: usize = 100;
+
 /// Evaluation verdict (matches engine::CheckResult but simpler for serialization)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -331,6 +345,10 @@ pub struct TelemetryStore {
     #[serde(default)]
     rule_metrics: std::collections::BTreeMap<String, RuleEvaluationTelemetry>,
 
+    /// Bounded audit history for explicit operator emergency bypasses.
+    #[serde(default)]
+    emergency_bypasses: Vec<EmergencyBypassEvent>,
+
     /// Path to telemetry file on disk
     store_path: PathBuf,
 }
@@ -344,6 +362,7 @@ impl TelemetryStore {
             last_rollback_at: None,
             health: HealthTelemetry::default(),
             rule_metrics: std::collections::BTreeMap::new(),
+            emergency_bypasses: Vec::new(),
             store_path,
         }
     }
@@ -361,6 +380,7 @@ impl TelemetryStore {
             last_rollback_at: None,
             health: HealthTelemetry::default(),
             rule_metrics: std::collections::BTreeMap::new(),
+            emergency_bypasses: Vec::new(),
             store_path,
         }
     }
@@ -480,6 +500,42 @@ impl TelemetryStore {
             .collect();
     }
 
+    /// Record an emergency bypass without accepting command or tool-input
+    /// data. Keep a bounded history so an exported telemetry file cannot grow
+    /// indefinitely if an incident leaves the variable exported.
+    pub fn record_emergency_bypass(&mut self, front_end: impl Into<String>) {
+        let overflow = self
+            .emergency_bypasses
+            .len()
+            .saturating_sub(EMERGENCY_BYPASS_EVENT_CAPACITY.saturating_sub(1));
+        if overflow > 0 {
+            self.emergency_bypasses.drain(..overflow);
+        }
+        self.emergency_bypasses.push(EmergencyBypassEvent {
+            timestamp: Utc::now(),
+            front_end: front_end.into(),
+        });
+    }
+
+    /// Return the retained emergency-bypass activation audit records.
+    pub fn emergency_bypasses(&self) -> &[EmergencyBypassEvent] {
+        &self.emergency_bypasses
+    }
+
+    /// Preserve emergency-bypass audit records while rebuilding telemetry
+    /// during a configuration change.
+    pub fn restore_emergency_bypasses(
+        &mut self,
+        bypasses: impl IntoIterator<Item = EmergencyBypassEvent>,
+    ) {
+        let mut bypasses = bypasses.into_iter().collect::<Vec<_>>();
+        let overflow = bypasses
+            .len()
+            .saturating_sub(EMERGENCY_BYPASS_EVENT_CAPACITY);
+        bypasses.drain(..overflow);
+        self.emergency_bypasses = bypasses;
+    }
+
     /// Get the current evaluation window
     pub fn window(&self) -> &EvaluationWindow {
         &self.window
@@ -536,6 +592,7 @@ impl TelemetryStore {
         self.window.clear();
         self.last_rollback_at = None;
         self.rule_metrics.clear();
+        self.emergency_bypasses.clear();
     }
 }
 
