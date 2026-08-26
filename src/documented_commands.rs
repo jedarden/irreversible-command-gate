@@ -16,6 +16,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::denial_log;
 use crate::emergency_bypass::{self, FrontEnd};
 use crate::engine::{CheckResult, CommandSource, ContentSource, Engine, InputSource};
 use crate::overrides::{save_override, RepoOverride};
@@ -304,22 +305,16 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
         }
     }
 
-    let mut debug_command_source = None;
-    let result = if args.stdin {
+    let source = if args.stdin {
         let Some((input, _raw_tool_input)) = engine.read_pre_tool_use_payload_from_stdin()? else {
             bail!("stdin did not contain a valid PreToolUse request")
         };
         let source = Engine::input_source_from_pre_tool_use(input)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?
             .context("PreToolUse request did not contain a checkable tool")?;
-        if let InputSource::Command(command) = &source {
-            debug_command_source = Some(command.clone());
-        }
-        evaluate_input_source(&engine, source)
+        source
     } else if let Some(command) = args.command {
-        let source = CommandSource::Hook(command);
-        debug_command_source = Some(source.clone());
-        engine.evaluate_command(&source)
+        InputSource::Command(CommandSource::Hook(command))
     } else if let Some(path) = args.file {
         let (file_path, content) = if path == Path::new("-") {
             ("stdin.yaml".to_string(), read_stdin_text()?)
@@ -328,10 +323,16 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
                 .with_context(|| format!("failed to read file {}", path.display()))?;
             (path.to_string_lossy().into_owned(), content)
         };
-        engine.evaluate_content(&ContentSource::Write { file_path, content })
+        InputSource::Content(ContentSource::Write { file_path, content })
     } else {
         bail!("one of --command, --stdin, or --file is required")
     };
+    let debug_command_source = match &source {
+        InputSource::Command(command) => Some(command.clone()),
+        InputSource::Content(_) | InputSource::ContentBatch(_) => None,
+    };
+    let result = evaluate_input_source(&engine, &source);
+    denial_log::record_operational_denial(&source, &result);
 
     print_check_result(&result, &packs);
     if args.debug {
@@ -344,11 +345,11 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
     Ok(())
 }
 
-fn evaluate_input_source(engine: &Engine, source: InputSource) -> CheckResult {
+fn evaluate_input_source(engine: &Engine, source: &InputSource) -> CheckResult {
     match source {
-        InputSource::Command(source) => engine.evaluate_command(&source),
-        InputSource::Content(source) => engine.evaluate_content(&source),
-        InputSource::ContentBatch(sources) => engine.evaluate_content_batch(&sources),
+        InputSource::Command(source) => engine.evaluate_command(source),
+        InputSource::Content(source) => engine.evaluate_content(source),
+        InputSource::ContentBatch(sources) => engine.evaluate_content_batch(sources),
     }
 }
 
@@ -674,10 +675,14 @@ fn load_operator_denials(explicit: Option<&Path>) -> Result<Vec<OperatorDenial>>
 
     let mut denials = Vec::new();
     for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        denials.push(
-            serde_json::from_str::<OperatorDenial>(line)
-                .with_context(|| format!("invalid denial record in {}", path.display()))?,
-        );
+        match serde_json::from_str::<OperatorDenial>(line) {
+            Ok(denial) => denials.push(denial),
+            Err(_) => {
+                let record = serde_json::from_str::<denial_log::DenialRecord>(line)
+                    .with_context(|| format!("invalid denial record in {}", path.display()))?;
+                denials.push(operator_denial_from_record(record));
+            }
+        }
     }
     if denials.is_empty() {
         bail!(
@@ -686,6 +691,32 @@ fn load_operator_denials(explicit: Option<&Path>) -> Result<Vec<OperatorDenial>>
         )
     }
     Ok(denials)
+}
+
+fn operator_denial_from_record(record: denial_log::DenialRecord) -> OperatorDenial {
+    let command = match record.denied_input {
+        denial_log::DeniedInput::Command { command, .. } => command,
+        denial_log::DeniedInput::Content { file_path, .. } => {
+            format!("content write: {file_path}")
+        }
+        denial_log::DeniedInput::ContentBatch { file_paths, .. } => {
+            format!("content batch: {}", file_paths.join(", "))
+        }
+    };
+
+    OperatorDenial {
+        timestamp: record.timestamp.to_rfc3339(),
+        pack_id: record.pack_id,
+        pattern_id: record.pattern_id,
+        severity: format!("{:?}", record.severity),
+        command,
+        reason: record.reason,
+        session_id: record
+            .context
+            .session_id
+            .unwrap_or_else(|| "unknown".to_string()),
+        telemetry_id: record.id,
+    }
 }
 
 fn operator_now() -> Result<chrono::DateTime<chrono::Utc>> {

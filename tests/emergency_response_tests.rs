@@ -277,20 +277,84 @@ fn emergency_scenario_health_status_shows_recent_denials() {
 }
 
 #[test]
-#[ignore] // Feature not implemented: structured denial tracking
 fn emergency_scenario_denial_history_for_incident_analysis() {
-    // Test that we can retrieve denial history for incident analysis
-    // This is DOCUMENTED in Scenario 2 but NOT FULLY IMPLEMENTED
+    let temp = tempdir().expect("denial history directory should be created");
+    let denial_log = temp.path().join("denials.jsonl");
+    let command = "vault kv destroy secret/incident-analysis";
 
-    let result = icg(&["status", "--denials", "--since", "1h"]);
+    // A direct check is a production front end, so this must persist the same
+    // JSONL record that hooks and wrappers produce. A private log path keeps
+    // the scenario isolated from concurrent operator activity.
+    let check = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["check", "--command", command])
+        .env("ICG_DENIAL_LOG", &denial_log)
+        .output()
+        .expect("icg check should run");
+    assert!(check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("DENIED by icg"));
 
-    // Should succeed and show recent denials
-    assert!(result.status.success());
-    let stdout = String::from_utf8_lossy(&result.stdout);
-
-    // Should show denial information in structured format
+    let persisted = fs::read_to_string(&denial_log).expect("denial record should persist");
+    let record: serde_json::Value = serde_json::from_str(persisted.trim())
+        .expect("production denial log should contain one JSON record");
+    let telemetry_id = record["id"]
+        .as_str()
+        .expect("denial record should have an ID")
+        .to_owned();
+    assert_eq!(record["pack_id"], "openbao");
+    assert_eq!(record["pattern_id"], "openbao-destructive-verb");
+    assert_eq!(record["severity"], "high");
+    assert_eq!(record["context"]["tool"], "command");
+    assert_eq!(record["denied_input"]["command"], "<redacted>");
     assert!(
-        stdout.contains("DENIAL") || stdout.contains("vault") || stdout.contains("pattern"),
-        "Denial history should show pattern information"
+        !persisted.contains(command),
+        "denial history should not persist command payloads by default"
     );
+
+    let history = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["status", "--denials", "--since", "1h", "--format", "json"])
+        .env("ICG_DENIAL_LOG", &denial_log)
+        .output()
+        .expect("icg status should run");
+    assert!(
+        history.status.success(),
+        "denial history should be readable: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let history: serde_json::Value =
+        serde_json::from_slice(&history.stdout).expect("denial history should be JSON");
+    let denial = history
+        .as_array()
+        .and_then(|denials| denials.first())
+        .expect("recent denial should be returned");
+    assert_eq!(denial["telemetryId"], telemetry_id);
+    assert_eq!(denial["packId"], "openbao");
+    assert_eq!(denial["patternId"], "openbao-destructive-verb");
+    assert_eq!(denial["severity"], "High");
+    assert_eq!(denial["command"], "<redacted>");
+
+    let summary = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["status", "--denials", "--pattern-summary", "--since", "1h"])
+        .env("ICG_DENIAL_LOG", &denial_log)
+        .output()
+        .expect("icg pattern summary should run");
+    assert!(summary.status.success());
+    let summary = String::from_utf8_lossy(&summary.stdout);
+    assert!(summary.contains("DENIAL PATTERNS (last 1h)"));
+    assert!(summary.contains("openbao-destructive-verb"));
+    assert!(summary.contains("100%"));
+
+    let export = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["export-denial", &telemetry_id])
+        .env("ICG_DENIAL_LOG", &denial_log)
+        .output()
+        .expect("icg export-denial should run");
+    assert!(
+        export.status.success(),
+        "denial export should succeed: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let export = String::from_utf8_lossy(&export.stdout);
+    assert!(export.contains(&format!("Denial report: {telemetry_id}")));
+    assert!(export.contains("Pattern: openbao-destructive-verb"));
+    assert!(export.contains("Command: <redacted>"));
 }

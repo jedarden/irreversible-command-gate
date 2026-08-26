@@ -55,6 +55,8 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::engine::{self, InputSource};
+
 /// Denial log configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DenialLogConfig {
@@ -853,6 +855,106 @@ pub struct DenialAnalysis {
 
     /// Whether any anomalies were detected
     pub anomaly_detected: bool,
+}
+
+/// Persist an ordinary evaluated denial for operator reporting.
+///
+/// This is deliberately best effort: an unavailable audit sink must not
+/// change the decision returned by a hook, wrapper, or direct `icg check`.
+/// Command and content payloads remain redacted unless
+/// `ICG_LOG_FULL_CONTENT=true` is set for an approved sink.
+pub fn record_operational_denial(source: &InputSource, result: &engine::CheckResult) {
+    let engine::CheckResult::Denied {
+        pack_id,
+        pattern_id,
+        reason,
+    } = result
+    else {
+        return;
+    };
+
+    let denied_input = match source {
+        InputSource::Command(engine::CommandSource::Hook(command)) => DeniedInput::Command {
+            command: command.clone(),
+            segments: command.split_whitespace().map(str::to_string).collect(),
+            working_dir: std::env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string()),
+        },
+        InputSource::Command(engine::CommandSource::Argv(arguments)) => DeniedInput::Command {
+            command: arguments.join(" "),
+            segments: arguments.clone(),
+            working_dir: std::env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string()),
+        },
+        InputSource::Content(content) => DeniedInput::Content {
+            file_path: content.file_path().to_string(),
+            content: content.new_content().to_string(),
+            content_size: content.new_content().len(),
+        },
+        InputSource::ContentBatch(contents) => DeniedInput::ContentBatch {
+            file_paths: contents
+                .iter()
+                .map(|content| content.file_path().to_string())
+                .collect(),
+            total_size: contents
+                .iter()
+                .map(|content| content.new_content().len())
+                .sum(),
+        },
+    };
+
+    let config = DenialLogConfig {
+        log_full_content: std::env::var("ICG_LOG_FULL_CONTENT")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
+        ..Default::default()
+    };
+    let path = std::env::var_os("ICG_DENIAL_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/cache/icg/denials.jsonl"));
+    let severity = if pack_id == "fail-closed" {
+        DenialSeverity::Critical
+    } else {
+        DenialSeverity::High
+    };
+    let context = ExecutionContext {
+        session_id: std::env::var("ICG_SESSION_ID").ok(),
+        user: std::env::var("USER").ok(),
+        repository: std::env::var("ICG_REPOSITORY").ok(),
+        branch: std::env::var("GIT_BRANCH").ok(),
+        tool: match source {
+            InputSource::Command(_) => "command".to_string(),
+            InputSource::Content(_) => "content".to_string(),
+            InputSource::ContentBatch(_) => "content_batch".to_string(),
+        },
+        hostname: std::env::var("HOSTNAME").ok(),
+    };
+    let state = SystemState {
+        release_ref: std::env::var("ICG_RELEASE_REF").unwrap_or_default(),
+        health_status: "observed".to_string(),
+        ..Default::default()
+    };
+    let record = DenialRecord::new(
+        pack_id.clone(),
+        pattern_id.clone(),
+        "guarded_operation".to_string(),
+        severity,
+        reason.clone(),
+        denied_input,
+    )
+    .with_context(context)
+    .with_system_state(state);
+
+    if let Err(error) =
+        DenialStore::new(path.clone(), config).and_then(|store| store.record_denial(record))
+    {
+        eprintln!(
+            "icg_monitoring_event event=denial_log_write_failed path={} error={error:#}",
+            path.display()
+        );
+    }
 }
 
 #[cfg(test)]

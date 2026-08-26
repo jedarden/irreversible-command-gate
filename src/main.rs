@@ -704,109 +704,6 @@ fn record_hook_denial(
     }
 }
 
-/// Persist every ordinary rule denial as structured JSONL for log shippers.
-/// This is intentionally best effort: an audit sink outage must not change
-/// the already computed hook decision. Full command/content logging is an
-/// explicit opt-in because denial payloads may contain credentials.
-fn record_operational_denial(source: &InputSource, result: &engine::CheckResult) {
-    let engine::CheckResult::Denied {
-        pack_id,
-        pattern_id,
-        reason,
-    } = result
-    else {
-        return;
-    };
-
-    let denied_input = match source {
-        InputSource::Command(engine::CommandSource::Hook(command)) => {
-            denial_log::DeniedInput::Command {
-                command: command.clone(),
-                segments: command.split_whitespace().map(str::to_string).collect(),
-                working_dir: std::env::current_dir()
-                    .ok()
-                    .map(|path| path.display().to_string()),
-            }
-        }
-        InputSource::Command(engine::CommandSource::Argv(arguments)) => {
-            denial_log::DeniedInput::Command {
-                command: arguments.join(" "),
-                segments: arguments.clone(),
-                working_dir: std::env::current_dir()
-                    .ok()
-                    .map(|path| path.display().to_string()),
-            }
-        }
-        InputSource::Content(content) => denial_log::DeniedInput::Content {
-            file_path: content.file_path().to_string(),
-            content: content.new_content().to_string(),
-            content_size: content.new_content().len(),
-        },
-        InputSource::ContentBatch(contents) => denial_log::DeniedInput::ContentBatch {
-            file_paths: contents
-                .iter()
-                .map(|content| content.file_path().to_string())
-                .collect(),
-            total_size: contents
-                .iter()
-                .map(|content| content.new_content().len())
-                .sum(),
-        },
-    };
-
-    let config = denial_log::DenialLogConfig {
-        log_full_content: std::env::var("ICG_LOG_FULL_CONTENT")
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false),
-        ..Default::default()
-    };
-    let path = std::env::var_os("ICG_DENIAL_LOG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/cache/icg/denials.jsonl"));
-    let severity = if pack_id == "fail-closed" {
-        denial_log::DenialSeverity::Critical
-    } else {
-        denial_log::DenialSeverity::High
-    };
-    let context = denial_log::ExecutionContext {
-        session_id: std::env::var("ICG_SESSION_ID").ok(),
-        user: std::env::var("USER").ok(),
-        repository: std::env::var("ICG_REPOSITORY").ok(),
-        branch: std::env::var("GIT_BRANCH").ok(),
-        tool: match source {
-            InputSource::Command(_) => "command".to_string(),
-            InputSource::Content(_) => "content".to_string(),
-            InputSource::ContentBatch(_) => "content_batch".to_string(),
-        },
-        hostname: std::env::var("HOSTNAME").ok(),
-    };
-    let state = denial_log::SystemState {
-        release_ref: std::env::var("ICG_RELEASE_REF").unwrap_or_default(),
-        health_status: "observed".to_string(),
-        ..Default::default()
-    };
-    let record = denial_log::DenialRecord::new(
-        pack_id.clone(),
-        pattern_id.clone(),
-        "guarded_operation".to_string(),
-        severity,
-        reason.clone(),
-        denied_input,
-    )
-    .with_context(context)
-    .with_system_state(state);
-
-    match denial_log::DenialStore::new(path.clone(), config)
-        .and_then(|store| store.record_denial(record))
-    {
-        Ok(()) => {}
-        Err(error) => eprintln!(
-            "icg_monitoring_event event=denial_log_write_failed path={} error={error:#}",
-            path.display()
-        ),
-    }
-}
-
 /// Locate the content source responsible for a multi-file patch's aggregate
 /// denial before recording it. The engine intentionally returns only the most
 /// severe result, so this small re-evaluation preserves the actual file and
@@ -1299,7 +1196,7 @@ fn run_shadowed_tool(
         engine.evaluate_command(&source)
     };
     record_engine_guard_failure(lifecycle.as_deref_mut(), &engine);
-    record_operational_denial(&InputSource::Command(source.clone()), &result);
+    denial_log::record_operational_denial(&InputSource::Command(source.clone()), &result);
 
     if practice_mode {
         if let Some(report) = practice_denial_report(&result, None) {
@@ -1735,7 +1632,10 @@ fn main() -> Result<()> {
                         &InputSource::Command(source.clone()),
                         &result,
                     );
-                    record_operational_denial(&InputSource::Command(source.clone()), &result);
+                    denial_log::record_operational_denial(
+                        &InputSource::Command(source.clone()),
+                        &result,
+                    );
                     println!(
                         "{}",
                         render_hook_response(
@@ -1770,7 +1670,10 @@ fn main() -> Result<()> {
                         &InputSource::Content(content.clone()),
                         &result,
                     );
-                    record_operational_denial(&InputSource::Content(content.clone()), &result);
+                    denial_log::record_operational_denial(
+                        &InputSource::Content(content.clone()),
+                        &result,
+                    );
                     println!(
                         "{}",
                         render_hook_response(
@@ -1804,7 +1707,7 @@ fn main() -> Result<()> {
                         &contents,
                         &result,
                     );
-                    record_operational_denial(
+                    denial_log::record_operational_denial(
                         &InputSource::ContentBatch(contents.clone()),
                         &result,
                     );

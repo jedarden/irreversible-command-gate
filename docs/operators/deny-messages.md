@@ -520,9 +520,25 @@ When you receive a denial:
 
 If you believe an operation was wrongly denied:
 
-1. **Gather information**:
+1. **Gather the recent structured history**. Point the reporting commands at
+   the same denial log used by the hook, wrapper, or direct `icg check`:
    ```bash
-   icg status --denials --last 1 --format json > false-positive.json
+   ICG_DENIAL_LOG=/var/cache/icg/denials.jsonl \
+     icg status --denials --since 1h --format json > false-positive.json
+   ```
+   `--since` accepts positive windows ending in `m`, `h`, or `d`. Use
+   `--pattern-summary` with the same `--since` window when investigating a
+   repeated pattern.
+
+   Denials are appended as JSONL. Command and content payloads are redacted by
+   default; `ICG_LOG_FULL_CONTENT=true` is an explicit opt-in for an approved,
+   access-controlled sink. Keep the generated `telemetryId` from the JSON
+   record so the individual denial can be exported without relying on a shell
+   transcript.
+
+   ```bash
+   ICG_DENIAL_LOG=/var/cache/icg/denials.jsonl \
+     icg export-denial <telemetry-id> > false-positive-report.txt
    ```
 
 2. **Check for known issues**:
@@ -538,7 +554,7 @@ If you believe an operation was wrongly denied:
    Note: Requires Layer 1/2 approval via release pipeline
 
 4. **File an issue** (if genuine false positive):
-   - Include the false-positive.json export
+   - Include the false-positive-report.txt export
    - Describe what you were trying to do
    - Explain why the denial is incorrect
 
