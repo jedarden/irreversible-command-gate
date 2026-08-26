@@ -19,6 +19,20 @@ fn current_dir_lock() -> MutexGuard<'static, ()> {
         .expect("current-directory test lock should not be poisoned")
 }
 
+fn configure_test_identity(repo_path: &Path) {
+    for (key, value) in [
+        ("user.email", "test@example.com"),
+        ("user.name", "Test User"),
+    ] {
+        let status = Command::new("git")
+            .args(["config", key, value])
+            .current_dir(repo_path)
+            .status()
+            .expect("Failed to configure test git identity");
+        assert!(status.success(), "Failed to configure test git identity");
+    }
+}
+
 /// Helper to create a test git repository
 fn create_test_repo() -> TempDir {
     let dir = TempDir::new().expect("Failed to create temp dir");
@@ -31,18 +45,7 @@ fn create_test_repo() -> TempDir {
         .status()
         .expect("Failed to init git repo");
 
-    // Configure user
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(repo_path)
-        .status()
-        .expect("Failed to set git user email");
-
-    Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(repo_path)
-        .status()
-        .expect("Failed to set git user name");
+    configure_test_identity(repo_path);
 
     // Create initial commit
     let test_file = repo_path.join("test.txt");
@@ -206,6 +209,7 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
         .current_dir(repo2_path.parent().expect("Invalid parent"))
         .status()
         .expect("Failed to clone remote");
+    configure_test_identity(&repo2_path);
 
     // Make a new commit in repo2 and push
     let test_file2 = repo2_path.join("test2.txt");
@@ -303,6 +307,7 @@ fn test_push_guard_allows_after_pull() {
         .current_dir(repo2_path.parent().expect("Invalid parent"))
         .status()
         .expect("Failed to clone remote");
+    configure_test_identity(&repo2_path);
 
     let test_file2 = repo2_path.join("test2.txt");
     std::fs::write(&test_file2, "second content").expect("Failed to write test file 2");
