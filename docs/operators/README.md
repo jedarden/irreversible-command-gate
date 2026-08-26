@@ -63,7 +63,8 @@ Production artifacts belong in administrator-controlled locations:
 
 ```text
 /usr/local/bin/icg
-/etc/icg/rule-pack.json
+/etc/icg/packs/
+/etc/icg/packs.previous/
 /etc/icg/trust-pointer.json
 /etc/icg/last-update-check.json
 /etc/icg/fail-closed-policy.json

@@ -2,18 +2,34 @@
 //!
 //! User-triggered (not polling) update mechanism:
 //! - Checks GitHub Releases API once per invocation
-//! - Downloads the new rule-pack artifact per the trust pointer
-//! - Atomically replaces the on-disk artifact (write-then-rename)
+//! - Downloads the modular pack archive named by the trusted release
+//! - Validates every manifest before atomically activating a complete pack tree
 //! - No persistent process to restart (per-invocation architecture)
 
 use crate::trust_pointer::*;
 use anyhow::{Context, Result};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
+use tar::Archive;
 use tokio::runtime::Runtime;
+use uuid::Uuid;
+
+const DEFAULT_PACK_DIRECTORY: &str = "/etc/icg/packs";
+const DEFAULT_TRUST_POINTER_PATH: &str = "/etc/icg/trust-pointer.json";
+const DEFAULT_STATE_PATH: &str = "/etc/icg/last-update-check.json";
+const PACK_ARCHIVE_NAME: &str = "icg-packs.tar.gz";
+const MAX_PACK_COUNT: usize = 256;
+const MAX_PACK_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_TOTAL_PACK_BYTES: u64 = 32 * 1024 * 1024;
 
 /// State file for tracking last successful update check
 ///
@@ -115,10 +131,10 @@ pub struct UpdateConfig {
     /// configuration also lets integration tests exercise the complete update
     /// path against a local release fixture without making network calls.
     pub release_api_base_url: String,
-    /// Rule pack artifact name pattern to download
-    pub artifact_pattern: String,
-    /// Where to store the rule pack artifact
-    pub artifact_path: PathBuf,
+    /// Exact modular pack archive to download from the trusted release.
+    pub pack_archive_name: String,
+    /// Where to activate the complete modular pack directory.
+    pub pack_directory: PathBuf,
     /// Trust pointer path
     pub trust_pointer_path: PathBuf,
     /// Path to the update check state file
@@ -136,15 +152,13 @@ impl Default for UpdateConfig {
     fn default() -> Self {
         // Use root-owned system location, not user-writable path
         // See docs/plan/plan.md Architecture 'Deploy location'
-        let artifact_path = PathBuf::from("/etc/icg/rule-pack.json");
-
         Self {
             repository: "jedarden/irreversible-command-gate".to_string(),
             release_api_base_url: "https://api.github.com".to_string(),
-            artifact_pattern: "rule-pack".to_string(),
-            artifact_path,
-            trust_pointer_path: PathBuf::from("/etc/icg/trust-pointer.json"),
-            state_path: PathBuf::from("/etc/icg/last-update-check.json"),
+            pack_archive_name: PACK_ARCHIVE_NAME.to_string(),
+            pack_directory: PathBuf::from(DEFAULT_PACK_DIRECTORY),
+            trust_pointer_path: PathBuf::from(DEFAULT_TRUST_POINTER_PATH),
+            state_path: PathBuf::from(DEFAULT_STATE_PATH),
             channel: None,
         }
     }
@@ -159,8 +173,10 @@ pub struct UpdateResult {
     pub trusted_ref: String,
     /// The release version/tag
     pub release_tag: String,
-    /// Path to the updated artifact
-    pub artifact_path: PathBuf,
+    /// Path to the updated modular pack directory.
+    pub pack_directory: PathBuf,
+    /// The prior active directory, retained for an administrator rollback.
+    pub rollback_directory: Option<PathBuf>,
     /// Current version (if any)
     pub previous_version: Option<String>,
 }
@@ -171,14 +187,16 @@ impl UpdateResult {
         updated: bool,
         trusted_ref: String,
         release_tag: String,
-        artifact_path: PathBuf,
+        pack_directory: PathBuf,
+        rollback_directory: Option<PathBuf>,
         previous_version: Option<String>,
     ) -> Self {
         Self {
             updated,
             trusted_ref,
             release_tag,
-            artifact_path,
+            pack_directory,
+            rollback_directory,
             previous_version,
         }
     }
@@ -193,13 +211,9 @@ pub fn run_update(config: UpdateConfig) -> Result<UpdateResult> {
 
 /// Async implementation of the updater
 async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
-    // Determine trust pointer path based on channel
-    let trust_pointer_path = if let Some(channel) = &config.channel {
-        // Use channel-specific trust pointer for canary rollout
-        TrustPointerStore::for_channel(channel).path().to_path_buf()
-    } else {
-        config.trust_pointer_path.clone()
-    };
+    let trust_pointer_path = resolve_trust_pointer_path(&config)?;
+    let pack_directory = resolve_pack_directory(&config)?;
+    let state_path = resolve_state_path(&config)?;
 
     // Load the trust pointer to get the trusted reference
     let trust_store = TrustPointerStore::new(&trust_pointer_path);
@@ -222,50 +236,86 @@ async fn run_update_async(config: UpdateConfig) -> Result<UpdateResult> {
 
     println!("🔍 Found release: {} ({})", release.name, release.tag_name);
 
-    // Find the rule-pack artifact
-    let artifact = release
+    // The production hook reads a directory because empty-keyword and
+    // content-mode packs cannot be represented by the merged legacy asset.
+    // Select the exact release asset rather than accepting a substring match.
+    let matching_assets = release
         .assets
         .into_iter()
-        .find(|a| a.name.contains(&config.artifact_pattern))
-        .context(format!(
-            "No artifact matching '{}' found in release {}",
-            config.artifact_pattern, release.tag_name
-        ))?;
+        .filter(|asset| asset.name == config.pack_archive_name)
+        .collect::<Vec<_>>();
+    let artifact = match matching_assets.as_slice() {
+        [artifact] => artifact,
+        [] => anyhow::bail!(
+            "Release {} does not contain the required modular pack archive '{}'",
+            release.tag_name,
+            config.pack_archive_name
+        ),
+        _ => anyhow::bail!(
+            "Release {} contains more than one asset named '{}'; refusing ambiguous update",
+            release.tag_name,
+            config.pack_archive_name
+        ),
+    };
 
     println!("📦 Artifact: {} ({} bytes)", artifact.name, artifact.size);
 
     // Check if we already have this version
-    let previous_version = if config.artifact_path.exists() {
-        // Try to read version from existing artifact
-        // For now, we'll just note that it exists
+    let previous_version = if pack_directory.exists() {
         Some("existing".to_string())
     } else {
         None
     };
 
-    // Download the artifact to a temporary file
-    let temp_path = config.artifact_path.with_extension("tmp");
-    download_artifact(&artifact.browser_download_url, &temp_path).await?;
+    let staging_directory = create_staging_directory(&pack_directory)?;
+    let archive_path = sibling_path(&pack_directory, "download", "tar.gz")?;
+    let deployment = async {
+        download_artifact(&artifact.browser_download_url, &archive_path, artifact.size).await?;
+        let pack_count = extract_and_validate_pack_archive(&archive_path, &staging_directory)?;
+        let rollback_directory = atomic_replace_directory(&staging_directory, &pack_directory)?;
+        Ok::<_, anyhow::Error>((pack_count, rollback_directory))
+    }
+    .await;
 
-    // Atomically replace the artifact
-    atomic_replace(&temp_path, &config.artifact_path)?;
+    let _ = fs::remove_file(&archive_path);
+    let (pack_count, rollback_directory) = match deployment {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_directory);
+            return Err(error);
+        }
+    };
 
     println!(
-        "✅ Updated successfully: {}",
-        config.artifact_path.display()
+        "✅ Updated {} rule pack(s) successfully: {}",
+        pack_count,
+        pack_directory.display()
     );
+    if let Some(rollback_directory) = &rollback_directory {
+        println!(
+            "↩️  Previous pack directory retained at: {}",
+            rollback_directory.display()
+        );
+    }
 
     // Save the update check state
     let state = UpdateCheckState::new(release.tag_name.clone(), trusted_ref.clone());
-    state
-        .save(&config.state_path)
-        .context("Failed to save update check state")?;
+    if let Err(error) = state.save(&state_path) {
+        // Activation is already complete and the prior directory is retained.
+        // Bookkeeping must never turn a completed atomic deployment into a
+        // reported failure that invites a second, unsafe attempt.
+        eprintln!(
+            "⚠️  Updated packs but could not record update state at {}: {error:#}",
+            state_path.display()
+        );
+    }
 
     Ok(UpdateResult {
         updated: true,
         trusted_ref,
         release_tag: release.tag_name,
-        artifact_path: config.artifact_path,
+        pack_directory,
+        rollback_directory,
         previous_version,
     })
 }
@@ -318,7 +368,7 @@ async fn fetch_github_release(
 }
 
 /// Download an artifact to a file
-async fn download_artifact(url: &str, dest_path: &Path) -> Result<()> {
+async fn download_artifact(url: &str, dest_path: &Path, expected_size: u64) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300)) // 5 minute timeout for download
         .build()
@@ -349,36 +399,506 @@ async fn download_artifact(url: &str, dest_path: &Path) -> Result<()> {
         .await
         .context("Failed to read response body")?;
 
-    // Write to temporary file
-    let mut file = std::fs::File::create(dest_path)
+    if bytes.len() as u64 != expected_size {
+        anyhow::bail!(
+            "Downloaded artifact size {} does not match trusted release metadata {}",
+            bytes.len(),
+            expected_size
+        );
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest_path)
         .with_context(|| format!("Failed to create temporary file: {}", dest_path.display()))?;
 
     file.write_all(&bytes)
         .with_context(|| format!("Failed to write to temporary file: {}", dest_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to sync temporary file: {}", dest_path.display()))?;
 
     println!("✅ Download complete: {} bytes", bytes.len());
 
     Ok(())
 }
 
-/// Atomically replace a file (write-then-rename pattern)
-fn atomic_replace(temp_path: &Path, final_path: &Path) -> Result<()> {
-    // Ensure the destination directory exists
-    if let Some(parent) = final_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+fn resolve_trust_pointer_path(config: &UpdateConfig) -> Result<PathBuf> {
+    let Some(channel) = &config.channel else {
+        return Ok(config.trust_pointer_path.clone());
+    };
+    validate_channel(channel)?;
+    if config.trust_pointer_path == Path::new(DEFAULT_TRUST_POINTER_PATH) {
+        Ok(TrustPointerStore::for_channel(channel).path().to_path_buf())
+    } else {
+        Ok(config.trust_pointer_path.clone())
     }
+}
 
-    // Atomic rename
-    std::fs::rename(temp_path, final_path).with_context(|| {
+fn resolve_pack_directory(config: &UpdateConfig) -> Result<PathBuf> {
+    let Some(channel) = &config.channel else {
+        return Ok(config.pack_directory.clone());
+    };
+    validate_channel(channel)?;
+    if config.pack_directory == Path::new(DEFAULT_PACK_DIRECTORY) {
+        Ok(PathBuf::from(format!("{DEFAULT_PACK_DIRECTORY}-{channel}")))
+    } else {
+        Ok(config.pack_directory.clone())
+    }
+}
+
+fn resolve_state_path(config: &UpdateConfig) -> Result<PathBuf> {
+    let Some(channel) = &config.channel else {
+        return Ok(config.state_path.clone());
+    };
+    validate_channel(channel)?;
+    if config.state_path == Path::new(DEFAULT_STATE_PATH) {
+        Ok(PathBuf::from(format!(
+            "/etc/icg/last-update-check-{channel}.json"
+        )))
+    } else {
+        Ok(config.state_path.clone())
+    }
+}
+
+fn validate_channel(channel: &str) -> Result<()> {
+    if channel.is_empty()
+        || !channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        anyhow::bail!(
+            "Invalid update channel '{channel}'; use only ASCII letters, numbers, '-' and '_'"
+        );
+    }
+    Ok(())
+}
+
+fn create_staging_directory(pack_directory: &Path) -> Result<PathBuf> {
+    let parent = prepare_deployment_parent(pack_directory)?;
+    for _ in 0..8 {
+        let staging = parent.join(format!(".icg-packs-staging-{}", Uuid::new_v4()));
+        match fs::create_dir(&staging) {
+            Ok(()) => {
+                set_directory_mode(&staging, 0o755)?;
+                validate_production_directory_security(&staging)?;
+                return Ok(staging);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed to create staging directory: {}", staging.display())
+                })
+            }
+        }
+    }
+    anyhow::bail!("Could not allocate a unique pack staging directory")
+}
+
+fn prepare_deployment_parent(pack_directory: &Path) -> Result<&Path> {
+    let parent = pack_directory
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("Pack directory must have a parent directory")?;
+    fs::create_dir_all(parent).with_context(|| {
         format!(
-            "Failed to rename {} to {}",
-            temp_path.display(),
-            final_path.display()
+            "Failed to create pack parent directory: {}",
+            parent.display()
         )
     })?;
+    ensure_real_directory(parent, "pack parent directory")?;
+    validate_production_directory_security(parent)?;
+    Ok(parent)
+}
 
+fn extract_and_validate_pack_archive(
+    archive_path: &Path,
+    staging_directory: &Path,
+) -> Result<usize> {
+    let archive_file = fs::File::open(archive_path).with_context(|| {
+        format!(
+            "Failed to open downloaded archive: {}",
+            archive_path.display()
+        )
+    })?;
+    let decoder = GzDecoder::new(archive_file);
+    let mut archive = Archive::new(decoder);
+    let mut engine = crate::engine::Engine::new();
+    let mut names = HashSet::new();
+    let mut pack_ids = HashSet::new();
+    let mut total_bytes = 0_u64;
+
+    for entry in archive
+        .entries()
+        .context("Downloaded pack artifact is not a readable gzip tar archive")?
+    {
+        let mut entry = entry.context("Failed to read entry from pack archive")?;
+        let path = entry
+            .path()
+            .context("Pack archive entry has an invalid path")?
+            .into_owned();
+        let entry_type = entry.header().entry_type();
+
+        if entry_type.is_dir() {
+            validate_root_directory_entry(&path)?;
+            continue;
+        }
+        if !entry_type.is_file() {
+            anyhow::bail!(
+                "Pack archive entry '{}' is not a regular file; links and special files are forbidden",
+                path.display()
+            );
+        }
+
+        let name = archive_pack_filename(&path)?;
+        if !names.insert(name.to_string()) {
+            anyhow::bail!("Pack archive contains duplicate file '{name}'");
+        }
+        if names.len() > MAX_PACK_COUNT {
+            anyhow::bail!("Pack archive contains more than {MAX_PACK_COUNT} manifests");
+        }
+        let size = entry.size();
+        if size > MAX_PACK_BYTES {
+            anyhow::bail!("Pack archive entry '{name}' exceeds {MAX_PACK_BYTES} bytes");
+        }
+        total_bytes = total_bytes
+            .checked_add(size)
+            .context("Pack archive size overflow")?;
+        if total_bytes > MAX_TOTAL_PACK_BYTES {
+            anyhow::bail!("Pack archive exceeds {MAX_TOTAL_PACK_BYTES} bytes of manifest data");
+        }
+
+        let destination = staging_directory.join(name);
+        let mut destination_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .with_context(|| {
+                format!(
+                    "Failed to create staged manifest: {}",
+                    destination.display()
+                )
+            })?;
+        let extracted = std::io::copy(&mut entry, &mut destination_file).with_context(|| {
+            format!(
+                "Failed to extract staged manifest: {}",
+                destination.display()
+            )
+        })?;
+        if extracted != size {
+            anyhow::bail!(
+                "Pack archive entry '{name}' ended after {extracted} bytes; expected {size} bytes"
+            );
+        }
+        destination_file.sync_all().with_context(|| {
+            format!("Failed to sync staged manifest: {}", destination.display())
+        })?;
+        set_file_mode(&destination, 0o644)?;
+
+        let pack = crate::rule_pack::load_pack(&destination)
+            .with_context(|| format!("Pack archive manifest '{}' is invalid", name))?;
+        if !pack_ids.insert(pack.id.clone()) {
+            anyhow::bail!("Pack archive contains duplicate pack id '{}'", pack.id);
+        }
+        engine.load_pack(pack)?;
+        if engine.has_guard_failure() {
+            anyhow::bail!("Pack archive manifest '{}' failed engine validation", name);
+        }
+    }
+
+    if names.is_empty() {
+        anyhow::bail!("Pack archive contains no JSON manifests");
+    }
+    sync_directory(staging_directory)?;
+    Ok(names.len())
+}
+
+fn validate_root_directory_entry(path: &Path) -> Result<()> {
+    if path
+        .components()
+        .all(|component| component == Component::CurDir)
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Pack archive directory entry '{}' is nested; manifests must be at the archive root",
+        path.display()
+    )
+}
+
+fn archive_pack_filename(path: &Path) -> Result<&str> {
+    let components = path.components().collect::<Vec<_>>();
+    let name = match components.as_slice() {
+        [Component::Normal(name)] | [Component::CurDir, Component::Normal(name)] => name,
+        _ => anyhow::bail!(
+            "Pack archive entry '{}' is not a root-level manifest (traversal and nested paths are forbidden)",
+            path.display()
+        ),
+    };
+    let name = name
+        .to_str()
+        .context("Pack archive entry name is not valid UTF-8")?;
+    if !name.ends_with(".json") || name == ".json" {
+        anyhow::bail!("Pack archive entry '{name}' is not a JSON manifest");
+    }
+    Ok(name)
+}
+
+/// Atomically activate a fully validated sibling directory. Existing packs not
+/// present in the archive disappear because the directory itself is exchanged,
+/// never updated in place.
+fn atomic_replace_directory(
+    staging_directory: &Path,
+    pack_directory: &Path,
+) -> Result<Option<PathBuf>> {
+    ensure_real_directory(staging_directory, "staging directory")?;
+    match fs::symlink_metadata(pack_directory) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "Active pack path is a symlink: {}",
+                    pack_directory.display()
+                );
+            }
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "Active pack path is not a directory: {}",
+                    pack_directory.display()
+                );
+            }
+            validate_production_directory_security(pack_directory)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::rename(staging_directory, pack_directory).with_context(|| {
+                format!(
+                    "Failed to activate initial pack directory {}",
+                    pack_directory.display()
+                )
+            })?;
+            if let Err(error) = sync_directory(
+                pack_directory
+                    .parent()
+                    .context("Pack directory unexpectedly has no parent")?,
+            ) {
+                eprintln!(
+                    "⚠️  Activated initial pack directory but could not sync parent: {error:#}"
+                );
+            }
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect active pack directory: {}",
+                    pack_directory.display()
+                )
+            })
+        }
+    }
+
+    let rollback_directory = rollback_directory(pack_directory)?;
+    // Use symlink_metadata rather than exists(): a dangling symlink reports
+    // false from exists(), but must still be rejected before it can be
+    // replaced as the rollback destination.
+    let retired_rollback = match fs::symlink_metadata(&rollback_directory) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "Rollback pack path is a symlink: {}",
+                    rollback_directory.display()
+                );
+            }
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "Rollback pack path is not a directory: {}",
+                    rollback_directory.display()
+                );
+            }
+            validate_production_directory_security(&rollback_directory)?;
+            let retired = sibling_path(pack_directory, "retired-rollback", "dir")?;
+            fs::rename(&rollback_directory, &retired).with_context(|| {
+                format!(
+                    "Failed to rotate existing rollback directory {}",
+                    rollback_directory.display()
+                )
+            })?;
+            Some(retired)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect rollback pack directory: {}",
+                    rollback_directory.display()
+                )
+            })
+        }
+    };
+
+    if let Err(error) = atomic_exchange_directories(pack_directory, staging_directory) {
+        restore_retired_rollback(retired_rollback.as_deref(), &rollback_directory);
+        return Err(error).with_context(|| {
+            format!(
+                "Failed to atomically exchange {} and {}",
+                pack_directory.display(),
+                staging_directory.display()
+            )
+        });
+    }
+
+    if let Err(error) = fs::rename(staging_directory, &rollback_directory) {
+        // The active directory has already been exchanged atomically. Never
+        // report this as a failed update: that would violate the promise that
+        // every returned failure leaves the active policy untouched. The old
+        // tree still exists at the staging path, so make its recovery location
+        // explicit and leave any older rollback tree intact as well.
+        eprintln!(
+            "⚠️  Activated new packs but could not rename the prior tree to {}: {error}. \
+             The rollback directory remains at {}",
+            rollback_directory.display(),
+            staging_directory.display()
+        );
+        return Ok(Some(staging_directory.to_path_buf()));
+    }
+
+    if let Some(retired_rollback) = retired_rollback {
+        if let Err(error) = fs::remove_dir_all(&retired_rollback) {
+            eprintln!(
+                "⚠️  Replaced rollback directory retained at {}: {error}",
+                retired_rollback.display()
+            );
+        }
+    }
+    if let Err(error) = sync_directory(
+        pack_directory
+            .parent()
+            .context("Pack directory unexpectedly has no parent")?,
+    ) {
+        eprintln!("⚠️  Activated pack directory but could not sync parent: {error:#}");
+    }
+    Ok(Some(rollback_directory))
+}
+
+fn restore_retired_rollback(retired_rollback: Option<&Path>, rollback_directory: &Path) {
+    if let Some(retired_rollback) = retired_rollback {
+        let _ = fs::rename(retired_rollback, rollback_directory);
+    }
+}
+
+fn rollback_directory(pack_directory: &Path) -> Result<PathBuf> {
+    let name = pack_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Pack directory must have a UTF-8 final path component")?;
+    Ok(pack_directory.with_file_name(format!("{name}.previous")))
+}
+
+fn sibling_path(pack_directory: &Path, purpose: &str, extension: &str) -> Result<PathBuf> {
+    let parent = pack_directory
+        .parent()
+        .context("Pack directory must have a parent directory")?;
+    let name = pack_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Pack directory must have a UTF-8 final path component")?;
+    Ok(parent.join(format!(
+        ".{name}.{purpose}-{}.{}",
+        Uuid::new_v4(),
+        extension
+    )))
+}
+
+fn ensure_real_directory(path: &Path, label: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect {label}: {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!("{label} is a symlink: {}", path.display());
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!("{label} is not a directory: {}", path.display());
+    }
     Ok(())
+}
+
+fn validate_production_directory_security(path: &Path) -> Result<()> {
+    if !path.starts_with("/etc/icg") {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(path).with_context(|| {
+            format!("Failed to inspect production directory: {}", path.display())
+        })?;
+        if metadata.uid() != 0 {
+            anyhow::bail!("Production directory is not root-owned: {}", path.display());
+        }
+        if metadata.permissions().mode() & 0o022 != 0 {
+            anyhow::bail!(
+                "Production directory is group/world writable: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_directory_mode(path: &Path, mode: u32) -> Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("Failed to set directory mode on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_directory_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("Failed to set file mode on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_file_mode(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)
+        .with_context(|| format!("Failed to open directory for sync: {}", path.display()))?
+        .sync_all()
+        .with_context(|| format!("Failed to sync directory: {}", path.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn atomic_exchange_directories(left: &Path, right: &Path) -> std::io::Result<()> {
+    let left = std::ffi::CString::new(left.as_os_str().as_bytes())
+        .expect("Unix paths cannot contain NUL bytes");
+    let right = std::ffi::CString::new(right.as_os_str().as_bytes())
+        .expect("Unix paths cannot contain NUL bytes");
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            left.as_ptr(),
+            libc::AT_FDCWD,
+            right.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn atomic_exchange_directories(_left: &Path, _right: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic pack directory exchange requires Linux renameat2",
+    ))
 }
 
 #[cfg(test)]
@@ -387,56 +907,89 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_atomic_replace() {
+    #[cfg(target_os = "linux")]
+    fn test_atomic_replace_directory_preserves_prior_tree() {
         let dir = tempdir().unwrap();
-        let temp_path = dir.path().join("temp.txt");
-        let final_path = dir.path().join("final.txt");
+        let active = dir.path().join("packs");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir(&active).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(active.join("old.json"), b"old").unwrap();
+        std::fs::write(staging.join("new.json"), b"new").unwrap();
 
-        // Write temporary file
-        std::fs::write(&temp_path, b"test content").unwrap();
+        let rollback = atomic_replace_directory(&staging, &active).unwrap();
 
-        // Atomic replace
-        atomic_replace(&temp_path, &final_path).unwrap();
-
-        // Verify final file exists and temp is gone
-        assert!(final_path.exists());
-        assert!(!temp_path.exists());
+        assert_eq!(std::fs::read(active.join("new.json")).unwrap(), b"new");
         assert_eq!(
-            std::fs::read_to_string(&final_path).unwrap(),
-            "test content"
+            std::fs::read(rollback.unwrap().join("old.json")).unwrap(),
+            b"old"
         );
     }
 
     #[test]
-    fn test_atomic_replace_creates_directory() {
+    #[cfg(all(unix, target_os = "linux"))]
+    fn atomic_replace_directory_rejects_dangling_rollback_symlink() {
         let dir = tempdir().unwrap();
-        let nested_dir = dir.path().join("nested").join("dir");
-        let temp_path = dir.path().join("temp.txt");
-        let final_path = nested_dir.join("final.txt");
+        let active = dir.path().join("packs");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir(&active).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(active.join("old.json"), b"old").unwrap();
+        std::fs::write(staging.join("new.json"), b"new").unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("missing-rollback"),
+            active.with_file_name("packs.previous"),
+        )
+        .unwrap();
 
-        // Write temporary file
-        std::fs::write(&temp_path, b"test content").unwrap();
+        let error = atomic_replace_directory(&staging, &active).unwrap_err();
 
-        // Atomic replace (should create nested directory)
-        atomic_replace(&temp_path, &final_path).unwrap();
-
-        // Verify final file exists and directory was created
-        assert!(final_path.exists());
-        assert_eq!(
-            std::fs::read_to_string(&final_path).unwrap(),
-            "test content"
-        );
+        assert!(error
+            .to_string()
+            .contains("Rollback pack path is a symlink"));
+        assert_eq!(std::fs::read(active.join("old.json")).unwrap(), b"old");
+        assert_eq!(std::fs::read(staging.join("new.json")).unwrap(), b"new");
     }
 
     #[test]
     fn test_update_config_default() {
         let config = UpdateConfig::default();
         assert_eq!(config.repository, "jedarden/irreversible-command-gate");
-        assert_eq!(config.artifact_pattern, "rule-pack");
+        assert_eq!(config.pack_archive_name, "icg-packs.tar.gz");
+        assert_eq!(config.pack_directory, PathBuf::from("/etc/icg/packs"));
         assert_eq!(
             config.state_path,
             PathBuf::from("/etc/icg/last-update-check.json")
         );
+    }
+
+    #[test]
+    fn update_channels_get_isolated_default_paths() {
+        let config = UpdateConfig {
+            channel: Some("canary".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_trust_pointer_path(&config).unwrap(),
+            PathBuf::from("/etc/icg/trust-pointer-canary.json")
+        );
+        assert_eq!(
+            resolve_pack_directory(&config).unwrap(),
+            PathBuf::from("/etc/icg/packs-canary")
+        );
+        assert_eq!(
+            resolve_state_path(&config).unwrap(),
+            PathBuf::from("/etc/icg/last-update-check-canary.json")
+        );
+        assert!(validate_channel("../escape").is_err());
+    }
+
+    #[test]
+    fn archive_layout_rejects_traversal_and_nested_paths() {
+        assert!(archive_pack_filename(Path::new("../escaped.json")).is_err());
+        assert!(archive_pack_filename(Path::new("packs/secrets.json")).is_err());
+        assert!(archive_pack_filename(Path::new("/escaped.json")).is_err());
+        assert!(archive_pack_filename(Path::new("./secrets.json")).is_ok());
     }
 
     #[test]

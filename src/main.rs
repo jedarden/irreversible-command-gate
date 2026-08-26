@@ -100,14 +100,15 @@ enum Commands {
     /// Trust pointer management (Layer 4 minimal form)
     #[command(subcommand)]
     Trust(TrustSubcommand),
-    /// Update rule pack from GitHub Releases (per the trust pointer)
+    /// Atomically update the modular rule-pack directory from GitHub Releases
     Update {
         /// Path to trust pointer file (defaults to /etc/icg/trust-pointer.json)
         #[arg(short, long)]
         trust_pointer_path: Option<PathBuf>,
-        /// Path where the rule pack artifact should be stored (defaults to /etc/icg/rule-pack.json)
-        #[arg(short, long)]
-        artifact_path: Option<PathBuf>,
+        /// Directory where the complete modular pack release is activated
+        /// (defaults to /etc/icg/packs; --channel NAME uses /etc/icg/packs-NAME)
+        #[arg(short = 'a', long = "pack-dir", alias = "artifact-path")]
+        pack_directory: Option<PathBuf>,
         /// Channel identifier for canary rollout (e.g., "canary", "stable")
         ///
         /// When set, uses a channel-specific trust pointer file
@@ -1910,7 +1911,7 @@ fn main() -> Result<()> {
         },
         Commands::Update {
             trust_pointer_path,
-            artifact_path,
+            pack_directory,
             channel,
             check_only,
         } => {
@@ -1919,21 +1920,22 @@ fn main() -> Result<()> {
             }
             let mut config = UpdateConfig::default();
 
-            // Set channel if specified
+            // Channel-specific paths are derived by the updater only when the
+            // caller leaves the corresponding default path unchanged.
             if let Some(ref ch) = channel {
                 config.channel = Some(ch.clone());
-                config.trust_pointer_path = TrustPointerStore::for_channel(ch).path().to_path_buf();
-            } else if let Some(trust_path) = trust_pointer_path {
+            }
+            if let Some(trust_path) = trust_pointer_path {
                 config.trust_pointer_path = trust_path;
             }
 
-            if let Some(artifact_path_override) = artifact_path {
-                config.artifact_path = artifact_path_override;
+            if let Some(pack_directory_override) = pack_directory {
+                config.pack_directory = pack_directory_override;
             }
 
             println!("🔄 icg update started");
             println!("📁 Trust pointer: {}", config.trust_pointer_path.display());
-            println!("📁 Artifact path: {}", config.artifact_path.display());
+            println!("📁 Pack directory: {}", config.pack_directory.display());
             println!();
 
             let result = run_update(config).context("Failed to run update")?;
@@ -1943,7 +1945,10 @@ fn main() -> Result<()> {
             println!();
             println!("**Trusted Reference:** {}", result.trusted_ref);
             println!("**Release Tag:** {}", result.release_tag);
-            println!("**Artifact Path:** {}", result.artifact_path.display());
+            println!("**Pack Directory:** {}", result.pack_directory.display());
+            if let Some(rollback) = result.rollback_directory {
+                println!("**Rollback Directory:** {}", rollback.display());
+            }
             if let Some(prev) = result.previous_version {
                 println!("**Previous Version:** {}", prev);
             } else {

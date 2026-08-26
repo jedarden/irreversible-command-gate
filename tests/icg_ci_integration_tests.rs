@@ -6,20 +6,24 @@
 //! real CLI gates and updater rather than duplicating the workflow as a second
 //! test implementation. No GitHub or cluster access is required.
 
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use icg::coverage::{load_rule_pack, run_release_integrity_diff};
 use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::regression::{verify_regression_suite, ExpectedVerdict, RegressionSuite};
 use icg::rule_pack::Pack;
 use icg::trust_pointer::TrustPointerStore;
 use icg::update::{run_update, UpdateCheckState, UpdateConfig};
+use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use tar::{Builder, Header};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -180,35 +184,162 @@ fn icg_ci_release_candidate_runs_both_layer_one_gates_and_emits_layer_two_report
     assert!(!diff.has_regressions());
 }
 
-#[test]
-fn trusted_release_update_replaces_artifact_and_deploys_the_trusted_pack() {
-    let temp = tempfile::tempdir().expect("temporary deployment workspace");
-    let previous_bytes = fs::read(fixture("previous-release.json")).expect("previous fixture");
-    let current_bytes = fs::read(fixture("current-release-clean.json")).expect("current fixture");
-    let server = FixtureServer::new(current_bytes.clone());
+fn production_pack_archive() -> Vec<u8> {
+    let pack_directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let mut paths = fs::read_dir(pack_directory)
+        .expect("production packs should be readable")
+        .map(|entry| entry.expect("pack entry should be readable").path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert!(!paths.is_empty(), "production archive needs pack manifests");
 
-    let trust_path = temp.path().join("etc/icg/trust-pointer.json");
-    let artifact_path = temp.path().join("etc/icg/rule-pack.json");
-    let state_path = temp.path().join("etc/icg/last-update-check.json");
-    fs::create_dir_all(artifact_path.parent().expect("artifact parent"))
-        .expect("deployment directory should exist");
-    fs::write(&artifact_path, &previous_bytes).expect("old artifact should be installed");
+    build_pack_archive(
+        paths
+            .into_iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("pack name should be UTF-8")
+                    .to_string();
+                (name, fs::read(path).expect("pack should be readable"))
+            })
+            .collect(),
+    )
+}
 
-    // The pointer is advanced only after the Layer 1/2 evidence above has
-    // been produced. The updater must use this exact reference for its API
-    // lookup; it must not silently follow a latest-release alias.
-    let trust_store = TrustPointerStore::new(&trust_path);
+fn build_pack_archive(entries: Vec<(String, Vec<u8>)>) -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = Builder::new(encoder);
+    for (name, contents) in entries {
+        let mut header = Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, format!("./{name}"), contents.as_slice())
+            .expect("test archive entry should be appended");
+    }
+    archive
+        .into_inner()
+        .expect("test archive should be finalized")
+        .finish()
+        .expect("test gzip archive should be finalized")
+}
+
+fn build_pack_archive_with_symlink(valid_manifest: Vec<u8>) -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = Builder::new(encoder);
+    let mut manifest_header = Header::new_gnu();
+    manifest_header.set_size(valid_manifest.len() as u64);
+    manifest_header.set_mode(0o644);
+    manifest_header.set_cksum();
+    archive
+        .append_data(
+            &mut manifest_header,
+            "./secrets.json",
+            valid_manifest.as_slice(),
+        )
+        .expect("valid test archive entry should be appended");
+
+    let mut symlink_header = Header::new_gnu();
+    symlink_header.set_entry_type(tar::EntryType::Symlink);
+    symlink_header.set_size(0);
+    symlink_header.set_mode(0o777);
+    symlink_header.set_cksum();
+    archive
+        .append_link(&mut symlink_header, "./escaped.json", "/etc/passwd")
+        .expect("malicious symlink test entry should be appended");
+
+    archive
+        .into_inner()
+        .expect("test archive should be finalized")
+        .finish()
+        .expect("test gzip archive should be finalized")
+}
+
+fn run_hook(pack_directory: &Path, tool_name: &str, tool_input: Value) -> Value {
+    let support = tempfile::tempdir().expect("hook support directory should exist");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["hook", "--rule-pack"])
+        .arg(pack_directory)
+        .env("ICG_HEALTH_PATH", support.path().join("health.json"))
+        .env("ICG_TELEMETRY_PATH", support.path().join("telemetry.json"))
+        .env("ICG_DENIAL_LOG", support.path().join("denials.jsonl"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hook should start");
+    child
+        .stdin
+        .take()
+        .expect("hook stdin should be available")
+        .write_all(
+            json!({"tool_name": tool_name, "tool_input": tool_input})
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("hook input should be written");
+    let output = child.wait_with_output().expect("hook should finish");
+    assert!(
+        output.status.success(),
+        "hook failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("hook should return one JSON response")
+}
+
+fn assert_hook_denied(response: Value, pack_id: &str, pattern_id: &str) {
+    let output = &response["hookSpecificOutput"];
+    assert_eq!(output["permissionDecision"], "deny");
+    let reason = output["permissionDecisionReason"]
+        .as_str()
+        .expect("denial should include a reason");
+    assert!(reason.contains(&format!("pack={pack_id}")), "{reason}");
+    assert!(
+        reason.contains(&format!("pattern={pattern_id}")),
+        "{reason}"
+    );
+}
+
+fn write_trust_pointer(path: &Path) -> TrustPointerStore {
+    let trust_store = TrustPointerStore::new(path);
     trust_store
         .set_trusted_ref_with_justification(
             "v2.0.0",
             "Layer 1 passed and Layer 2 approved the coverage report",
         )
         .expect("trusted release pointer should be written");
+    trust_store
+}
+
+#[test]
+fn trusted_release_update_replaces_complete_pack_directory_and_preserves_enforcement() {
+    let temp = tempfile::tempdir().expect("temporary deployment workspace");
+    let archive = production_pack_archive();
+    let server = FixtureServer::new(archive);
+
+    let trust_path = temp.path().join("etc/icg/trust-pointer.json");
+    let pack_directory = temp.path().join("etc/icg/packs");
+    let state_path = temp.path().join("etc/icg/last-update-check.json");
+    fs::create_dir_all(&pack_directory).expect("deployment directory should exist");
+    fs::write(
+        pack_directory.join("removed-by-release.json"),
+        r#"{"id":"removed-by-release","tool_keywords":["removed"],"applies_to":[],"safe_patterns":[],"guarded_patterns":[]}"#,
+    )
+    .expect("old pack should be installed");
+
+    // The pointer is advanced only after the Layer 1/2 evidence above has
+    // been produced. The updater must use this exact reference for its API
+    // lookup; it must not silently follow a latest-release alias.
+    let trust_store = write_trust_pointer(&trust_path);
 
     let config = UpdateConfig {
         repository: "test/release-repo".to_string(),
         release_api_base_url: server.base_url(),
-        artifact_path: artifact_path.clone(),
+        pack_directory: pack_directory.clone(),
         trust_pointer_path: trust_path.clone(),
         state_path: state_path.clone(),
         ..Default::default()
@@ -219,13 +350,22 @@ fn trusted_release_update_replaces_artifact_and_deploys_the_trusted_pack() {
     assert_eq!(result.trusted_ref, "v2.0.0");
     assert_eq!(result.release_tag, "v2.0.0");
     assert_eq!(result.previous_version.as_deref(), Some("existing"));
+    assert_eq!(result.pack_directory, pack_directory);
+    let expected_rollback_directory = pack_directory.with_file_name("packs.previous");
     assert_eq!(
-        fs::read(&artifact_path).expect("deployed artifact"),
-        current_bytes
+        result.rollback_directory.as_deref(),
+        Some(expected_rollback_directory.as_path())
     );
     assert!(
-        !artifact_path.with_extension("tmp").exists(),
-        "temporary artifact must be renamed away"
+        !pack_directory.join("removed-by-release.json").exists(),
+        "replaced directory must not retain packs deleted by the release"
+    );
+    assert!(
+        pack_directory
+            .with_file_name("packs.previous")
+            .join("removed-by-release.json")
+            .exists(),
+        "the prior active directory should be retained for rollback"
     );
 
     let state = UpdateCheckState::load(&state_path)
@@ -245,32 +385,81 @@ fn trusted_release_update_replaces_artifact_and_deploys_the_trusted_pack() {
         requested_paths,
         vec![
             "/repos/test/release-repo/releases/tags/v2.0.0".to_string(),
-            "/assets/rule-pack.json".to_string(),
+            "/assets/icg-packs.tar.gz".to_string(),
         ]
     );
 
-    // Finally, load the exact artifact the updater installed and run the
-    // runtime checks. This closes the trust-pointer -> artifact -> deployed
-    // rule-pack path instead of stopping at a successful file download.
-    let deployed_pack = load_rule_pack(artifact_path).expect("deployed pack should load");
-    assert_eq!(deployed_pack.id, "test-pack-current-clean");
-    let mut engine = Engine::new();
-    engine
-        .load_pack(deployed_pack)
-        .expect("deployed pack should be accepted by the engine");
-    assert!(matches!(
-        engine.evaluate_command(&CommandSource::Hook(
-            "vault kv destroy secret/example".to_string()
-        )),
-        CheckResult::Denied { ref pattern_id, .. } if pattern_id == "vault-kv-destroy"
-    ));
-    assert!(matches!(
-        engine.evaluate_content(&ContentSource::Write {
-            file_path: "deploy/app.yaml".to_string(),
-            content: "image: example:latest".to_string(),
-        }),
-        CheckResult::Denied { ref pattern_id, .. } if pattern_id == "image-tag-latest"
-    ));
+    // Exercise the native hook against the directory actually installed by the
+    // updater. A merged legacy artifact cannot express these three packs.
+    let github_token = ["ghp_", "Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56"].concat();
+    assert_hook_denied(
+        run_hook(
+            &pack_directory,
+            "Bash",
+            json!({"command": format!("echo {github_token} > /tmp/token")}),
+        ),
+        "secrets",
+        "github-token",
+    );
+    assert_hook_denied(
+        run_hook(
+            &pack_directory,
+            "Write",
+            json!({"filePath": "deploy/app.yaml", "content": "image: nginx:latest\n"}),
+        ),
+        "image-tag",
+        "image-tag-latest",
+    );
+    assert_hook_denied(
+        run_hook(
+            &pack_directory,
+            "Write",
+            json!({"filePath": "deploy/pvc.yaml", "content": "storageClassName: ssd-large\n"}),
+        ),
+        "storage-class",
+        "storage-class-ssd",
+    );
+}
+
+#[test]
+fn malformed_release_archive_cannot_partially_deploy_or_escape_the_pack_root() {
+    let temp = tempfile::tempdir().expect("temporary deployment workspace");
+    let malformed = build_pack_archive_with_symlink(
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/secrets.json"))
+            .expect("fixture pack should be readable"),
+    );
+    let server = FixtureServer::new(malformed);
+    let trust_path = temp.path().join("etc/icg/trust-pointer.json");
+    let pack_directory = temp.path().join("etc/icg/packs");
+    let old_pack = pack_directory.join("known-good.json");
+    let old_contents = br#"{"id":"known-good","tool_keywords":["known"],"applies_to":[],"safe_patterns":[],"guarded_patterns":[]}"#;
+    fs::create_dir_all(&pack_directory).expect("active directory should exist");
+    fs::write(&old_pack, old_contents).expect("known-good pack should be installed");
+    write_trust_pointer(&trust_path);
+
+    let result = run_update(UpdateConfig {
+        repository: "test/release-repo".to_string(),
+        release_api_base_url: server.base_url(),
+        pack_directory: pack_directory.clone(),
+        trust_pointer_path: trust_path,
+        state_path: temp.path().join("etc/icg/last-update-check.json"),
+        ..Default::default()
+    });
+    assert!(result.is_err(), "symlink archive must be rejected");
+    assert_eq!(
+        fs::read(&old_pack).expect("active known-good pack should remain"),
+        old_contents,
+        "a rejected archive must leave the active directory byte-for-byte intact"
+    );
+    assert!(
+        !pack_directory.join("secrets.json").exists(),
+        "a valid archive prefix must not be partially deployed"
+    );
+    assert!(
+        !temp.path().join("etc/icg/escaped.json").exists(),
+        "archive links must never write outside the staging directory"
+    );
+    let _ = server.finish();
 }
 
 /// Small deterministic HTTP fixture for the two requests made by the updater:
@@ -290,7 +479,7 @@ impl FixtureServer {
         let address = listener.local_addr().expect("fixture server address");
         let base_url = format!("http://{address}");
         let release_body = format!(
-            "{{\"tag_name\":\"v2.0.0\",\"name\":\"v2.0.0\",\"published_at\":\"2026-08-16T12:00:00Z\",\"assets\":[{{\"name\":\"rule-pack.json\",\"browser_download_url\":\"{base_url}/assets/rule-pack.json\",\"size\":{}}}]}}",
+            "{{\"tag_name\":\"v2.0.0\",\"name\":\"v2.0.0\",\"published_at\":\"2026-08-16T12:00:00Z\",\"assets\":[{{\"name\":\"icg-packs.tar.gz\",\"browser_download_url\":\"{base_url}/assets/icg-packs.tar.gz\",\"size\":{}}}]}}",
             artifact.len()
         )
         .into_bytes();
@@ -312,8 +501,8 @@ impl FixtureServer {
                             "/repos/test/release-repo/releases/tags/v2.0.0" => {
                                 ("200 OK", "application/json", release_body.as_slice())
                             }
-                            "/assets/rule-pack.json" => {
-                                ("200 OK", "application/json", artifact.as_slice())
+                            "/assets/icg-packs.tar.gz" => {
+                                ("200 OK", "application/gzip", artifact.as_slice())
                             }
                             _ => ("404 Not Found", "text/plain", b"not found".as_slice()),
                         };

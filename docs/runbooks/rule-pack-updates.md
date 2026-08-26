@@ -115,9 +115,12 @@ denial distribution, and hook behavior. Unknown or missing telemetry is not a
 clean result. Stop and follow rollback if the pack fails to load, a fixed deny
 case allows, safe behavior changes unexpectedly, or the deny rate is anomalous.
 
-The updater fetches the artifact named by the trusted release and atomically
-replaces the installed pack. Verify the downloaded artifact and trust pointer
-after the update; do not manually copy a file over the active pack.
+The updater fetches the exact `icg-packs.tar.gz` asset named by the trusted
+release, validates every root-level JSON pack, and atomically exchanges the
+installed directory. The previous tree is retained as `packs.previous`; packs
+removed by the release do not survive activation. Verify the downloaded
+directory and trust pointer after the update; do not manually copy a file over
+the active pack.
 
 ## Stable rollout
 

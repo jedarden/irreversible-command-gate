@@ -104,6 +104,7 @@ Production deployment should use this ownership model:
 | `/etc/icg/` | Release-controlled configuration | `root:root`, not world-writable |
 | `/etc/icg/packs/` | Active modular rule-pack directory | `root:root`, `0755` |
 | `/etc/icg/packs/*.json` | Individual active rule packs | `root:root`, `0644` |
+| `/etc/icg/packs.previous/` | Prior active directory retained by `icg update` | `root:root`, `0755` |
 | `/etc/icg/rule-pack.json` | Legacy single-pack compatibility artifact | `root:root`, `0644` |
 | `/etc/icg/trust-pointer.json` | Trusted release reference | `root:root`, `0644` |
 | `/etc/icg/last-update-check.json` | Updater bookkeeping | `root:root`, `0644` |
@@ -175,18 +176,26 @@ Bash command, while image-tag and storage-class scan YAML writes. Those packs
 cannot be folded into the merged legacy `rule-pack.json` without losing their
 dispatch semantics.
 
-Copy the exact `icg-packs.tar.gz` release artifact from the approved release
-record, inspect it, and install its top-level `packs/` directory:
+For an online host, `icg update` downloads and activates the exact
+`icg-packs.tar.gz` asset after the trust pointer is set in the next step. It
+validates every manifest before it touches the active path, then atomically
+exchanges the complete directory and retains the former directory at
+`/etc/icg/packs.previous/`.
+
+The release archive contains only root-level regular JSON manifests (for
+example `./secrets.json`, `./image-tag.json`, and `./storage-class.json`), not
+a nested `packs/` directory. The updater rejects nested paths, traversal,
+links, special files, duplicate names, and invalid manifests. Use a manual
+staging procedure only for an offline bootstrap:
 
 ```bash
 stage_dir=$(mktemp -d)
 tar -xzf /path/to/approved/icg-packs.tar.gz -C "$stage_dir"
-test -f "$stage_dir/packs/secrets.json"
-test -f "$stage_dir/packs/image-tag.json"
-test -f "$stage_dir/packs/storage-class.json"
-sudo install -d -o root -g root -m 0755 /etc/icg/packs
-sudo install -o root -g root -m 0644 "$stage_dir"/packs/*.json /etc/icg/packs/
-rm -rf "$stage_dir"
+test -f "$stage_dir/secrets.json"
+test -f "$stage_dir/image-tag.json"
+test -f "$stage_dir/storage-class.json"
+# Have an administrator review the staged directory, then install it with a
+# directory rename rather than copying files over the active directory.
 ```
 
 Do not use `tests/fixtures/current-release-clean.json` or the merged
@@ -207,10 +216,17 @@ sudo /usr/local/bin/icg trust show
 sudo /usr/local/bin/icg trust check vX.Y.Z
 ```
 
-The command writes `/etc/icg/trust-pointer.json`. If a release has not yet
-been published to the updater's configured release repository, do not run
-`icg update`; install the approved artifact manually and record the exact
-artifact-to-release mapping in the deployment record.
+The command writes `/etc/icg/trust-pointer.json`. On an online host, activate
+the approved modular release immediately afterward:
+
+```bash
+sudo /usr/local/bin/icg update
+sudo /usr/local/bin/icg status
+```
+
+If a release has not yet been published to the updater's configured release
+repository, do not run `icg update`; use the offline bootstrap procedure and
+record the exact artifact-to-release mapping in the deployment record.
 
 ### 6. Connect the hook
 
@@ -343,23 +359,23 @@ their hook registration and failure behavior are separate.
 ### Offline or manual rule-pack installation
 
 When a host cannot reach the release API, an administrator can transfer the
-approved `icg-packs.tar.gz` artifact through the organization's existing signed/controlled
-distribution path and install it with `install` as shown above. Set the trust
-pointer to the release reference recorded with that artifact, but do not run
-`icg update` on the offline host. Keep the previous artifact until the new
-one has passed the direct hook smoke tests.
+approved `icg-packs.tar.gz` artifact through the organization's existing
+signed/controlled distribution path and use the offline bootstrap procedure
+above. Set the trust pointer to the release reference recorded with that
+artifact, but do not run `icg update` on the offline host. Keep the previous
+directory until the new one has passed the direct hook smoke tests.
 
 ### Channel-specific rollout
 
-Channels select a different trust-pointer file. Install the approved modular
-pack archive in a separate directory and use a hook configuration that names
-that directory when a canary shares a host with stable:
+Channels select a different trust-pointer, pack, and state path. The updater
+derives `/etc/icg/trust-pointer-canary.json`, `/etc/icg/packs-canary`, and
+`/etc/icg/last-update-check-canary.json` for `--channel canary`, so a canary
+can share a host with stable without mixing policy trees:
 
 ```bash
 sudo icg trust set --channel canary vX.Y.Z \
   --justification "Canary cohort approved for vX.Y.Z"
-sudo install -d -o root -g root -m 0755 /etc/icg/packs-canary
-# Install the reviewed icg-packs.tar.gz contents under /etc/icg/packs-canary.
+sudo icg update --channel canary
 sudo icg trust show --channel canary
 ```
 
@@ -426,24 +442,20 @@ sha256sum /usr/local/bin/icg /usr/local/bin/icg.previous
 sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 ```
 
-### Legacy single-file upgrade with the self-updater
+### Modular directory upgrade with the self-updater
 
 The updater does not discover or choose a latest release. It reads the exact
 reference from the trust pointer, requests that tag from the configured GitHub
-Releases API, downloads the legacy single-file asset whose name contains
-`rule-pack`, and atomically replaces `/etc/icg/rule-pack.json`.
-
-The production modular directory is updated by installing the approved
-`icg-packs.tar.gz` artifact as described above. Do not point a production hook
-at the updater's merged legacy artifact: it omits empty-keyword packs and
-therefore cannot enforce secrets, image-tag, or storage-class rules.
+Releases API, downloads the exact `icg-packs.tar.gz` asset, validates its
+root-level regular JSON manifests and their runtime regexes, and atomically
+replaces `/etc/icg/packs/`. The prior tree is retained at
+`/etc/icg/packs.previous/`; packs omitted from the release are removed because
+the whole directory is exchanged rather than modified in place. `rule-pack.json`
+remains a legacy compatibility fallback only.
 
 After Layer 1 and Layer 2 approval of a release:
 
 ```bash
-sudo cp --preserve=mode,ownership \
-  /etc/icg/rule-pack.json /etc/icg/rule-pack.previous.json
-
 sudo icg trust set vX.Y.Z \
   --justification "Layer 1 passed; Layer 2 approved <review-reference>"
 sudo icg trust check vX.Y.Z
@@ -451,13 +463,13 @@ sudo icg update
 sudo icg status
 ```
 
-If the updater cannot find the pointer, release, or matching asset, it exits
-without a successful update. The download is written to a temporary file and
-renamed into place only after the download completes. `icg update` updates the
-rule pack only; it does not upgrade `/usr/local/bin/icg`. The current updater
-does not validate a checksum or signature itself, so the operator must bind
-the selected release asset to the approved release record and verify any
-required provenance before advancing the pointer.
+If the updater cannot find the pointer, exact archive asset, or a valid archive
+layout, it exits without changing the active directory. It stages the download
+beside the target directory, so activation is same-filesystem atomic. `icg
+update` updates the rule packs only; it does not upgrade `/usr/local/bin/icg`.
+The updater does not validate a checksum or signature itself, so the operator
+must bind the selected release asset to the approved release record and verify
+any required provenance before advancing the pointer.
 
 ### Version migration checklist
 
@@ -486,14 +498,15 @@ that flag is evidence for review, not a substitute for it. If an override is
 present, use `--previous-override` and `--current-override` as described in
 [`per-repo-overrides.md`](../notes/per-repo-overrides.md).
 
-There is no automatic schema migration for an arbitrary rule-pack file and
-there is no `icg update --rollback-to` command. Treat a malformed or
-incompatible artifact as a failed deployment and restore the last-known-good
-artifact and pointer:
+There is no automatic schema migration for arbitrary manifests and there is no
+`icg update --rollback-to` command. Treat a malformed or incompatible archive
+as a failed deployment. A rejected archive leaves `/etc/icg/packs/` untouched;
+to roll back an already activated release, restore the retained directory and
+pointer:
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  /etc/icg/rule-pack.previous.json /etc/icg/rule-pack.json
+sudo mv /etc/icg/packs /etc/icg/packs.failed
+sudo mv /etc/icg/packs.previous /etc/icg/packs
 sudo icg trust set vPREVIOUS \
   --justification "Rollback to last-known-good deployment"
 sudo icg trust check vPREVIOUS
@@ -532,9 +545,9 @@ Accordingly:
   the operator.
 - Do not copy a guessed `/releases/latest/download/...` URL into automation.
   The exact asset name and release reference must come from the release record.
-- `icg update` downloads only the legacy single-file rule-pack asset from the
-  configured GitHub release; it never installs or upgrades the binary or the
-  production modular pack directory.
+- `icg update` downloads the exact `icg-packs.tar.gz` modular release asset,
+  validates it, and atomically activates the complete production pack
+  directory. It never installs or upgrades the binary.
 - The current updater does not perform checksum or signature verification;
   downstream packaging or deployment automation must do that before invoking
   the updater or staging an artifact.
@@ -655,8 +668,8 @@ default production pointer belongs under `/etc/icg`.
 ### `icg update` cannot reach the release or find an asset
 
 The updater needs network access to `https://api.github.com`, a trust pointer,
-an exact release reference, and a release asset whose name contains
-`rule-pack`. Check these in order:
+an exact release reference, and an `icg-packs.tar.gz` release asset. Check
+these in order:
 
 ```bash
 icg trust show
@@ -691,8 +704,8 @@ known-good rule pack, point the trust pointer to the corresponding exact
 release, and repeat the direct hook tests:
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  /etc/icg/rule-pack.previous.json /etc/icg/rule-pack.json
+sudo mv /etc/icg/packs /etc/icg/packs.failed
+sudo mv /etc/icg/packs.previous /etc/icg/packs
 sudo icg trust set vPREVIOUS --justification "Incident rollback"
 sudo icg trust check vPREVIOUS
 ```
