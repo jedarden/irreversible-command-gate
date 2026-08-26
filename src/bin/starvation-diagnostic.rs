@@ -26,6 +26,10 @@ struct Args {
     #[arg(long, default_value = "false")]
     report_only: bool,
 
+    /// Automatically repair stale assignees (clear assignee from open beads with dead workers)
+    #[arg(long, default_value = "false")]
+    auto_repair: bool,
+
     /// Checkpoint stale threshold in minutes
     #[arg(long, default_value = "5")]
     checkpoint_stale_threshold: i64,
@@ -38,15 +42,18 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let workspace_path = args.db_path
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
     let config = StarvationDiagnosticConfig {
         db_path: args.db_path.clone(),
-        diagnostics_dir: args.db_path
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-            .join(".beads/diagnostics"),
+        diagnostics_dir: workspace_path.join(".beads/diagnostics"),
         report_only: args.report_only,
+        auto_repair: args.auto_repair,
+        events_path: workspace_path.join(".beads/events.jsonl"),
         checkpoint_stale_threshold_minutes: args.checkpoint_stale_threshold,
     };
 
@@ -54,6 +61,10 @@ fn main() -> Result<()> {
 
     eprintln!("🔍 Running starvation diagnostic...");
     eprintln!("📁 Database: {}", args.db_path.display());
+
+    if args.auto_repair {
+        eprintln!("🔧 Auto-repair ENABLED - will clear stale assignees");
+    }
 
     let report = diagnostic.run_diagnostic()?;
 

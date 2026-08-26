@@ -47,7 +47,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Configuration for the starvation diagnostic
 #[derive(Debug, Clone)]
@@ -58,6 +60,10 @@ pub struct StarvationDiagnosticConfig {
     pub diagnostics_dir: PathBuf,
     /// If true, generate report but don't attempt repairs
     pub report_only: bool,
+    /// If true, automatically repair detected issues (clear stale assignees)
+    pub auto_repair: bool,
+    /// Path to events.jsonl for logging repairs
+    pub events_path: PathBuf,
     /// Checkpoint auto-flush threshold (minutes)
     pub checkpoint_stale_threshold_minutes: i64,
 }
@@ -70,6 +76,8 @@ impl Default for StarvationDiagnosticConfig {
             db_path: workspace_path.join(".beads/beads.db"),
             diagnostics_dir: workspace_path.join(".beads/diagnostics"),
             report_only: false,
+            auto_repair: false, // Disabled by default for safety
+            events_path: workspace_path.join(".beads/events.jsonl"),
             checkpoint_stale_threshold_minutes: 5,
         }
     }
@@ -185,6 +193,24 @@ pub struct StarvationDiagnosticReport {
 
     /// Recommended repair actions
     pub recommended_actions: Vec<String>,
+
+    /// Repairs that were actually performed
+    pub repairs_performed: Vec<AssigneeRepair>,
+}
+
+/// A repair that was performed on a bead
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssigneeRepair {
+    /// Timestamp when the repair was performed
+    pub timestamp: DateTime<Utc>,
+    /// Bead ID that was repaired
+    pub bead_id: String,
+    /// Bead title
+    pub bead_title: String,
+    /// Previous assignee that was cleared
+    pub previous_assignee: String,
+    /// Reason for the repair
+    pub reason: String,
 }
 
 /// Starvation diagnostic system
@@ -232,6 +258,13 @@ impl StarvationDiagnostic {
         // Phase 5: Database integrity verification
         let integrity_check = self.verify_database_integrity()?;
 
+        // Phase 6: Auto-repair (if enabled)
+        let repairs_performed = if self.config.auto_repair && !self.config.report_only {
+            self.repair_stale_assignees(&stale_assignees)?
+        } else {
+            Vec::new()
+        };
+
         // Count ready beads (open, no assignee, not blocked)
         let ready_beads = open_beads.iter()
             .filter(|b| b.status == "open" && b.assignee.is_none() && !b.manual_blocked)
@@ -261,6 +294,7 @@ impl StarvationDiagnostic {
             &checkpoint_status,
             &stale_assignees,
             &integrity_check,
+            &repairs_performed,
         );
 
         let report = StarvationDiagnosticReport {
@@ -272,6 +306,7 @@ impl StarvationDiagnostic {
             stale_assignees,
             integrity_check,
             recommended_actions,
+            repairs_performed,
         };
 
         // Publish report to JSONL file
@@ -501,17 +536,42 @@ impl StarvationDiagnostic {
         Ok(stale_assignees)
     }
 
-    /// Check if a worker process is still alive
+    /// Check if a worker process is still alive by querying the process table
     fn check_worker_alive(&self, worker_name: &str) -> Result<(String, bool)> {
-        // Extract worker type and ID from name (e.g., "claude-code-glm-4.7-icg47")
-        // This is a simplified check - real implementation would check:
-        // - Process table for running workers
-        // - NEEDLE fleet status
-        // - Worker heartbeat files
+        // Worker names typically follow patterns like:
+        // - "claude-code-glm-4.7-icg47" (NEEDLE worker)
+        // - "luna", "alpha", "bravo" (NATO named workers)
+        //
+        // We check if any running process matches the worker name pattern
+        // by querying the process table via ps(1)
 
-        // For now, assume workers with "icg47" in name are potentially active
-        // This is a placeholder for actual worker detection logic
-        let is_alive = worker_name.contains("icg47") || worker_name.contains("luna");
+        let output = match Command::new("ps")
+            .args(&["aux", "--sort=-pid"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(e) => {
+                eprintln!("Warning: Failed to run ps to check worker status: {}", e);
+                // If we can't check, assume worker is alive to be safe
+                // (better to miss a repair than to clear a valid assignee)
+                return Ok(("unknown".to_string(), false));
+            }
+        };
+
+        let ps_output = String::from_utf8_lossy(&output.stdout);
+
+        // Check if any process line contains the worker name
+        // We need to be careful not to match the ps command itself or the diagnostic process
+        let is_alive = ps_output.lines()
+            .skip(1) // Skip header
+            .any(|line| {
+                // Skip our own process
+                if line.contains("starvation-diagnostic") || line.contains("icg") {
+                    return false;
+                }
+                // Check if line contains worker name (not as substring of other things)
+                line.contains(worker_name)
+            });
 
         let status = if is_alive {
             "active".to_string()
@@ -520,6 +580,96 @@ impl StarvationDiagnostic {
         };
 
         Ok((status, !is_alive))
+    }
+
+    /// Repair stale assignees by clearing them from the database
+    fn repair_stale_assignees(&self, stale_assignees: &[StaleAssignee]) -> Result<Vec<AssigneeRepair>> {
+        let mut repairs = Vec::new();
+
+        // Filter to only those that need clearing
+        let to_clear: Vec<_> = stale_assignees.iter()
+            .filter(|sa| sa.should_clear)
+            .collect();
+
+        if to_clear.is_empty() {
+            return Ok(repairs);
+        }
+
+        let conn = Connection::open(&self.config.db_path)
+            .context("Failed to open database for repair")?;
+
+        for sa in to_clear {
+            // Clear the assignee field
+            match conn.execute(
+                "UPDATE issues SET assignee = NULL, updated_at = ?1
+                 WHERE id = ?2 AND assignee = ?3",
+                params![
+                    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    &sa.bead_id,
+                    &sa.assignee
+                ]
+            ) {
+                Ok(rows_affected) => {
+                    if rows_affected > 0 {
+                        let repair = AssigneeRepair {
+                            timestamp: Utc::now(),
+                            bead_id: sa.bead_id.clone(),
+                            bead_title: sa.bead_title.clone(),
+                            previous_assignee: sa.assignee.clone(),
+                            reason: format!(
+                                "Worker '{}' is inactive - cleared stale assignee",
+                                sa.assignee
+                            ),
+                        };
+
+                        // Log the repair to events.jsonl
+                        self.log_repair(&repair)?;
+
+                        repairs.push(repair);
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to clear assignee from bead {}: {}",
+                        sa.bead_id, e
+                    );
+                }
+            }
+        }
+
+        Ok(repairs)
+    }
+
+    /// Log a repair to events.jsonl
+    fn log_repair(&self, repair: &AssigneeRepair) -> Result<()> {
+        let event = serde_json::json!({
+            "issue_id": "starvation-auto-repair",
+            "kind": "assignee_repair",
+            "actor": "icg-starvation-diagnostic",
+            "time": repair.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "detail": {
+                "bead_id": repair.bead_id,
+                "bead_title": repair.bead_title,
+                "previous_assignee": repair.previous_assignee,
+                "reason": repair.reason,
+            }
+        });
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.config.events_path)
+            .context("Failed to open events.jsonl for writing")?;
+
+        writeln!(file, "{}", event)
+            .context("Failed to write repair event to events.jsonl")?;
+
+        eprintln!(
+            "🔧 Repaired bead {} - cleared stale assignee '{}'",
+            repair.bead_id, repair.previous_assignee
+        );
+
+        Ok(())
     }
 
     /// Verify database integrity
@@ -625,6 +775,7 @@ impl StarvationDiagnostic {
         checkpoint_status: &CheckpointStatus,
         stale_assignees: &[StaleAssignee],
         integrity_check: &IntegrityCheck,
+        repairs_performed: &[AssigneeRepair],
     ) -> Vec<String> {
         let mut actions = Vec::new();
 
@@ -642,20 +793,33 @@ impl StarvationDiagnostic {
                 checkpoint_status.database_issue_count));
         }
 
-        let stale_count = stale_assignees.iter().filter(|s| s.should_clear).count();
-        if stale_count > 0 {
-            actions.push(format!("Clear stale assignees from {} assigned-but-open beads using 'bead update --clear-assignee'", stale_count));
-            for sa in stale_assignees.iter().filter(|s| s.should_clear) {
-                actions.push(format!("  - Clear assignee '{}' from bead '{}'", sa.assignee, sa.bead_id));
+        // If auto-repair was performed, report it
+        if !repairs_performed.is_empty() {
+            actions.push(format!("AUTO-REPAIRED: Cleared stale assignees from {} beads", repairs_performed.len()));
+            for repair in repairs_performed {
+                actions.push(format!("  ✓ [{}] Cleared '{}' - {}", repair.bead_id, repair.previous_assignee, repair.reason));
             }
-        }
+        } else {
+            // Only recommend manual action if auto-repair was not enabled
+            let stale_count = stale_assignees.iter().filter(|s| s.should_clear).count();
+            if stale_count > 0 {
+                actions.push(format!("Clear stale assignees from {} assigned-but-open beads", stale_count));
+                if !self.config.auto_repair {
+                    actions.push("  Option 1: Run with --auto-repair to clear automatically".to_string());
+                    actions.push("  Option 2: Manual 'bead update --clear-assignee' for each bead".to_string());
+                }
+                for sa in stale_assignees.iter().filter(|s| s.should_clear) {
+                    actions.push(format!("  - [{}] Clear assignee '{}'", sa.bead_id, sa.assignee));
+                }
+            }
 
-        let assigned_count = excluded_beads.iter()
-            .filter(|e| matches!(&e.reason, ExclusionReason::HasAssignee { .. }))
-            .count();
+            let assigned_count = excluded_beads.iter()
+                .filter(|e| matches!(&e.reason, ExclusionReason::HasAssignee { .. }))
+                .count();
 
-        if assigned_count > 0 && stale_count == 0 {
-            actions.push(format!("Note: {} beads have active assignees and are correctly excluded from ready frontier.", assigned_count));
+            if assigned_count > 0 && stale_count == 0 {
+                actions.push(format!("Note: {} beads have active assignees and are correctly excluded from ready frontier.", assigned_count));
+            }
         }
 
         if summary.total_open_beads == 0 {
@@ -729,6 +893,17 @@ impl StarvationDiagnostic {
             }
         }
 
+        if !report.repairs_performed.is_empty() {
+            println!("\n--- Auto-Repair Results ---");
+            println!("Repairs performed: {}", report.repairs_performed.len());
+            for (i, repair) in report.repairs_performed.iter().enumerate() {
+                println!("{}. [{}] {} - Cleared '{}'",
+                    i + 1, repair.bead_id, repair.bead_title, repair.previous_assignee);
+                println!("   Reason: {}", repair.reason);
+                println!("   Timestamp: {}", repair.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+            }
+        }
+
         println!("\n--- Database Integrity ---");
         println!("Readable: {}", report.integrity_check.database_readable);
         println!("Schema valid: {}", report.integrity_check.schema_valid);
@@ -797,5 +972,20 @@ mod tests {
         let config = StarvationDiagnosticConfig::default();
         assert_eq!(config.checkpoint_stale_threshold_minutes, 5);
         assert!(!config.report_only);
+        assert!(!config.auto_repair); // Auto-repair is disabled by default for safety
+    }
+
+    #[test]
+    fn test_assignee_repair_serialization() {
+        let repair = AssigneeRepair {
+            timestamp: Utc::now(),
+            bead_id: "test-bead".to_string(),
+            bead_title: "Test Bead".to_string(),
+            previous_assignee: "test-worker".to_string(),
+            reason: "Worker is inactive".to_string(),
+        };
+        let json = serde_json::to_string(&repair).unwrap();
+        assert!(json.contains("test-bead"));
+        assert!(json.contains("test-worker"));
     }
 }
