@@ -254,6 +254,7 @@ fn rollback_on_cooldown(state_store: &StateStore, cooldown: Duration) -> Result<
 mod tests {
     use super::*;
     use crate::state_store::StateStore;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
     fn record_release(store: &StateStore, release_ref: &str, total: u64, denials: u64) {
@@ -266,6 +267,12 @@ mod tests {
 
     fn store_and_pointer() -> (tempfile::TempDir, StateStore, TrustPointerStore) {
         let directory = tempdir().expect("temporary directory");
+        let mut permissions = std::fs::metadata(directory.path())
+            .expect("temporary directory metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(directory.path(), permissions)
+            .expect("secure temporary directory");
         let state_path = directory.path().join("state.json");
         let pointer_path = directory.path().join("trust-pointer.json");
         (

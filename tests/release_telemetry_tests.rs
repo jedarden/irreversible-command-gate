@@ -2,11 +2,22 @@ use icg::engine::{CheckResult, CommandSource, Engine};
 use icg::rollback::PoisonPillConfig;
 use icg::state_store::{DenyRatePolicy, StateStore};
 use icg::trust_pointer::{TrustPointer, TrustPointerStore};
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
+
+fn secure_tempdir() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("temporary state directory");
+    let mut permissions = std::fs::metadata(directory.path())
+        .expect("temporary directory metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(directory.path(), permissions).expect("secure temporary directory");
+    directory
+}
 
 #[test]
 fn engine_persists_per_release_evaluation_and_deny_counts() {
-    let directory = tempfile::tempdir().expect("temporary state directory");
+    let directory = secure_tempdir();
     let state_store = Arc::new(StateStore::new(directory.path().join("state.json")));
     let mut engine = Engine::new()
         .with_release_ref("release-1")
@@ -34,7 +45,7 @@ fn engine_persists_per_release_evaluation_and_deny_counts() {
 
 #[test]
 fn engine_telemetry_feeds_poison_pill_rollback() {
-    let directory = tempfile::tempdir().expect("temporary state directory");
+    let directory = secure_tempdir();
     let state_store = Arc::new(StateStore::new(directory.path().join("state.json")));
     let trust_store = TrustPointerStore::new(directory.path().join("trust-pointer.json"));
 

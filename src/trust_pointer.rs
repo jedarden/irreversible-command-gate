@@ -306,6 +306,14 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn secure_tempdir() -> Result<tempfile::TempDir> {
+        let directory = tempdir()?;
+        let mut permissions = fs::metadata(directory.path())?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(directory.path(), permissions)?;
+        Ok(directory)
+    }
+
     #[test]
     fn test_trust_pointer_create() {
         let pointer = TrustPointer::new("v0.1.0");
@@ -325,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_store_save_and_load() -> Result<()> {
-        let dir = tempdir()?;
+        let dir = secure_tempdir()?;
         let path = dir.path().join("trust-pointer.json");
         let store = TrustPointerStore::new(&path);
 
@@ -345,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_store_get_trusted_ref() -> Result<()> {
-        let dir = tempdir()?;
+        let dir = secure_tempdir()?;
         let path = dir.path().join("trust-pointer.json");
         let store = TrustPointerStore::new(&path);
 
@@ -363,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_store_is_trusted() -> Result<()> {
-        let dir = tempdir()?;
+        let dir = secure_tempdir()?;
         let path = dir.path().join("trust-pointer.json");
         let store = TrustPointerStore::new(&path);
 
@@ -381,7 +389,7 @@ mod tests {
 
     #[test]
     fn test_atomic_write() -> Result<()> {
-        let dir = tempdir()?;
+        let dir = secure_tempdir()?;
         let path = dir.path().join("trust-pointer.json");
         let store = TrustPointerStore::new(&path);
 
@@ -419,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_channel_isolation() -> Result<()> {
-        let dir = tempdir()?;
+        let dir = secure_tempdir()?;
 
         // Create two separate channel stores
         let canary_path = dir.path().join("trust-pointer-canary.json");
