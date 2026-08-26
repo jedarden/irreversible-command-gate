@@ -25,3 +25,6 @@ pub mod telemetry;
 pub mod trust_pointer;
 pub mod update;
 pub mod value_derivation;
+
+// Bead dependency validator (standalone tool for bead-rs dependency issues)
+pub mod bead_dependency_validator;
