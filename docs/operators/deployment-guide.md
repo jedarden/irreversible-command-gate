@@ -42,7 +42,7 @@ harness's own approval and sandbox controls enabled.
 | Install for Claude Code | Source installation plus [Claude Code hook](#claude-code) | No |
 | Install for local Codex CLI | Source installation plus [Codex CLI hook](#codex-cli) | No |
 | Host has no release-network access | [Offline/manual rule-pack installation](#offline-or-manual-rule-pack-installation) | No, after artifacts are copied |
-| Roll out a canary release | [Channel-specific rollout](#channel-specific-rollout) | Only when running `icg update` |
+| Roll out a canary release | [Channel-specific rollout](#channel-specific-rollout) | Depends on the approved artifact source |
 | Install an approved binary release | [Package and artifact distribution](#package-and-artifact-distribution) | Depends on the artifact source |
 
 ## System requirements
@@ -51,7 +51,7 @@ harness's own approval and sandbox controls enabled.
 
 - A Unix-like host with the Linux layout used by the deployment (`/usr/local/bin`,
   `/etc/icg`, and `/var/cache/icg`). Linux is the supported production target.
-- A user account that can read `/usr/local/bin/icg` and `/etc/icg/rule-pack.json`.
+- A user account that can read `/usr/local/bin/icg` and `/etc/icg/packs/`.
 - Root or an equivalent deployment identity to install the binary and
   administrator-controlled artifacts.
 - Claude Code or a local Codex CLI version that supports a `PreToolUse`
@@ -102,7 +102,9 @@ Production deployment should use this ownership model:
 | --- | --- | --- |
 | `/usr/local/bin/icg` | Guard executable | `root:root`, `0755` |
 | `/etc/icg/` | Release-controlled configuration | `root:root`, not world-writable |
-| `/etc/icg/rule-pack.json` | Active rule pack | `root:root`, `0644` |
+| `/etc/icg/packs/` | Active modular rule-pack directory | `root:root`, `0755` |
+| `/etc/icg/packs/*.json` | Individual active rule packs | `root:root`, `0644` |
+| `/etc/icg/rule-pack.json` | Legacy single-pack compatibility artifact | `root:root`, `0644` |
 | `/etc/icg/trust-pointer.json` | Trusted release reference | `root:root`, `0644` |
 | `/etc/icg/last-update-check.json` | Updater bookkeeping | `root:root`, `0644` |
 | `/var/cache/icg/telemetry.json` | Rolling evaluation telemetry | writable by the hook identity, if telemetry is wanted |
@@ -156,7 +158,7 @@ for a production guard or its rule pack.
 ### 3. Create protected directories
 
 ```bash
-sudo install -d -o root -g root -m 0755 /etc/icg
+sudo install -d -o root -g root -m 0755 /etc/icg /etc/icg/packs
 sudo install -d -o root -g root -m 0750 /var/cache/icg
 ```
 
@@ -165,20 +167,32 @@ intend to use telemetry. If the hook runs as an unprivileged user, have the
 deployment system grant only the required cache-directory access; never make
 `/etc/icg` user-writable just to solve a cache permission problem.
 
-### 4. Install an approved rule pack
+### 4. Install the approved modular rule-pack artifact
 
-The source tree contains test fixtures, not a general-purpose production rule
-pack. Copy the exact rule-pack artifact from the release record supplied by
-the release approver:
+The production hook loads every JSON manifest in `/etc/icg/packs/`. This is
+required for packs with empty `tool_keywords`: the secrets pack scans every
+Bash command, while image-tag and storage-class scan YAML writes. Those packs
+cannot be folded into the merged legacy `rule-pack.json` without losing their
+dispatch semantics.
+
+Copy the exact `icg-packs.tar.gz` release artifact from the approved release
+record, inspect it, and install its top-level `packs/` directory:
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  /path/to/approved/rule-pack.json /etc/icg/rule-pack.json
+stage_dir=$(mktemp -d)
+tar -xzf /path/to/approved/icg-packs.tar.gz -C "$stage_dir"
+test -f "$stage_dir/packs/secrets.json"
+test -f "$stage_dir/packs/image-tag.json"
+test -f "$stage_dir/packs/storage-class.json"
+sudo install -d -o root -g root -m 0755 /etc/icg/packs
+sudo install -o root -g root -m 0644 "$stage_dir"/packs/*.json /etc/icg/packs/
+rm -rf "$stage_dir"
 ```
 
-Do not use `tests/fixtures/current-release-clean.json` as a production policy;
-it is a test manifest with intentionally limited coverage. It is suitable for
-the local smoke test below.
+Do not use `tests/fixtures/current-release-clean.json` or the merged
+`rule-pack.json` as production policy; both have intentionally incomplete
+coverage for the modular packs above. A legacy single-file installation is
+supported only for compatibility with already-deployed hosts.
 
 ### 5. Initialize the trust pointer
 
@@ -276,7 +290,7 @@ First verify the files and pointer:
 ```bash
 command -v icg
 icg --version
-stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg/rule-pack.json /etc/icg/trust-pointer.json
+stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg/packs /etc/icg/packs/*.json /etc/icg/trust-pointer.json
 icg trust show
 icg status
 ```
@@ -286,7 +300,7 @@ execute the command; it only invokes the guard:
 
 ```bash
 printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault kv destroy secret/test"}}' \
-  | icg hook --rule-pack /etc/icg/rule-pack.json
+  | icg hook --rule-pack /etc/icg/packs
 ```
 
 For a pack containing that rule, the output should contain
@@ -295,14 +309,14 @@ object or an allow decision:
 
 ```bash
 printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault status"}}' \
-  | icg hook --rule-pack /etc/icg/rule-pack.json
+  | icg hook --rule-pack /etc/icg/packs
 ```
 
 Test content-mode input separately when the installed pack covers it:
 
 ```bash
 printf '%s\n' '{"tool_name":"Write","tool_input":{"filePath":"deploy/app.yaml","content":"storageClassName: ssd\n"}}' \
-  | icg hook --rule-pack /etc/icg/rule-pack.json
+  | icg hook --rule-pack /etc/icg/packs
 ```
 
 Finally run one real, non-destructive command through the configured harness
@@ -329,7 +343,7 @@ their hook registration and failure behavior are separate.
 ### Offline or manual rule-pack installation
 
 When a host cannot reach the release API, an administrator can transfer the
-approved JSON artifact through the organization's existing signed/controlled
+approved `icg-packs.tar.gz` artifact through the organization's existing signed/controlled
 distribution path and install it with `install` as shown above. Set the trust
 pointer to the release reference recorded with that artifact, but do not run
 `icg update` on the offline host. Keep the previous artifact until the new
@@ -337,28 +351,29 @@ one has passed the direct hook smoke tests.
 
 ### Channel-specific rollout
 
-Channels select a different trust-pointer file. The updater still writes the
-artifact path you specify, so a canary must use a separate artifact and hook
-configuration if it shares a host with the stable channel:
+Channels select a different trust-pointer file. Install the approved modular
+pack archive in a separate directory and use a hook configuration that names
+that directory when a canary shares a host with stable:
 
 ```bash
 sudo icg trust set --channel canary vX.Y.Z \
   --justification "Canary cohort approved for vX.Y.Z"
-sudo icg update --channel canary \
-  --artifact-path /etc/icg/rule-pack-canary.json
+sudo install -d -o root -g root -m 0755 /etc/icg/packs-canary
+# Install the reviewed icg-packs.tar.gz contents under /etc/icg/packs-canary.
 sudo icg trust show --channel canary
 ```
 
 Configure the canary hook with the matching pack:
 
 ```text
-/usr/local/bin/icg hook --rule-pack /etc/icg/rule-pack-canary.json
+/usr/local/bin/icg hook --rule-pack /etc/icg/packs-canary
 ```
 
-The current `icg status --channel` command reports the default artifact path,
-not an arbitrary `--artifact-path`; use `icg trust show --channel` and inspect
-the canary file explicitly when using this layout. Do not advance the stable
-pointer until the canary observation and release review are complete.
+The current `icg status --channel` command reports the default compatibility
+artifact path, not an arbitrary pack directory; use `icg trust show --channel`
+and inspect the canary directory explicitly when using this layout. Do not
+advance the stable pointer until the canary observation and release review are
+complete.
 
 ### Release-bound repository override
 
@@ -371,7 +386,7 @@ When an approved deployment requires one, pass all three hook options:
 
 ```text
 /usr/local/bin/icg hook \
-  --rule-pack /etc/icg/rule-pack.json \
+  --rule-pack /etc/icg/packs \
   --override-file /path/to/overrides/example.toml \
   --repository jedarden/example \
   --trusted-ref vX.Y.Z
@@ -411,12 +426,17 @@ sha256sum /usr/local/bin/icg /usr/local/bin/icg.previous
 sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 ```
 
-### Upgrade a rule pack with the self-updater
+### Legacy single-file upgrade with the self-updater
 
 The updater does not discover or choose a latest release. It reads the exact
 reference from the trust pointer, requests that tag from the configured GitHub
-Releases API, downloads an asset whose name contains `rule-pack`, and
-atomically replaces `/etc/icg/rule-pack.json`.
+Releases API, downloads the legacy single-file asset whose name contains
+`rule-pack`, and atomically replaces `/etc/icg/rule-pack.json`.
+
+The production modular directory is updated by installing the approved
+`icg-packs.tar.gz` artifact as described above. Do not point a production hook
+at the updater's merged legacy artifact: it omits empty-keyword packs and
+therefore cannot enforce secrets, image-tag, or storage-class rules.
 
 After Layer 1 and Layer 2 approval of a release:
 
@@ -512,8 +532,9 @@ Accordingly:
   the operator.
 - Do not copy a guessed `/releases/latest/download/...` URL into automation.
   The exact asset name and release reference must come from the release record.
-- `icg update` downloads only a rule-pack asset from the configured GitHub
-  release; it never installs or upgrades the binary.
+- `icg update` downloads only the legacy single-file rule-pack asset from the
+  configured GitHub release; it never installs or upgrades the binary or the
+  production modular pack directory.
 - The current updater does not perform checksum or signature verification;
   downstream packaging or deployment automation must do that before invoking
   the updater or staging an artifact.
@@ -553,8 +574,8 @@ Check the directory and file ownership without making them writable by the
 agent:
 
 ```bash
-namei -l /etc/icg/rule-pack.json
-stat -c '%U:%G %a %n' /etc/icg /etc/icg/rule-pack.json /etc/icg/trust-pointer.json
+namei -l /etc/icg/packs
+stat -c '%U:%G %a %n' /etc/icg /etc/icg/packs /etc/icg/packs/*.json /etc/icg/trust-pointer.json
 ```
 
 Use `sudo install` for deployment operations. The normal hook only needs read
@@ -567,7 +588,7 @@ That is the expected fail-open behavior when no pack is loaded or when the
 input is for an unrecognized tool. Confirm:
 
 ```bash
-test -r /etc/icg/rule-pack.json
+test -r /etc/icg/packs/secrets.json
 icg status
 ```
 
@@ -610,12 +631,13 @@ JSON objects to one invocation.
 
 ### The rule pack is valid JSON but still does not load
 
-`icg` supports JSON and TOML pack loading based on the file extension, but the
-hook's default is `/etc/icg/rule-pack.json`. Check that the file extension,
-permissions, and manifest schema match the release artifact. A malformed pack
-causes the invocation to fail open and reports the failure to stderr. Replace
-it with the last-known-good artifact rather than editing a production pack in
-place.
+`icg` supports JSON pack loading, and the hook's default is the
+`/etc/icg/packs/` directory (falling back to the legacy single-file artifact
+only when that directory is absent). Check each pack's file extension,
+permissions, and manifest schema against the release artifact. A malformed
+pack causes the invocation to fail open and reports the failure to stderr.
+Restore the last-known-good approved directory rather than editing a production
+pack in place.
 
 ### `icg trust show` says no pointer exists
 

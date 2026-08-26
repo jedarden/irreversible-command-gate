@@ -154,12 +154,18 @@ spec:
             echo "=== Building release binary ==="
             cargo build --release --bin icg
 
-            # Build merged rule-pack artifact
-            echo "=== Building merged rule-pack artifact ==="
+            # Keep the merged artifact for legacy single-file installations,
+            # then package every independently-dispatched manifest for the
+            # production hook directory. Empty-keyword packs cannot safely be
+            # merged without losing their unconditional/content coverage.
+            echo "=== Building legacy merged rule-pack artifact ==="
             cargo run --quiet -- build-pack --output /tmp/rule-pack.json
+            echo "=== Packaging modular rule-pack directory ==="
+            tar -C /workspace -czf /tmp/icg-packs.tar.gz packs
 
 
-            # Create GitHub release with binary and rule-pack
+            # Create GitHub release with binary, compatibility artifact, and
+            # the complete production pack directory.
             echo "=== Creating GitHub release ==="
             gh release create "v${VERSION}" \
               --repo jedarden/irreversible-command-gate \
@@ -174,10 +180,12 @@ spec:
 
             Binaries:
             - icg: Main guard binary (supports: hook, wrapper, and admin subcommands)
-            - rule-pack.json: Merged rule pack containing all guarded patterns (for `icg update`)
+            - icg-packs.tar.gz: Complete modular pack directory for production `icg hook`
+            - rule-pack.json: Legacy merged compatibility artifact (for legacy `icg update`)
             " \
               --target main \
               ./target/release/icg \
+              /tmp/icg-packs.tar.gz \
               /tmp/rule-pack.json
 
             echo "✅ Release v${VERSION} created!"

@@ -186,7 +186,8 @@ enum Commands {
     },
     /// Hook mode: invoked by Claude Code/Codex's PreToolUse hook system
     Hook {
-        /// Optional rule-pack file (defaults to /etc/icg/rule-pack.json)
+        /// Optional rule-pack JSON file or directory (defaults to /etc/icg/packs;
+        /// the legacy /etc/icg/rule-pack.json is used when the directory is absent)
         #[arg(long)]
         rule_pack: Option<PathBuf>,
         /// Practice mode: report denials without blocking the tool call.
@@ -1096,24 +1097,40 @@ fn wrapper_rule_pack_path() -> Option<PathBuf> {
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
-            let artifact = PathBuf::from(DEFAULT_RULE_PACK_PATH);
-            artifact.is_file().then_some(artifact)
-        })
-        .or_else(|| {
             let directory = PathBuf::from(DEFAULT_RULE_PACK_DIR);
             directory.is_dir().then_some(directory)
         })
+        .or_else(|| {
+            let artifact = PathBuf::from(DEFAULT_RULE_PACK_PATH);
+            artifact.is_file().then_some(artifact)
+        })
+}
+
+/// Resolve the pack location for a native hook invocation.
+///
+/// A pack directory is the production shape: it keeps packs independently
+/// dispatchable, which is required for empty-keyword packs such as secrets and
+/// content-mode packs such as image-tag and storage-class. The single-file
+/// artifact remains a compatibility fallback for existing installations.
+fn hook_rule_pack_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(wrapper_rule_pack_path)
+}
+
+/// Load either one legacy pack artifact or every JSON pack in a modular
+/// production directory.
+fn load_rule_packs_at_path(engine: &mut Engine, path: &Path) -> Result<()> {
+    if path.is_dir() {
+        engine.load_packs_from_dir(path)
+    } else {
+        engine.load_pack_from_file(path)
+    }
 }
 
 fn load_wrapper_engine() -> Result<Engine> {
     let mut engine = Engine::new();
 
     if let Some(path) = wrapper_rule_pack_path() {
-        if path.is_dir() {
-            engine.load_packs_from_dir(path)?;
-        } else {
-            engine.load_pack_from_file(path)?;
-        }
+        load_rule_packs_at_path(&mut engine, &path)?;
     }
 
     // The wrapper is a separate process for every command, so attach the
@@ -1559,10 +1576,11 @@ fn main() -> Result<()> {
             let practice_mode = practice_mode_enabled(practice);
             let mut engine = Engine::new();
 
-            // Load rule packs from the default path
-            let pack_path = rule_pack.unwrap_or_else(|| PathBuf::from("/etc/icg/rule-pack.json"));
-            if pack_path.exists() {
-                engine.load_pack_from_file(&pack_path)?;
+            // A modular directory is the production shape. It preserves the
+            // dispatch semantics of unconditional and content-mode packs that
+            // cannot be represented in the merged compatibility artifact.
+            if let Some(pack_path) = hook_rule_pack_path(rule_pack) {
+                load_rule_packs_at_path(&mut engine, &pack_path)?;
             }
             match (override_file, repository, trusted_ref) {
                 (None, None, None) => {}
@@ -2043,27 +2061,58 @@ fn main() -> Result<()> {
 
             // Rule Pack Version section
             println!("## Rule Pack Version");
-            let artifact_path = PathBuf::from("/etc/icg/rule-pack.json");
-            if artifact_path.exists() {
-                match icg::rule_pack::load_pack(&artifact_path) {
-                    Ok(pack) => {
-                        println!("  **Pack ID:** `{}`", pack.id);
-                        println!("  **Path:** {}", artifact_path.display());
+            if let Some(artifact_path) = hook_rule_pack_path(None) {
+                if artifact_path.is_dir() {
+                    let mut pack_paths = match std::fs::read_dir(&artifact_path) {
+                        Ok(entries) => entries
+                            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                            .filter(|path| {
+                                path.extension().and_then(|ext| ext.to_str()) == Some("json")
+                            })
+                            .collect::<Vec<_>>(),
+                        Err(error) => {
+                            println!("  (failed to read {}: {error})", artifact_path.display());
+                            Vec::new()
+                        }
+                    };
+                    pack_paths.sort();
+                    match pack_paths
+                        .iter()
+                        .map(icg::rule_pack::load_pack)
+                        .collect::<Result<Vec<_>>>()
+                    {
+                        Ok(packs) if !packs.is_empty() => {
+                            let ids = packs
+                                .iter()
+                                .map(|pack| pack.id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            println!("  **Pack Directory:** {}", artifact_path.display());
+                            println!("  **Packs ({}):** `{ids}`", packs.len());
+                        }
+                        Ok(_) => println!(
+                            "  (no JSON rule packs found in {})",
+                            artifact_path.display()
+                        ),
+                        Err(error) => println!("  (failed to load: {error})"),
                     }
-                    Err(e) => {
-                        println!("  (failed to load: {})", e);
+                } else {
+                    match icg::rule_pack::load_pack(&artifact_path) {
+                        Ok(pack) => {
+                            println!("  **Pack ID:** `{}`", pack.id);
+                            println!("  **Path:** {}", artifact_path.display());
+                        }
+                        Err(e) => {
+                            println!("  (failed to load: {})", e);
+                        }
                     }
                 }
             } else {
-                println!("  (no rule pack found at {})", artifact_path.display());
-                if let Some(channel) = &channel {
-                    println!(
-                        "  Run `icg update --channel {}` to download the rule pack.",
-                        channel
-                    );
-                } else {
-                    println!("  Run `icg update` to download the rule pack.");
-                }
+                println!(
+                    "  (no rule-pack directory found at {}; legacy fallback: {})",
+                    DEFAULT_RULE_PACK_DIR, DEFAULT_RULE_PACK_PATH
+                );
+                println!("  Install the approved modular pack directory before enabling the hook.");
             }
             println!();
 
