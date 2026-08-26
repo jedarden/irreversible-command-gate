@@ -7,8 +7,8 @@ use coverage::*;
 use engine::{Engine, InputSource};
 use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
 use icg::{
-    coverage, denial_log, engine, fail_closed, health, health_server, monitoring, new_pack,
-    overrides, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
+    coverage, denial_log, emergency_bypass, engine, fail_closed, health, health_server, monitoring,
+    new_pack, overrides, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
     trust_pointer, update,
 };
 use overrides::*;
@@ -612,6 +612,20 @@ fn render_hook_response(
     }
 
     response
+}
+
+/// Render the successful native-hook response for an explicit operator
+/// emergency bypass. Do not parse or echo the request here: hook commands and
+/// content may contain credentials, and the bypass audit intentionally records
+/// only its activation and front end.
+fn render_emergency_bypass_hook_response() -> serde_json::Value {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow"
+        },
+        "systemMessage": emergency_bypass::WARNING
+    })
 }
 
 /// Best-effort persistence for the explicitly enabled traffic recorder.
@@ -1219,15 +1233,50 @@ fn rewritten_wrapper_args(tool: &str, rewrite: &str) -> Result<Vec<OsString>> {
     Ok(tokens[0].args.iter().map(OsString::from).collect())
 }
 
+/// Execute the real binary under the explicit emergency policy without
+/// constructing an engine or command source. In particular, do not turn argv
+/// into loggable command text: wrapper arguments can contain credentials.
+#[cfg(unix)]
+fn exec_emergency_bypass(
+    argv0: &OsStr,
+    tool: &str,
+    original_args: &[OsString],
+    lifecycle: Option<&mut health::GuardLifecycle>,
+) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    eprintln!("{}", emergency_bypass::WARNING);
+    emergency_bypass::record_activation(emergency_bypass::FrontEnd::Wrapper);
+    let real_binary = real_binary_in_path(tool, argv0)?;
+    if let Some(run) = lifecycle {
+        if let Err(error) = run.finish_clean() {
+            eprintln!("icg_health_event event=finish_failed error={error:#}");
+        }
+    }
+    let error = Command::new(&real_binary)
+        .arg0(argv0)
+        .args(original_args)
+        .exec();
+    anyhow::bail!(
+        "failed to exec real `{tool}` binary `{}`: {error}",
+        real_binary.display()
+    )
+}
+
 #[cfg(unix)]
 fn run_shadowed_tool(
     argv0: &OsStr,
     tool: &str,
     original_args: &[OsString],
     practice_mode: bool,
+    emergency_bypass_active: bool,
     mut lifecycle: Option<&mut health::GuardLifecycle>,
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
+
+    if emergency_bypass_active {
+        return exec_emergency_bypass(argv0, tool, original_args, lifecycle);
+    }
 
     if practice_mode {
         eprintln!("{PRACTICE_MODE_BANNER}");
@@ -1393,6 +1442,7 @@ fn run_shadowed_tool(
     _tool: &str,
     _original_args: &[OsString],
     _practice_mode: bool,
+    _emergency_bypass_active: bool,
     _lifecycle: Option<&mut health::GuardLifecycle>,
 ) -> Result<()> {
     anyhow::bail!("PATH-wrapper mode is only supported on Unix platforms")
@@ -1404,11 +1454,16 @@ fn main() -> Result<()> {
     let original_args: Vec<OsString> = argv.collect();
 
     if let Some(tool) = shadowed_tool_name(&argv0) {
-        let mut lifecycle = match health::GuardLifecycle::start() {
-            Ok(lifecycle) => Some(lifecycle),
-            Err(error) => {
-                eprintln!("icg_health_event event=start_failed error={error:#}");
-                None
+        let emergency_bypass_active = emergency_bypass::is_active();
+        let mut lifecycle = if emergency_bypass_active {
+            None
+        } else {
+            match health::GuardLifecycle::start() {
+                Ok(lifecycle) => Some(lifecycle),
+                Err(error) => {
+                    eprintln!("icg_health_event event=start_failed error={error:#}");
+                    None
+                }
             }
         };
         let result = run_shadowed_tool(
@@ -1416,6 +1471,7 @@ fn main() -> Result<()> {
             &tool,
             &original_args,
             practice_mode_enabled(false),
+            emergency_bypass_active,
             lifecycle.as_mut(),
         );
         if let Some(run) = lifecycle.as_mut() {
@@ -1430,7 +1486,8 @@ fn main() -> Result<()> {
         &cli.command,
         Commands::Hook { .. } | Commands::Wrapper { .. }
     );
-    let mut lifecycle = if tracks_lifecycle {
+    let emergency_bypass_active = tracks_lifecycle && emergency_bypass::is_active();
+    let mut lifecycle = if tracks_lifecycle && !emergency_bypass_active {
         match health::GuardLifecycle::start() {
             Ok(lifecycle) => Some(lifecycle),
             Err(error) => {
@@ -1572,6 +1629,18 @@ fn main() -> Result<()> {
             trusted_ref,
             record_as_test,
         } => {
+            if emergency_bypass_active {
+                // An explicit incident escape hatch wins before pack loading,
+                // request parsing, and the fail-open/fail-closed availability
+                // boundary. Its telemetry deliberately contains no tool input.
+                emergency_bypass::record_activation(emergency_bypass::FrontEnd::Hook);
+                println!("{}", render_emergency_bypass_hook_response());
+                let result = Ok(());
+                if let Some(run) = lifecycle.as_mut() {
+                    run.finish_result(&result);
+                }
+                return result;
+            }
             // Hook mode: read PreToolUse JSON from stdin, route to appropriate engine, and return decision
             let practice_mode = practice_mode_enabled(practice);
             let mut engine = Engine::new();
@@ -1797,6 +1866,7 @@ fn main() -> Result<()> {
                 tool,
                 &args,
                 practice_mode_enabled(practice),
+                emergency_bypass_active,
                 lifecycle.as_mut(),
             )
         }
@@ -2228,6 +2298,10 @@ fn main() -> Result<()> {
                         "disabled"
                     }
                 );
+                println!(
+                    "**Emergency Bypasses (retained):** {}",
+                    store.emergency_bypasses().len()
+                );
                 println!();
 
                 let window = store.window();
@@ -2394,6 +2468,7 @@ fn main() -> Result<()> {
                 // Copy existing window data to new store
                 let window_records = store.window().records().to_vec();
                 let rule_metrics = store.rule_metrics().cloned().collect::<Vec<_>>();
+                let emergency_bypasses = store.emergency_bypasses().to_vec();
                 for record in window_records {
                     new_store.record_evaluation(
                         record.verdict,
@@ -2402,6 +2477,7 @@ fn main() -> Result<()> {
                     );
                 }
                 new_store.restore_rule_metrics(rule_metrics);
+                new_store.restore_emergency_bypasses(emergency_bypasses);
 
                 // Persist the updated configuration
                 new_store.persist()?;

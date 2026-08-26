@@ -9,6 +9,28 @@ If the guard has crashed or is returning `guard-crash` denials, first follow
 the [incident response runbook](incident-response.md). If a rule-pack release
 is causing a deny-rate spike, follow the [rollback runbook](rollback.md).
 
+## Enforcement semantics and audit trail
+
+`ICG_DISABLED=1` is read before rule-pack loading, hook payload parsing, and
+guard-availability handling. It applies consistently to `icg check`, the
+native PreToolUse hook, and a PATH-shadowed wrapper binary. The hook returns a
+normal JSON `allow` response with the emergency warning in `systemMessage`; a
+wrapper writes the warning to stderr before it executes the real binary.
+
+Each activation emits an `icg_emergency_bypass` event and a bounded telemetry
+record containing only the timestamp and front end (`check`, `hook`, or
+`wrapper`). It deliberately does **not** contain the command, arguments, tool
+payload, working directory, or environment values, because those can include
+credentials or other secrets. A telemetry-cache write failure is itself
+reported as an `icg_emergency_bypass` stderr event, but cannot block the
+approved emergency operation.
+
+The explicit bypass takes precedence over both Fail-Open and Fail-Closed
+guard-availability behavior for that single process invocation. In other
+words, a graduated Fail-Closed `guard-crash` denial does not override an
+approved emergency bypass. Once `ICG_DISABLED` is absent, the configured
+Fail-Open/Fail-Closed policy resumes unchanged.
+
 ## Activation criteria
 
 An emergency bypass is justified only when all of the following are true:

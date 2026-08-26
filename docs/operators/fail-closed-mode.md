@@ -19,6 +19,7 @@ compatibility override, not the durable activation or rollback mechanism.
 | Tracked invocation disappears before clean exit | Record a crash; allow the next invocation | Record a crash; deny the next invocation |
 | Poison-pill deny-rate anomaly | Roll back the release and reset open-mode qualification | Roll back the release and remain Fail-Closed |
 | Policy file is missing or unreadable | Bootstrap Fail-Open and emit an error | Repair the policy; do not claim Fail-Closed |
+| Approved `ICG_DISABLED=1` emergency invocation | Bypass this one invocation and record a secret-free audit event | Same; the explicit emergency bypass takes precedence |
 
 The tracked disappearance is detected by the durable health run marker on the
 next invocation. A harness that sees no process, timeout, or malformed output
@@ -26,7 +27,8 @@ must also be configured to deny hook failure if that is part of the deployed
 Fail-Closed contract. An environment variable inside a process cannot react to
 a process that never returns.
 
-Fail-Closed is not a defense against a deliberately modified binary, a
+Fail-Closed is not a defense against an approved
+[`ICG_DISABLED=1` emergency bypass](../runbooks/emergency-bypass.md), a deliberately modified binary, a
 compromised host, direct library calls, absolute-path bypasses, or cloud-hosted
 agent sessions. Keep root-owned deployment and harness controls in place.
 

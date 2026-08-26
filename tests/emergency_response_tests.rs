@@ -10,10 +10,8 @@
 //! - Step 4: Verify and Restore (service health check)
 //! - Step 5: Follow Up (incident reporting)
 //!
-//! Note: icg does NOT implement emergency bypass in the current codebase.
-//! This test file documents the EXPECTED behavior for future implementation.
-
 use std::fs;
+use std::io::Write;
 use std::process::{Command, Output};
 use tempfile::tempdir;
 
@@ -67,18 +65,19 @@ Justification: Service down, users affected",
 }
 
 #[test]
-#[ignore] // Feature not implemented: icg does not support ICG_DISABLED bypass
 fn emergency_scenario_3_bypass_guard_with_disabled_flag() {
-    // Step 3: Test ICG_DISABLED environment variable bypass
-    // This is DOCUMENTED behavior but NOT IMPLEMENTED in current codebase
-    // This test is ignored until the feature is implemented
+    // Step 3: `check` records an activation but never records command data.
+    let temp = tempdir().expect("emergency telemetry directory should be created");
+    let telemetry_path = temp.path().join("telemetry.json");
+    let command_secret = "emergency-secret-must-not-be-logged";
 
     let result = Command::new(env!("CARGO_BIN_EXE_icg"))
         .env("ICG_DISABLED", "1")
+        .env("ICG_TELEMETRY_PATH", &telemetry_path)
         .args([
             "check",
             "--command",
-            "vault policy write auth-policy auth-policy.hcl",
+            &format!("vault policy write auth-policy {command_secret}"),
         ])
         .output()
         .expect("icg should run even when disabled");
@@ -92,6 +91,135 @@ fn emergency_scenario_3_bypass_guard_with_disabled_flag() {
         stdout.contains("WARNING") || stdout.contains("disabled") || stdout.contains("bypass"),
         "Should warn about disabled guard"
     );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("icg_emergency_bypass event=activated front_end=check"));
+    assert!(
+        !format!("{stdout}{stderr}").contains(command_secret),
+        "emergency activation output must not contain command data"
+    );
+
+    let telemetry = fs::read_to_string(&telemetry_path).expect("bypass telemetry should persist");
+    assert!(
+        telemetry.contains("\"front_end\": \"check\""),
+        "check activation should be auditable: {telemetry}"
+    );
+    assert!(
+        !telemetry.contains(command_secret),
+        "emergency telemetry must never contain command data"
+    );
+}
+
+#[test]
+fn emergency_bypass_hook_returns_json_allow_before_fail_closed_loading() {
+    let temp = tempdir().expect("hook support directory should be created");
+    let telemetry_path = temp.path().join("telemetry.json");
+    let command_secret = "hook-emergency-secret-must-not-be-logged";
+    let missing_pack = temp.path().join("missing-pack.json");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["hook", "--rule-pack"])
+        .arg(&missing_pack)
+        .env("ICG_DISABLED", "1")
+        .env("ICG_FAIL_CLOSED", "true")
+        .env("ICG_TELEMETRY_PATH", &telemetry_path)
+        .env("ICG_HEALTH_PATH", temp.path().join("health.json"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("icg hook should start");
+    child
+        .stdin
+        .take()
+        .expect("hook stdin should be available")
+        .write_all(
+            format!(
+                r#"{{"tool_name":"Bash","tool_input":{{"command":"vault kv destroy {command_secret}"}}}}"#
+            )
+            .as_bytes(),
+        )
+        .expect("hook input should be written");
+
+    let output = child.wait_with_output().expect("hook should finish");
+    assert!(
+        output.status.success(),
+        "emergency hook bypass should allow: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("hook bypass must emit JSON");
+    assert_eq!(
+        response["hookSpecificOutput"]["permissionDecision"],
+        "allow"
+    );
+    assert!(response["systemMessage"]
+        .as_str()
+        .expect("hook bypass should contain its mandatory warning")
+        .contains("ICG_DISABLED"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("icg_emergency_bypass event=activated front_end=hook"));
+    assert!(!format!("{}{}", response, stderr).contains(command_secret));
+    let telemetry = fs::read_to_string(&telemetry_path).expect("hook telemetry should persist");
+    assert!(telemetry.contains("\"front_end\": \"hook\""));
+    assert!(!telemetry.contains(command_secret));
+}
+
+#[cfg(unix)]
+#[test]
+fn emergency_bypass_executes_a_real_shadowed_binary_without_command_logging() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp = tempdir().expect("wrapper support directory should be created");
+    let wrapper_dir = temp.path().join("wrapper");
+    let real_dir = temp.path().join("real");
+    fs::create_dir(&wrapper_dir).expect("wrapper directory should be created");
+    fs::create_dir(&real_dir).expect("real-tool directory should be created");
+
+    let tool = "icg-emergency-shadowed-tool";
+    let wrapper = wrapper_dir.join(tool);
+    symlink(env!("CARGO_BIN_EXE_icg"), &wrapper).expect("wrapper symlink should be created");
+    let real_tool = real_dir.join(tool);
+    fs::write(
+        &real_tool,
+        "#!/bin/sh\nprintf 'REAL_SHADOWED_TOOL_RAN\\n'\n",
+    )
+    .expect("real tool should be written");
+    let mut permissions = fs::metadata(&real_tool)
+        .expect("real tool metadata should be readable")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&real_tool, permissions).expect("real tool should be executable");
+
+    let path = std::env::join_paths([wrapper_dir, real_dir]).expect("test PATH should be valid");
+    let telemetry_path = temp.path().join("telemetry.json");
+    let command_secret = "wrapper-emergency-secret-must-not-be-logged";
+    let output = Command::new(&wrapper)
+        .args(["destroy", command_secret])
+        .env("PATH", path)
+        .env("ICG_DISABLED", "1")
+        .env("ICG_TELEMETRY_PATH", &telemetry_path)
+        .env("ICG_HEALTH_PATH", temp.path().join("health.json"))
+        .output()
+        .expect("shadowed wrapper should run");
+
+    assert!(
+        output.status.success(),
+        "shadowed emergency bypass should exec the real tool: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "REAL_SHADOWED_TOOL_RAN\n"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ICG_DISABLED emergency bypass active"));
+    assert!(stderr.contains("icg_emergency_bypass event=activated front_end=wrapper"));
+    assert!(!stderr.contains(command_secret));
+
+    let telemetry = fs::read_to_string(&telemetry_path).expect("wrapper telemetry should persist");
+    assert!(telemetry.contains("\"front_end\": \"wrapper\""));
+    assert!(!telemetry.contains(command_secret));
 }
 
 #[test]

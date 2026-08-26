@@ -16,6 +16,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::emergency_bypass::{self, FrontEnd};
 use crate::engine::{CheckResult, CommandSource, ContentSource, Engine, InputSource};
 use crate::overrides::{save_override, RepoOverride};
 use crate::rule_pack::{Check, Pack};
@@ -282,10 +283,8 @@ struct BackupManifest {
 }
 
 pub fn run_check(args: CheckArgs) -> Result<()> {
-    if std::env::var("ICG_DISABLED")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
+    if emergency_bypass::is_active() {
+        emergency_bypass::record_activation(FrontEnd::Check);
         println!("WARNING: icg guard disabled for this command");
         println!("ALLOW: emergency bypass active");
         return Ok(());
