@@ -5,6 +5,17 @@ use icg::rollback::PoisonPillConfig;
 use icg::state_store::{DenyRatePolicy, StateStore};
 use icg::trust_pointer::{TrustPointer, TrustPointerStore};
 use icg::{engine::CheckResult, engine::CommandSource, engine::Engine};
+use std::os::unix::fs::PermissionsExt;
+
+fn secure_tempdir() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut permissions = std::fs::metadata(directory.path())
+        .expect("temporary directory metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(directory.path(), permissions).expect("secure temporary directory");
+    directory
+}
 
 fn adopt(store: &StateStore, trust: &TrustPointerStore, release_ref: &str) {
     let pointer = TrustPointer::new(release_ref);
@@ -37,7 +48,7 @@ fn test_poison_config() -> PoisonPillConfig {
 
 #[test]
 fn policy_reconciles_unique_clean_releases_and_graduates() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = secure_tempdir();
     let runtime = StateStore::new(directory.path().join("runtime.json"));
     let trust = TrustPointerStore::new(directory.path().join("trust.json"));
     let policy = PolicyStore::new(directory.path().join("policy.json"));
@@ -96,7 +107,7 @@ fn policy_reconciles_unique_clean_releases_and_graduates() {
 
 #[test]
 fn poison_pill_resets_open_policy_without_editing_telemetry() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = secure_tempdir();
     let runtime = StateStore::new(directory.path().join("runtime.json"));
     let trust = TrustPointerStore::new(directory.path().join("trust.json"));
     let policy = PolicyStore::new(directory.path().join("policy.json"));
