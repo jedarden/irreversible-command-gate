@@ -1,0 +1,79 @@
+# Assignment Repair Monitor Service
+#
+# Continuous monitoring service that detects and repairs stuck bead assignment
+# states where beads remain assigned to inactive workers.
+#
+# ## Installation
+#
+# ```bash
+# sudo cp systemd/assignment-repair-monitor.service /etc/systemd/system/
+# sudo systemctl daemon-reload
+# sudo systemctl enable assignment-repair-monitor
+# sudo systemctl start assignment-repair-monitor
+# ```
+#
+# ## Configuration
+#
+# Create /etc/default/assignment-repair-monitor with:
+#
+# ```bash
+# ICG_WORKSPACE_PATH=/path/to/workspace
+# ICG_CHECK_INTERVAL_SECONDS=300
+# ICG_AUTO_REPAIR_ENABLED=true
+# ICG_DRY_RUN=false
+# ```
+#
+# ## Management
+#
+# ```bash
+# sudo systemctl status assignment-repair-monitor
+# sudo journalctl -u assignment-repair-monitor -f
+# sudo systemctl restart assignment-repair-monitor
+# ```
+
+[Unit]
+Description=Assignment State Repair Service
+Documentation=https://github.com/jedarden/irreversible-command-gate
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=icg
+Group=icg
+WorkingDirectory=/home/coding/irreversible-command-gate
+
+# Environment file for configuration
+EnvironmentFile=/etc/default/assignment-repair-monitor
+# Fallback to defaults if environment file doesn't exist
+Environment=ICG_WORKSPACE_PATH=/home/coding/irreversible-command-gate
+Environment=ICG_CHECK_INTERVAL_SECONDS=300
+Environment=ICG_AUTO_REPAIR_ENABLED=true
+Environment=ICG_DRY_RUN=false
+
+# Main binary
+ExecStart=/usr/local/bin/assignment-repair-monitor
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/coding/irreversible-command-gate/.beads
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=256M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=assignment-repair-monitor
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,38 @@
+# Assignment Repair Monitor Timer
+#
+# Alternative to running the monitor continuously - runs checks on a schedule.
+#
+# ## Installation
+#
+# ```bash
+# sudo cp systemd/assignment-repair-monitor.* /etc/systemd/system/
+# sudo systemctl daemon-reload
+# sudo systemctl enable assignment-repair-monitor.timer
+# sudo systemctl start assignment-repair-monitor.timer
+# ```
+#
+# ## Configuration
+#
+# The timer runs the service every 5 minutes by default. To customize:
+#
+# ```bash
+# sudo systemctl edit assignment-repair-monitor.timer
+# ```
+#
+# And modify the OnCalendar= value.
+
+[Unit]
+Description=Assignment State Repair Timer
+Documentation=https://github.com/jedarden/irreversible-command-gate
+Requires=assignment-repair-monitor.service
+
+[Timer]
+# Run every 5 minutes
+OnCalendar=*:0/5
+# Also run on boot if the last run was missed
+Persistent=true
+# Randomize start time by up to 30 seconds to avoid drift
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

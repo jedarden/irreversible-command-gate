@@ -37,3 +37,6 @@ pub mod starvation_diagnostic;
 
 // Checkpoint health monitoring and auto-repair system
 pub mod checkpoint_monitor;
+
+// Automated assignment state repair service
+pub mod assignment_repair;
