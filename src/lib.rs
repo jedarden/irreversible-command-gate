@@ -31,3 +31,6 @@ pub mod bead_dependency_validator;
 
 // Bead integrity verification service (continuous monitoring)
 pub mod bead_integrity_monitor;
+
+// Starvation diagnostic system (automated root cause analysis)
+pub mod starvation_diagnostic;
