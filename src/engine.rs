@@ -1730,21 +1730,15 @@ impl Engine {
             };
         }
 
-        // First, evaluate unconditional packs (those with empty tool_keywords) against the
-        // entire raw command string. This is the secrets path: packs like secrets scan the
-        // whole command regardless of which executable is invoked, catching cases like
-        // `echo "ghp_..." >> file` that have no guarded executable to basename-match.
-        let full_command = match source {
-            CommandSource::Hook(cmd) => cmd.clone(),
-            CommandSource::Argv(argv) => {
-                if argv.is_empty() {
-                    return CheckResult::Allowed;
-                }
-                argv.join(" ")
-            }
+        // First, evaluate unconditional packs (those with empty tool_keywords) only for
+        // hook input. This is the secrets path: it scans the complete raw Bash command
+        // regardless of executable, catching `echo "ghp_..." >> file` where no guarded
+        // executable exists to basename-match. A PATH wrapper sees only argv for binaries
+        // it shadows, so it cannot provide this command-wide guarantee.
+        let unconditional_result = match source {
+            CommandSource::Hook(command) => self.evaluate_unconditional_packs(command),
+            CommandSource::Argv(_) => CheckResult::Allowed,
         };
-
-        let unconditional_result = self.evaluate_unconditional_packs(&full_command);
         if matches!(unconditional_result, CheckResult::Denied { .. }) {
             return unconditional_result;
         }

@@ -258,11 +258,11 @@ fn denial_reasons_do_not_echo_the_matched_value() {
 }
 
 #[test]
-fn wrapper_argv_carrying_a_token_is_also_denied() {
-    // The hook front-end is the coverage claim (the wrapper never sees
-    // commands for binaries it does not shadow), but when a shadowed
-    // binary IS invoked with a credential in argv, the joined-argv scan
-    // fires too -- incidental bonus coverage, not the design driver.
+fn secrets_scan_is_hook_only() {
+    // The PATH-wrapper's argv[0]-shadow dispatch cannot make an
+    // executable-independent whole-command coverage claim: it is never
+    // called for binaries it does not shadow. Keep this unconditional pack
+    // on the Hook path, which receives the raw Bash command string.
     let engine = load_secrets_engine();
 
     let argv = [
@@ -272,15 +272,8 @@ fn wrapper_argv_carrying_a_token_is_also_denied() {
     ];
     let result = engine.evaluate_command(&engine.read_from_argv(argv.to_vec()));
     assert!(
-        matches!(
-            result,
-            CheckResult::Denied {
-                ref pack_id,
-                ref pattern_id,
-                ..
-            } if pack_id == "secrets" && pattern_id == "github-token"
-        ),
-        "expected wrapper-argv credential to be denied, got {result:?}"
+        matches!(result, CheckResult::Allowed),
+        "expected the hook-only secrets scan to leave wrapper argv alone, got {result:?}"
     );
 }
 
