@@ -43,3 +43,6 @@ pub mod assignment_repair;
 
 // Automated dependency cycle detection and repair service
 pub mod dependency_cycle_monitor;
+
+// Automated bead database integrity verification service (rehearsal-based repair)
+pub mod bead_database_integrity_service;
