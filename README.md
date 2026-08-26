@@ -46,6 +46,8 @@ Stated plainly, because it's easy to assume more than is actually true:
 
 New to icg? Start here:
 
+**2026-08-26:** CI workflow updated to gate actual packs instead of static fixtures. End-to-end verification in progress (bead irrevers-84b36e47).
+
 - **[Onboarding Guide](docs/onboarding-guide.md)** — Structured learning path for operators and developers (recommended starting point)
 - **[Quick Start Guide](docs/quick-start.md)** — Get up and running in 5 minutes
 - **[Fail-Closed Mode Guide](docs/operators/fail-closed-mode.md)** — Activation, monitoring, emergency demotion, and troubleshooting for the graduated availability policy
