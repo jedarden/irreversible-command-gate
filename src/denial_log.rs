@@ -22,12 +22,28 @@
 //!
 //! ## Usage
 //!
-//! ```rust
-//! use icg::denial_log::{DenialLog, DenialRecord, DenialStore};
+//! ```rust,no_run
+//! use icg::denial_log::{DenialRecord, DenialSeverity, DenialStore, DeniedInput};
 //!
-//! let store = DenialStore::new("/var/log/icg/denials.jsonl")?;
-//! let record = DenialRecord::from_check_result(check_result, context);
+//! # fn main() -> anyhow::Result<()> {
+//! let store = DenialStore::with_default_config(
+//!     std::env::temp_dir().join("icg-denials.jsonl"),
+//! )?;
+//! let record = DenialRecord::new(
+//!     "example-pack".to_string(),
+//!     "block-destructive-command".to_string(),
+//!     "destructive".to_string(),
+//!     DenialSeverity::Critical,
+//!     "Destructive command denied".to_string(),
+//!     DeniedInput::Command {
+//!         command: "rm -rf /important-data".to_string(),
+//!         segments: vec!["rm -rf /important-data".to_string()],
+//!         working_dir: None,
+//!     },
+//! );
 //! store.record_denial(record)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use anyhow::{Context, Result};

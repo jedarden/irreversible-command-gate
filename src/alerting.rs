@@ -20,14 +20,21 @@
 //!
 //! ## Usage
 //!
-//! ```rust
-//! use icg::alerting::{AlertManager, AlertConfig, WebhookBackend};
+//! ```rust,no_run
+//! use icg::alerting::{AlertConfig, AlertManager, WebhookBackend, WebhookConfig};
 //!
+//! # async fn send_alert() -> anyhow::Result<()> {
 //! let config = AlertConfig::default();
-//! let manager = AlertManager::new(config);
+//! let mut manager = AlertManager::new(config);
+//! manager.add_backend(Box::new(WebhookBackend::new(WebhookConfig {
+//!     url: "https://alerts.example.com/icg".to_string(),
+//!     ..Default::default()
+//! })));
 //!
 //! // Send a critical alert
 //! manager.alert_critical("Guard process crashed", "Crash type: SIGABRT").await?;
+//! # Ok(())
+//! # }
 //! ```
 
 use anyhow::Result;

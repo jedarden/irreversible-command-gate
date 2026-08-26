@@ -124,7 +124,9 @@ fn installation_scenario_4_safe_command_allowed() {
 #[test]
 fn installation_scenario_5_health_status_works() {
     // Step 5: Verify health status command works
-    let health = icg(&["health", "status"]);
+    let temp_dir = tempdir().unwrap();
+    let health_path = temp_dir.path().join("health-state.json");
+    let health = icg(&["health", "status", "--path", &health_path.to_string_lossy()]);
 
     // Should succeed
     assert!(health.status.success(), "icg health status should succeed");

@@ -26,7 +26,9 @@ fn icg(args: &[&str]) -> Output {
 #[test]
 fn maintenance_scenario_1_weekly_health_check() {
     // Step 1: Verify weekly health check works
-    let health = icg(&["health", "status"]);
+    let temp_dir = tempdir().unwrap();
+    let health_path = temp_dir.path().join("health-state.json");
+    let health = icg(&["health", "status", "--path", &health_path.to_string_lossy()]);
 
     // Should succeed
     assert!(
@@ -45,7 +47,9 @@ fn maintenance_scenario_1_weekly_health_check() {
 #[test]
 fn maintenance_scenario_1_health_shows_binary_status() {
     // Verify health check shows binary status
-    let health = icg(&["health", "status"]);
+    let temp_dir = tempdir().unwrap();
+    let health_path = temp_dir.path().join("health-state.json");
+    let health = icg(&["health", "status", "--path", &health_path.to_string_lossy()]);
 
     let stdout = String::from_utf8_lossy(&health.stdout);
     let output = if stdout.is_empty() {
@@ -259,12 +263,15 @@ fn maintenance_scenario_telemetry_status_works() {
     // Verify telemetry status can be checked
     let temp_dir = tempdir().unwrap();
     let telemetry_path = temp_dir.path().join("test-telemetry.json");
+    let state_store_path = temp_dir.path().join("test-state.json");
 
     let status = icg(&[
         "telemetry",
         "status",
         "--path",
         &telemetry_path.to_string_lossy(),
+        "--state-store-path",
+        &state_store_path.to_string_lossy(),
     ]);
 
     // Should succeed

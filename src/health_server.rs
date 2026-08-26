@@ -14,13 +14,15 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```rust,no_run
 //! use icg::health_server::{HealthServer, HealthServerConfig};
 //!
-//! let config = HealthServerConfig::default();
-//! let server = HealthServer::new(config)?;
-//! server.spawn_background_task();
+//! # async fn serve() -> anyhow::Result<()> {
+//! let mut server = HealthServer::new(HealthServerConfig::default());
+//! server.spawn_background_task().await?;
 //! // Server runs in background, accessible via HTTP
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Kubernetes Integration

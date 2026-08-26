@@ -20,12 +20,17 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```rust,no_run
 //! use icg::metrics::{MetricsExporter, MetricsConfig};
+//! use icg::monitoring::{collect_snapshot, MonitoringConfig};
 //!
+//! # fn main() -> anyhow::Result<()> {
 //! let exporter = MetricsExporter::new(MetricsConfig::default());
-//! let prometheus_text = exporter.export_metrics()?;
+//! let snapshot = collect_snapshot(&MonitoringConfig::from_environment())?;
+//! let prometheus_text = exporter.export_metrics(&snapshot.metrics)?;
 //! println!("{}", prometheus_text);
+//! # Ok(())
+//! # }
 //! ```
 
 use anyhow::{Context, Result};
