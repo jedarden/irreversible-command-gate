@@ -1,0 +1,12 @@
+[Unit]
+Description=ICG Checkpoint Monitor Timer - Weekly Checkpoint Verification
+Documentation=https://github.com/jedarden/irreversible-command-gate
+
+[Timer]
+# Run weekly on Sunday at 3 AM
+OnCalendar=Sun 03:00
+Persistent=true
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,33 @@
+[Unit]
+Description=ICG Checkpoint Monitor - Automated Bead Checkpoint Verification and Repair
+Documentation=https://github.com/jedarden/irreversible-command-gate
+After=network.target
+
+[Service]
+Type=simple
+User=coding
+Group=coding
+WorkingDirectory=/home/coding/irreversible-command-gate
+Environment="RUST_LOG=info"
+Environment="ICG_CHECK_INTERVAL_SECONDS=300"
+Environment="ICG_STALE_THRESHOLD_MINUTES=5"
+Environment="ICG_AUTO_REPAIR_ENABLED=true"
+ExecStart=/home/coding/irreversible-command-gate/target/release/checkpoint-monitor
+Restart=always
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=50%
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/coding/irreversible-command-gate/.beads
+
+[Install]
+WantedBy=multi-user.target

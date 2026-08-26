@@ -219,6 +219,15 @@ pub struct CheckpointSyncStatus {
 
     /// Corruption details
     pub corruption_details: Option<String>,
+
+    /// Bead IDs present in checkpoint but missing in database
+    pub beads_missing_in_database: Vec<String>,
+
+    /// Bead IDs present in database but missing in checkpoint
+    pub beads_missing_in_checkpoint: Vec<String>,
+
+    /// Number of beads with drift (sum of both missing lists)
+    pub drift_count: usize,
 }
 
 /// Database health status
@@ -440,19 +449,49 @@ impl CheckpointMonitor {
             }
         }
 
-        // Count database issues
-        let database_issue_count = if database_exists {
-            match self.count_database_issues() {
-                Ok(count) => count,
+        // Count database issues and extract bead IDs
+        let (database_issue_count, database_bead_ids) = if database_exists {
+            match self.extract_database_bead_ids() {
+                Ok(ids) => (ids.len() as i64, ids),
                 Err(e) => {
                     corrupted = true;
                     corruption_details = Some(format!("Database query failed: {}", e));
-                    0
+                    (0, Vec::new())
                 }
             }
         } else {
-            0
+            (0, Vec::new())
         };
+
+        // Extract checkpoint bead IDs for comparison
+        let checkpoint_bead_ids = if !corrupted && forensic_exists {
+            match self.extract_checkpoint_bead_ids() {
+                Ok(ids) => ids,
+                Err(e) => {
+                    corrupted = true;
+                    corruption_details = Some(format!("Checkpoint parsing failed: {}", e));
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Find beads present in checkpoint but missing in database
+        let beads_missing_in_database: Vec<String> = checkpoint_bead_ids
+            .iter()
+            .filter(|id| !database_bead_ids.contains(id))
+            .cloned()
+            .collect();
+
+        // Find beads present in database but missing in checkpoint
+        let beads_missing_in_checkpoint: Vec<String> = database_bead_ids
+            .iter()
+            .filter(|id| !checkpoint_bead_ids.contains(id))
+            .cloned()
+            .collect();
+
+        let drift_count = beads_missing_in_database.len() + beads_missing_in_checkpoint.len();
 
         // Determine sync status
         let sync_status = if !checkpoint_exists {
@@ -463,6 +502,8 @@ impl CheckpointMonitor {
             "invalid".to_string()
         } else if stale {
             "stale".to_string()
+        } else if drift_count > 0 {
+            "desynchronized".to_string()
         } else if checkpoint_issue_count != Some(database_issue_count) {
             "desynchronized".to_string()
         } else {
@@ -480,6 +521,9 @@ impl CheckpointMonitor {
             stale_minutes,
             corrupted,
             corruption_details,
+            beads_missing_in_database,
+            beads_missing_in_checkpoint,
+            drift_count,
         })
     }
 
@@ -536,8 +580,8 @@ impl CheckpointMonitor {
         Ok(())
     }
 
-    /// Count issues in the database
-    fn count_database_issues(&self) -> Result<i64> {
+    /// Extract bead IDs from database
+    fn extract_database_bead_ids(&self) -> Result<Vec<String>> {
         let output = Command::new(&self.config.bead_path)
             .args(["list", "--json"])
             .current_dir(&self.config.workspace_path)
@@ -548,9 +592,44 @@ impl CheckpointMonitor {
             anyhow::bail!("bead list failed");
         }
 
-        // Count JSONL lines
         let json = String::from_utf8(output.stdout)?;
-        Ok(json.lines().filter(|line| !line.trim().is_empty()).count() as i64)
+        let mut bead_ids = Vec::new();
+
+        for line in json.lines() {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
+                    bead_ids.push(id.to_string());
+                }
+            }
+        }
+
+        Ok(bead_ids)
+    }
+
+    /// Extract bead IDs from checkpoint forensic.jsonl
+    fn extract_checkpoint_bead_ids(&self) -> Result<Vec<String>> {
+        let forensic_path = self.config.forensic_path();
+
+        if !forensic_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = fs::read_to_string(&forensic_path)
+            .context("Failed to read forensic.jsonl")?;
+
+        let mut bead_ids = Vec::new();
+
+        for line in content.lines() {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(issue) = value.get("issue") {
+                    if let Some(id) = issue.get("id").and_then(|v| v.as_str()) {
+                        bead_ids.push(id.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok(bead_ids)
     }
 
     /// Perform automatic repairs based on detected issues
@@ -800,6 +879,22 @@ impl CheckpointMonitor {
                 "Checkpoint is stale by {} minutes. Run: bead sync flush-only",
                 checkpoint_sync.stale_minutes.unwrap_or(0)
             ));
+        }
+
+        // Drift-specific recommendations
+        if checkpoint_sync.drift_count > 0 && !checkpoint_sync.corrupted {
+            if !checkpoint_sync.beads_missing_in_database.is_empty() {
+                actions.push(format!(
+                    "{} beads in checkpoint but missing in database. Database may be out of sync. Run: bead sync flush-only",
+                    checkpoint_sync.beads_missing_in_database.len()
+                ));
+            }
+            if !checkpoint_sync.beads_missing_in_checkpoint.is_empty() {
+                actions.push(format!(
+                    "{} beads in database but missing in checkpoint. Checkpoint may be stale. Run: bead sync flush-only",
+                    checkpoint_sync.beads_missing_in_checkpoint.len()
+                ));
+            }
         }
 
         if actions.is_empty() {
@@ -1075,6 +1170,9 @@ mod tests {
             stale_minutes: None,
             corrupted: false,
             corruption_details: None,
+            beads_missing_in_database: vec![],
+            beads_missing_in_checkpoint: vec![],
+            drift_count: 0,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -1113,6 +1211,9 @@ mod tests {
                 stale_minutes: None,
                 corrupted: false,
                 corruption_details: None,
+                beads_missing_in_database: vec![],
+                beads_missing_in_checkpoint: vec![],
+                drift_count: 0,
             },
             database_health: DatabaseHealthStatus {
                 exists: true,
