@@ -34,3 +34,6 @@ pub mod bead_integrity_monitor;
 
 // Starvation diagnostic system (automated root cause analysis)
 pub mod starvation_diagnostic;
+
+// Checkpoint health monitoring and auto-repair system
+pub mod checkpoint_monitor;
