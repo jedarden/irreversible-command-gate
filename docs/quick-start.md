@@ -15,40 +15,28 @@ Get started with icg in 5 minutes. This guide covers installation, basic usage, 
 
 ## Installation (2 minutes)
 
-### Option 1: Download Binary (Recommended)
+### Option 1: Build from Source (currently the only path)
 
-```bash
-# Download the latest release
-wget https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.0/icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-
-# Extract
-tar -xzf icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-
-# Install to system directory
-sudo cp icg /usr/local/bin/
-sudo chmod +x /usr/local/bin/icg
-
-# Verify installation
-icg --version
-```
-
-### Option 2: Build from Source
+**No GitHub release has been cut yet** — the release pipeline exists but has
+not produced a verified end-to-end release (tracked as `irrevers-84b36e47`).
+Until one exists, build from source:
 
 ```bash
 # Clone repository
-git clone https://github.com/jedarden/irreversible-command-gate.git
+git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
 cd irreversible-command-gate
 
 # Build
 cargo build --release
 
-# Install
-sudo cp target/release/icg /usr/local/bin/
-sudo chmod +x /usr/local/bin/icg
+# Install to the root-owned system location
+sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
-# Verify
+# Verify installation
 icg --version
 ```
+
+Once releases exist, prefer downloading the release binary instead.
 
 ---
 
@@ -60,15 +48,10 @@ icg --version
 # Create rule pack directory
 sudo mkdir -p /etc/icg/packs
 
-# Download default rule packs
-sudo curl -o /etc/icg/packs/vault.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/vault.json
-
-sudo curl -o /etc/icg/packs/git.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/git.json
-
-sudo curl -o /etc/icg/packs/image-tag.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/image-tag.json
+# Copy the pack files from your checkout (the repo is the source of truth;
+# there is no tagged release to download packs from yet)
+sudo install -o root -g root -m 0644 \
+  packs/openbao.json packs/git.json packs/image-tag.json /etc/icg/packs/
 
 # Verify rule packs are loaded
 icg coverage --list
@@ -662,11 +645,11 @@ gh issue create \
 **Solution**: Check permissions
 
 ```bash
-# Rule pack directory should be writable
+# Rule pack directory must stay root-owned and read-only to the agent
 sudo ls -la /etc/icg/packs
 
-# Fix permissions if needed
-sudo chown -R $USER:$USER /etc/icg/packs
+# Fix permissions if they drifted; never hand ownership to the guarded user
+sudo chown -R root:root /etc/icg/packs && sudo chmod -R a=rX /etc/icg/packs
 ```
 
 ---
