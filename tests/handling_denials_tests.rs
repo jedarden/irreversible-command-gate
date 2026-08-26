@@ -373,3 +373,256 @@ fn handling_denials_multiple_denials_handled_correctly() {
         );
     }
 }
+
+#[test]
+fn explain_denial_basic() {
+    // Test basic denial lookup functionality
+    let temp_dir = tempdir().unwrap();
+    let denial_log = temp_dir.path().join("denials.jsonl");
+
+    let denial_record = r#"{"id":"test-deny-basic","timestamp":"2026-08-26T10:00:00Z","pack_id":"storage-class","pattern_id":"no-ssd","severity":"High","reason":"SSD storage class is not allowed","denied_input":{"Command":{"command":"kubectl apply -f claim.yaml","segments":["kubectl apply -f claim.yaml"],"working_dir":null}},"context":{"tool":"Write","session_id":"test-session-123"}}"#;
+
+    fs::write(&denial_log, denial_record).expect("denial log should write");
+
+    let explain = icg(&[
+        "explain",
+        "--denial",
+        "test-deny-basic",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    let stderr = String::from_utf8_lossy(&explain.stderr);
+    let output = format!("{} {}", stdout, stderr);
+
+    assert!(
+        output.contains("Denial: test-deny-basic"),
+        "Should show denial ID, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Timestamp:"),
+        "Should show timestamp, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Pack Id: storage-class"),
+        "Should show pack ID, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Pattern Id: no-ssd"),
+        "Should show pattern ID, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Severity: High"),
+        "Should show severity, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Tool: Write"),
+        "Should show tool, got: {}",
+        output
+    );
+}
+
+#[test]
+fn explain_denial_with_deny_history_format() {
+    // Test denial lookup with deny_history array format
+    let temp_dir = tempdir().unwrap();
+    let denial_log = temp_dir.path().join("denials.jsonl");
+
+    let deny_history = r#"{"deny_history": [{"id":"test-deny-history","timestamp":"2026-08-26T11:00:00Z","pack_id":"git-force","pattern_id":"no-force-push","severity":"Critical","reason":"Force pushing is not allowed","denied_input":{"Command":{"command":"git push --force","segments":["git push --force"],"working_dir":null}},"context":{"tool":"Bash","session_id":"test-session-456"}}]}"#;
+
+    fs::write(&denial_log, deny_history).expect("denial log should write");
+
+    let explain = icg(&[
+        "explain",
+        "--denial",
+        "test-deny-history",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    let stderr = String::from_utf8_lossy(&explain.stderr);
+    let output = format!("{} {}", stdout, stderr);
+
+    assert!(
+        output.contains("Denial: test-deny-history"),
+        "Should find denial in deny_history format, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Pack Id: git-force"),
+        "Should show pack ID, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Pattern Id: no-force-push"),
+        "Should show pattern ID, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Severity: Critical"),
+        "Should show severity, got: {}",
+        output
+    );
+}
+
+#[test]
+fn explain_denial_not_found() {
+    // Test denial lookup when ID doesn't exist
+    let temp_dir = tempdir().unwrap();
+    let denial_log = temp_dir.path().join("denials.jsonl");
+
+    let denial_record = r#"{"id":"test-deny-1","timestamp":"2026-08-26T10:00:00Z","pack_id":"storage-class","pattern_id":"no-ssd","severity":"High","reason":"SSD storage class is not allowed","denied_input":{"Command":{"command":"kubectl apply -f claim.yaml","segments":["kubectl apply -f claim.yaml"],"working_dir":null}},"context":{"tool":"Write","session_id":"test-session-123"}}"#;
+
+    fs::write(&denial_log, denial_record).expect("denial log should write");
+
+    let explain = icg(&[
+        "explain",
+        "--denial",
+        "nonexistent-deny-id",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    let stderr = String::from_utf8_lossy(&explain.stderr);
+    let output = format!("{} {}", stdout, stderr);
+
+    assert!(
+        output.contains("was not found") || output.contains("not found"),
+        "Should indicate denial was not found, got: {}",
+        output
+    );
+}
+
+#[test]
+fn explain_denial_multiple_records() {
+    // Test denial lookup with multiple denial records in log
+    let temp_dir = tempdir().unwrap();
+    let denial_log = temp_dir.path().join("denials.jsonl");
+
+    let denial_1 = r#"{"id":"deny-1","timestamp":"2026-08-26T10:00:00Z","pack_id":"pack-a","pattern_id":"pattern-a","severity":"High","reason":"Reason A","denied_input":{"Command":{"command":"cmd-a","segments":["cmd-a"],"working_dir":null}},"context":{"tool":"Bash","session_id":"session-1"}}"#;
+
+    let denial_2 = r#"{"id":"deny-2","timestamp":"2026-08-26T11:00:00Z","pack_id":"pack-b","pattern_id":"pattern-b","severity":"Critical","reason":"Reason B","denied_input":{"Command":{"command":"cmd-b","segments":["cmd-b"],"working_dir":null}},"context":{"tool":"Write","session_id":"session-2"}}"#;
+
+    let content = format!("{}\n{}", denial_1, denial_2);
+    fs::write(&denial_log, content).expect("denial log should write");
+
+    // Test lookup of first denial
+    let explain_1 = icg(&[
+        "explain",
+        "--denial",
+        "deny-1",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout_1 = String::from_utf8_lossy(&explain_1.stdout);
+    let stderr_1 = String::from_utf8_lossy(&explain_1.stderr);
+    let output_1 = format!("{} {}", stdout_1, stderr_1);
+
+    assert!(
+        output_1.contains("Denial: deny-1"),
+        "Should find first denial, got: {}",
+        output_1
+    );
+    assert!(
+        output_1.contains("Pack Id: pack-a"),
+        "Should show pack-a, got: {}",
+        output_1
+    );
+
+    // Test lookup of second denial
+    let explain_2 = icg(&[
+        "explain",
+        "--denial",
+        "deny-2",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout_2 = String::from_utf8_lossy(&explain_2.stdout);
+    let stderr_2 = String::from_utf8_lossy(&explain_2.stderr);
+    let output_2 = format!("{} {}", stdout_2, stderr_2);
+
+    assert!(
+        output_2.contains("Denial: deny-2"),
+        "Should find second denial, got: {}",
+        output_2
+    );
+    assert!(
+        output_2.contains("Pack Id: pack-b"),
+        "Should show pack-b, got: {}",
+        output_2
+    );
+}
+
+#[test]
+fn explain_denial_with_content_input() {
+    // Test denial lookup for content-based denials
+    let temp_dir = tempdir().unwrap();
+    let denial_log = temp_dir.path().join("denials.jsonl");
+
+    let denial_record = r#"{"id":"test-deny-content","timestamp":"2026-08-26T12:00:00Z","pack_id":"image-tag","pattern_id":"no-latest","severity":"High","reason":"Latest tag is not allowed","denied_input":{"Content":{"file_path":"deploy.yaml","content":"image: nginx:latest"}},"context":{"tool":"Write","session_id":"test-session-789"}}"#;
+
+    fs::write(&denial_log, denial_record).expect("denial log should write");
+
+    let explain = icg(&[
+        "explain",
+        "--denial",
+        "test-deny-content",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    let stderr = String::from_utf8_lossy(&explain.stderr);
+    let output = format!("{} {}", stdout, stderr);
+
+    assert!(
+        output.contains("Denial: test-deny-content"),
+        "Should show content-based denial, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Pack Id: image-tag"),
+        "Should show pack ID, got: {}",
+        output
+    );
+}
+
+#[test]
+fn explain_denial_without_optional_context() {
+    // Test denial lookup with minimal fields (missing optional context)
+    let temp_dir = tempdir().unwrap();
+    let denial_log = temp_dir.path().join("denials.jsonl");
+
+    // Minimal denial record without tool context
+    let denial_record = r#"{"id":"test-deny-minimal","timestamp":"2026-08-26T13:00:00Z","pack_id":"test-pack","pattern_id":"test-pattern","severity":"Medium","reason":"Test reason","denied_input":{"Command":{"command":"test command","segments":["test command"],"working_dir":null}},"context":{"session_id":"minimal-session"}}"#;
+
+    fs::write(&denial_log, denial_record).expect("denial log should write");
+
+    let explain = icg(&[
+        "explain",
+        "--denial",
+        "test-deny-minimal",
+        "--denial-log",
+        &denial_log.to_string_lossy(),
+    ]);
+
+    let stdout = String::from_utf8_lossy(&explain.stdout);
+    let stderr = String::from_utf8_lossy(&explain.stderr);
+    let output = format!("{} {}", stdout, stderr);
+
+    assert!(
+        output.contains("Denial: test-deny-minimal"),
+        "Should handle denial without tool context, got: {}",
+        output
+    );
+}
