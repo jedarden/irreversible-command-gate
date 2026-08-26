@@ -225,8 +225,15 @@ enum Commands {
     },
     /// Install PATH-wrapper symlinks for currently-loaded command-mode packs
     Install {
-        /// Installation directory for symlinks (defaults to ~/.local/bin)
-        #[arg(short, long)]
+        /// Installation directory for symlinks
+        #[arg(
+            short,
+            long,
+            help = format!(
+                "Installation directory for symlinks (defaults to {})",
+                documented_commands::DEFAULT_WRAPPER_INSTALL_DIR
+            )
+        )]
         dir: Option<PathBuf>,
         /// Rule-pack file(s) or directory to load for tool keyword discovery
         #[arg(long = "pack", alias = "rule-pack")]

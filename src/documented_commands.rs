@@ -27,6 +27,13 @@ const DEFAULT_RULE_PACK: &str = "/etc/icg/rule-pack.json";
 const DEFAULT_PACK_DIRECTORY: &str = "/etc/icg/packs";
 const DEFAULT_OVERRIDE_DIRECTORY: &str = "/etc/icg/overrides";
 
+/// Default symlink directory for `icg install`.
+///
+/// Root-owned rather than `~/.local/bin` so the guarded agent cannot replace
+/// the wrapper with its own binary. The CLI help text interpolates this
+/// constant, keeping the documented and actual defaults from drifting apart.
+pub const DEFAULT_WRAPPER_INSTALL_DIR: &str = "/usr/local/bin";
+
 #[derive(Debug, Args)]
 pub struct CheckArgs {
     /// Test a command directly.
@@ -309,10 +316,9 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
         let Some((input, _raw_tool_input)) = engine.read_pre_tool_use_payload_from_stdin()? else {
             bail!("stdin did not contain a valid PreToolUse request")
         };
-        let source = Engine::input_source_from_pre_tool_use(input)
+        Engine::input_source_from_pre_tool_use(input)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?
-            .context("PreToolUse request did not contain a checkable tool")?;
-        source
+            .context("PreToolUse request did not contain a checkable tool")?
     } else if let Some(command) = args.command {
         InputSource::Command(CommandSource::Hook(command))
     } else if let Some(path) = args.file {
@@ -1500,7 +1506,8 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize> {
 /// binary, which will then run in wrapper mode when invoked via those symlinks.
 ///
 /// # Arguments
-/// * `install_dir` - Optional directory for symlinks (defaults to /usr/local/bin)
+/// * `install_dir` - Optional directory for symlinks (defaults to
+///   [`DEFAULT_WRAPPER_INSTALL_DIR`], i.e. /usr/local/bin)
 /// * `pack_paths` - Rule pack files or directories to load for tool keyword discovery
 /// * `force` - Skip confirmation prompt
 /// * `uninstall` - Remove existing symlinks instead of creating them
@@ -1512,7 +1519,7 @@ pub fn run_install(
 ) -> Result<()> {
     let install_dir = match install_dir {
         Some(dir) => dir,
-        None => PathBuf::from("/usr/local/bin"),
+        None => PathBuf::from(DEFAULT_WRAPPER_INSTALL_DIR),
     };
 
     if uninstall {

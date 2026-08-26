@@ -13,7 +13,7 @@ command -v icg
 icg --version
 icg status
 icg trust show
-stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg /etc/icg/rule-pack.json
+stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg /etc/icg/packs
 ```
 
 Capture stderr from the failing hook and record the exact binary commit,
@@ -28,10 +28,10 @@ include tokens, credentials, or secret values in a support bundle.
 | Every call is allowed | Pack is missing, unreadable, invalid, or the hook is not firing | Run the direct stdin test with `--rule-pack` |
 | Expected call is not denied | Rule does not match the command/content or the wrong pack is loaded | `icg status`; inspect the exact test payload |
 | Harness never invokes `icg` | Wrong event, matcher, configuration scope, or unsupported harness version | Use harness hook diagnostics and check `PreToolUse` |
-| `permission denied` under `/etc/icg` | Operator command lacks privilege or path ownership is wrong | `namei -l /etc/icg/rule-pack.json` |
+| `permission denied` under `/etc/icg` | Operator command lacks privilege or path ownership is wrong | `namei -l /etc/icg/packs` |
 | `icg update` fails | Missing pointer, unavailable exact release, missing `rule-pack` asset, or no network | `icg trust show` and the updater checks below |
 | Telemetry warning mentions `/var/cache/icg` | Hook identity cannot write auxiliary telemetry | Fix only cache permissions; do not loosen `/etc/icg` |
-| PATH symlink does not block | The current `wrapper` subcommand is not implemented | Remove the symlink; use the native hook |
+| PATH symlink does not block | Symlink is missing or not first in `PATH`, the invocation used an absolute path, no loaded pack covers that tool, or `ICG_RULE_PACK` points somewhere without one | `ls -l /usr/local/bin/<tool>`; see "PATH wrapper and absolute paths" below |
 
 ## Test the hook without executing a command
 
@@ -40,7 +40,7 @@ run Vault, Git, or any other command:
 
 ```bash
 printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault kv destroy secret/test"}}' \
-  | /usr/local/bin/icg hook --rule-pack /etc/icg/rule-pack.json
+  | /usr/local/bin/icg hook --rule-pack /etc/icg/packs
 ```
 
 For a rule pack that contains this pattern, the output should contain:
@@ -53,7 +53,7 @@ Test an allowed command too:
 
 ```bash
 printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"vault status"}}' \
-  | /usr/local/bin/icg hook --rule-pack /etc/icg/rule-pack.json
+  | /usr/local/bin/icg hook --rule-pack /etc/icg/packs
 ```
 
 An empty JSON object is an allowed/no-op result. It does not prove that a
@@ -98,8 +98,8 @@ Configure the hook with `/usr/local/bin/icg hook`, not just `icg hook`.
 Check every path component and ownership:
 
 ```bash
-namei -l /etc/icg/rule-pack.json
-stat -c '%U:%G %a %n' /etc/icg /etc/icg/rule-pack.json /etc/icg/trust-pointer.json
+namei -l /etc/icg/packs
+stat -c '%U:%G %a %n' /etc/icg /etc/icg/packs /etc/icg/trust-pointer.json
 ```
 
 The hook needs read access. Installation and updates need administrator
@@ -108,13 +108,15 @@ by granting the agent write access.
 
 ### Rule-pack parse or validation failure
 
-The default hook path is `/etc/icg/rule-pack.json`. Confirm the file is the
-approved JSON artifact and not a release HTML page, a partial transfer, or a
-test fixture:
+The default hook resolution loads every JSON pack under `/etc/icg/packs`
+(the modular production shape); the legacy single-file
+`/etc/icg/rule-pack.json` is used only when the directory is absent. Confirm
+the loaded location holds the approved JSON artifact(s) and not a release
+HTML page, a partial transfer, or a test fixture:
 
 ```bash
-file /etc/icg/rule-pack.json
-head -c 120 /etc/icg/rule-pack.json; printf '\n'
+ls -l /etc/icg/packs
+head -c 120 /etc/icg/packs/openbao.json; printf '\n'
 ```
 
 A malformed or unreadable pack causes the current engine to fail open and
@@ -193,7 +195,7 @@ send a valid tool envelope.
 Work through these checks without running the dangerous command:
 
 1. Confirm the hook fired by checking harness diagnostics.
-2. Run the direct pipe test with `--rule-pack /etc/icg/rule-pack.json`.
+2. Run the direct pipe test with `--rule-pack /etc/icg/packs`.
 3. Confirm the command spelling and shell segmentation match the rule.
 4. Confirm the rule is enabled in the approved release pack.
 5. Confirm no repository override is exempting the rule.
@@ -331,7 +333,7 @@ Collect the following, after redacting sensitive values:
 icg --version > icg-version.txt 2>&1
 icg status > icg-status.txt 2>&1
 icg trust show > icg-trust.txt 2>&1
-stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg /etc/icg/rule-pack.json \
+stat -c '%U:%G %a %n' /usr/local/bin/icg /etc/icg /etc/icg/packs \
   > icg-permissions.txt 2>&1
 ```
 

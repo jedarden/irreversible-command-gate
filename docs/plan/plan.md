@@ -150,18 +150,19 @@ without a dedicated bead of their own — a minor bead-graph gap, not a code
 gap).
 
 **`misc` pack's deprecated-bead-CLI rule is data-driven by design, not
-hardcoded to one tool name.** `bf` (bead-forge) is currently canonical and
-`br` (beads_rust) is deprecated. `bf` is being prepared for deprecation in
-favor of `bead-rs` (`~/bead-rs`, binary `bead`, a separate clean-room
-reimplementation, not the same lineage as `br` despite the similar name).
-The rule's actual policy is "don't invoke a deprecated bead CLI," which
-outlives any single tool's canonical status — the pack stores "currently
-canonical" and "deprecated" as data (a small list this rule reads), not as
-logic hardcoded to `bf` specifically. When the cutover actually happens,
-updating that data to make `bead` canonical and `bf` deprecated is a one-line
-manifest change, not a rule rewrite. The CLIs are not syntax-compatible, so
-the rule denies deprecated invocations and does not translate commands. See
-Phase 1 and `irrevers-692a56c3`.
+hardcoded to one tool name.** The bf→bead-rs cutover this paragraph
+originally anticipated **happened 2026-08-14**: `bead` (bead-rs, a separate
+clean-room reimplementation — not the same lineage as the old `br` despite
+the similar name) is now canonical across this environment, and `bf`
+(bead-forge) joined `br` on the deprecated list. The rule's actual policy is
+"don't invoke a deprecated bead CLI," which outlives any single tool's
+canonical status — the pack stores "currently canonical" and "deprecated"
+as data (a small list this rule reads), not as logic hardcoded to any one
+name. The anticipated cutover was applied exactly as designed — a one-line
+manifest change to `packs/misc.json` (`currently_canonical: "bead"`,
+`deprecated: ["bf", "br"]`, reconciled 2026-08-25), not a rule rewrite. The
+CLIs are not syntax-compatible, so the rule denies deprecated invocations
+and does not translate commands. See Phase 1 and `irrevers-692a56c3`.
 
 **Deploy location: root-owned system directories, not user-writable
 paths.** The three artifacts must live where the guarded agent's own
@@ -437,7 +438,24 @@ GuardedPattern:
 
 ## Implementation Phases
 
-- [ ] **Phase 0 — deploy path.**
+- [x] **Phase 0 — deploy path.** *(Reconciled 2026-08-25 against shipped
+  artifacts: the `icg-ci` WorkflowTemplate and its push Sensor exist in
+  `declarative-config` and fire on every push to `main`; the Layer 1 gates
+  (regression-suite + coverage-diff with required justification) are wired
+  as build-failing steps inside `build-and-release`; Layer 2 review and the
+  release-cutting runbook shipped (`docs/runbooks/release-cutting.md`,
+  `irrevers-37eb1100` closed); the trust pointer and `icg update` self-updater
+  shipped (`irrevers-5fdc2e13`, `irrevers-f59f9313`, `irrevers-c87a3c50`
+  closed); root-owned deploy paths landed (`a03a7e6`, `irrevers-ca79d63a`,
+  `irrevers-96594031` closed); the 27 clippy errors were cleared
+  (`8710b5c`, `irrevers-12d2f9b2` closed). **One residual, actively
+  tracked: no release has ever been cut.** `gh release list` on
+  `jedarden/irreversible-command-gate` returns empty and icg-ci runs are
+  currently failing at `build-and-release` — `irrevers-84b36e47` (in
+  progress) is the verification bead and the genesis bead's only remaining
+  blocker. The phase's build deliverables are complete; the end-to-end
+  release proof is not, so nothing downstream should cite "a released
+  artifact" as existing yet.)*
   - Build the `icg-ci` Argo WorkflowTemplate (`declarative-config/k8s/iad-ci/argo-workflows/`)
     on the existing `forge-ci`/`needle-ci`/`agentscribe-ci`/`sigil-ci`
     pattern — Rust binary → GitHub Release, never GitHub Actions.
@@ -570,8 +588,23 @@ GuardedPattern:
     this phase lands — without it, this project reproduces
     `org-rule-guard.py`'s existing self-edit gap under a new name, just
     with extra steps.
-- [ ] **Phase 1 — Tier 1 rules, both front-ends where applicable,
-      deny-only.** Build the PATH-wrapper binary and both hook adapters
+- [x] **Phase 1 — Tier 1 rules, both front-ends where applicable,
+      deny-only.** *(Reconciled 2026-08-25: every named rule shipped with a
+      closed bead and a pack + test — secrets (`irrevers-ef9a4767`),
+      openbao ×3 (`irrevers-b9e97cab`/`irrevers-02b29c3e`/
+      `irrevers-2a82d17c`), storage-class (`irrevers-1df59aa6`), image-tag
+      both halves (`irrevers-7194f48e`), force-push (`irrevers-d77f7665`),
+      stale-HEAD (`irrevers-8cff8cf4`), commit-without-pathspec
+      (`irrevers-57af0680`), beads conjunction (`irrevers-56cd09fa`),
+      deprecated-bead-CLI (`irrevers-692a56c3`/`irrevers-480aa9c5`), needle
+      cleanup (`irrevers-000108c9`), tmux (`irrevers-41c5622c`) — plus the
+      PATH-wrapper argv[0] dispatch (`irrevers-94eb1300`,
+      `irrevers-c4f60cab`, wrapper_deny_tests.rs) and both hook adapters
+      (`irrevers-26d4d1c8`, `irrevers-402cf2ec`, apply_patch
+      normalization `irrevers-5d080721`). The deprecated-bead-CLI bullet
+      below is updated to the post-cutover state: the environment cutover
+      to bead-rs happened 2026-08-14, and `packs/misc.json` now carries
+      `bead` as canonical with `bf`/`br` deprecated.)* Build the PATH-wrapper binary and both hook adapters
       (Claude Code, Codex). Most Phase 1 rules run on both front-ends;
       `secrets` and the image-tag/storage-class content-mode rules are
       hook-only, per Architecture — not every rule reaches the wrapper.
@@ -612,32 +645,44 @@ GuardedPattern:
       (path-under-`.beads/` **and**
       `.git` file-vs-directory check — see Components, both conditions
       required),
-      deprecated-bead-CLI usage (data-driven, `irrevers-692a56c3` — `bf` is
-      currently canonical and `br` is deprecated; when the cutover actually
-      happens, update the pack data to make `bead` canonical and add `bf` to
-      the deprecated list), `needle cleanup`,
+      deprecated-bead-CLI usage (data-driven, `irrevers-692a56c3` — the
+      bf→bead-rs cutover happened 2026-08-14, and the shipped pack data now
+      carries `bead` as canonical with `bf` and `br` deprecated), `needle
+      cleanup`,
       bare NATO tmux session targeting. Redirect channel: `deny` + specific
       reason for all of these — skip `updatedInput`/`additionalContext`
       complexity for v1.
-- [ ] **Phase 2 — cross-invocation state (Tier 2).** Two rules, stated by
+- [x] **Phase 2 — cross-invocation state (Tier 2).** Two rules, stated by
       enforcement direction, not by parallel naming — they have *opposite*
       required polarity and "flush-before-X" phrasing for both would
       invite building one of them backwards:
-      - **Deny `bf sync --flush-only` unless a `git pull` has already
+      - **Deny `bead sync flush-only` unless a `git pull` has already
         happened in this session.** Flushing before pulling is the
         prohibited sequence — pull must come first.
-      - **Deny `bf doctor --repair` unless a flush has already happened in
+      - **Deny `bead doctor --repair` unless a flush has already happened in
         this session.** Here flush must come *first* — the opposite
         requirement from the rule above, despite the superficially similar
         name.
 
+      *(Reconciled 2026-08-25: shipped as the `flush_requires_pull` and
+      `repair_requires_flush` Tier 2 predicates in `packs/beads.json`
+      (`irrevers-60ea7522`, `irrevers-13dba7a3`, state store
+      `irrevers-044bdd84`, all closed). The rule text above originally used
+      bf's `sync --flush-only` flag syntax; the shipped packs use bead-rs
+      syntax (`bead sync flush-only`, `bead doctor --repair`) per the CLI
+      that became canonical 2026-08-14 — the cutover case this phase
+      explicitly said to watch for. `packs/beads.json` keeps
+      `tool_keywords: ["bead", "bf"]` so the ordering rules still fire on
+      either CLI's invocations during the deprecation tail.)*
+
       Needs the state-store component, which nothing in Phase 1 requires.
-      Author against whichever bead CLI is canonical at implementation
-      time (`bf`'s `sync --flush-only` flag today; `bead-rs`'s `sync
-      flush-only` subcommand has different syntax entirely if the cutover
-      happens first — see `irrevers-692a56c3`, don't assume the two are
-      interchangeable here).
-- [ ] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
+      This phase's original open instruction was to author against
+      whichever bead CLI was canonical at implementation time — bf's
+      `sync --flush-only` flag syntax, or bead-rs's `sync flush-only`
+      subcommand syntax, which are not interchangeable (see
+      `irrevers-692a56c3`). *(Resolved in practice: authored against
+      bead-rs, which became canonical 2026-08-14 before implementation.)*
+- [x] **Phase 3 — redirect-mechanism richness.** Introduce `updatedInput`
       for confirmed intent-preserving cases (force-push flag stripping is
       the clearest candidate) and `additionalContext` for non-blocking
       warnings; extend value-derivation helpers to additional rules as
@@ -646,6 +691,14 @@ GuardedPattern:
       de-risk the mechanism early — considered and deliberately deferred
       to notes only, not adopted as a bead; see
       `docs/notes/ideas-ledger.md`.)
+      *(Reconciled 2026-08-25: shipped — `git-force-push` realizes
+      `updated_input` in `packs/git.json` on both front-ends
+      (`irrevers-ed36e484` hook, `irrevers-d91159f9` wrapper,
+      force_push_updated_input_tests.rs); the hook-front-end
+      `additionalContext` realization closed 2026-08-17 (`irrevers-df96952a`)
+      and `openbao-kv-get-to-stdout` uses that channel in
+      `packs/openbao.json`; value derivation is live for image-tag
+      (`value_derivation.rs`, open question resolved 2026-08-17).)*
 
       **`additionalContext`-channel rules are Claude-Code-only for now** —
       per `docs/notes/multi-harness-integration.md`, Codex's hook schema
@@ -663,10 +716,27 @@ GuardedPattern:
       throwaway-worktree `.beads`-conflict pattern this project's own
       `beads` pack now depends on). If ever pursued, it would be a
       heuristic, non-blocking `additionalContext` warning, not a `deny`.
-- [ ] **Phase 4 — from ideation (2026-08-13 `/plan-idea-gen` run).** Nine
+- [x] **Phase 4 — from ideation (2026-08-13 `/plan-idea-gen` run).** Nine
       original finalists adopted, tracked as beads, with the poison-pill
       measurement split tracked alongside them; full
       dossiers and kill-pass objections in `docs/notes/ideas-ledger.md`.
+      *(Reconciled 2026-08-25: all nine shipped with closed beads —
+      auto-denial-becomes-test (`irrevers-aa1b828d`/`irrevers-ce059aaa`,
+      plus curation `irrevers-d3184c55`; the hook's `--record-as-test`
+      flag and `icg regression-prune`), `icg new-pack`
+      (`irrevers-54b33e0c`), poison-pill auto-rollback
+      (`irrevers-ff4f17da`/`irrevers-0f49129d`, rollback.rs), deny-rate
+      telemetry (`irrevers-b6579270`, telemetry.rs — its
+      placeholder-statistics residual was fixed 2026-08-26,
+      `irrevers-e073104f`/`6095532`), canary rollout (`irrevers-6de781f4`,
+      `--channel` on `icg trust`/`icg update`), `icg status` blind-spot
+      self-report (`irrevers-1cad33d2`), Codex hook-version compatibility
+      matrix (`irrevers-8b5faeb9`, the `codex-hook-compatibility` step in
+      icg-ci), per-repo signed override (`irrevers-e354aca2`, overrides.rs
+      + `icg override`), practice mode with persistent banner
+      (`irrevers-195d05cc`, `--practice` on hook and wrapper,
+      practice_mode_tests.rs), and the Docker pack (`irrevers-54d477dd`,
+      packs/docker.json).)*
       Deepens Phase 0's release-integrity/self-update work and Phase 1's
       rule coverage rather than opening new phases of its own:
       - `irrevers-aa1b828d` — auto-denial-becomes-test (strengthens Layer 1; needs a
@@ -693,7 +763,7 @@ GuardedPattern:
         might drop.
       - `irrevers-54d477dd` — Docker destructive-ops pack (new Phase-1-shaped pack,
         same architecture as `openbao`)
-- [ ] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
+- [x] **Phase 5 — from ideation (2026-08-13 second `/plan-idea-gen` run).**
       Like Phase 4, this isn't a new sequential build phase — its
       findings fold into earlier phases' actual scope (`irrevers-8cff8cf4` is a
       Phase 1 rule; `irrevers-cd3f4c44` is discussed under Architecture's fail-open
@@ -702,6 +772,19 @@ GuardedPattern:
       as beads, one (explicit README non-goals) done directly rather than
       tracked as a bead. Full dossiers and kill-pass objections in
       `docs/notes/ideas-ledger.md`'s second-run section:
+      *(Reconciled 2026-08-25: all six shipped with closed beads — CI/build
+      pod guarding (`irrevers-36244640`, `argo-guarded-builder` container +
+      `icg-guarded-builder` WorkflowTemplate), stale-HEAD push guard
+      (`irrevers-8cff8cf4`, `git-stale-remote-head-push`), graduated
+      fail-open→fail-closed (`irrevers-cd3f4c44`, fail_closed.rs + `icg
+      policy`), ReDoS check (`irrevers-b8343704`, `icg redos-check` +
+      regex_safety.rs), per-rule enable flag (`irrevers-012be0c8`, the
+      `enabled` field, per_rule_enable_tests.rs), and the install-time smoke
+      test vs org-rule-guard.py (`irrevers-62c6f748`,
+      coexistence_org_rule_guard_tests.rs). README's "What this does not do"
+      exists; its stale claim that the deploy-location work was "still in
+      progress" was corrected 2026-08-25 — that work landed (`a03a7e6`), and
+      the remaining caveat is release completeness, not deploy location.)*
       - `irrevers-36244640` — guard CI/build pods on iad-ci, including this
         project's own `icg-ci` release pipeline
       - `irrevers-8cff8cf4` — stale-HEAD push guard, the shipped form of ledger

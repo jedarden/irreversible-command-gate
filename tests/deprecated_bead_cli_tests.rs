@@ -29,7 +29,7 @@ fn assert_deprecated_denied(
 }
 
 #[test]
-fn manifest_keeps_cli_policy_in_rule_data_without_flipping_the_cutover() {
+fn manifest_pins_the_post_cutover_cli_policy_in_rule_data() {
     let pack = load_pack("packs/misc.json").expect("misc pack should load");
     let rule = pack
         .guarded_patterns
@@ -45,8 +45,12 @@ fn manifest_keeps_cli_policy_in_rule_data_without_flipping_the_cutover() {
         panic!("deprecated bead CLI rule should be a data-bearing predicate");
     };
     assert_eq!(predicate_name, "deprecated_command");
-    assert_eq!(data["currently_canonical"], "bf");
-    assert_eq!(data["deprecated"], serde_json::json!(["br"]));
+    // The bf-to-bead-rs cutover happened 2026-08-14 (see ~/CLAUDE.md and
+    // packs/beads.json, whose Tier 2 reason templates already use `bead`
+    // syntax). The pack data reflects the post-cutover environment: `bead`
+    // (bead-rs) is canonical; `bf` (bead-forge) and `br` are deprecated.
+    assert_eq!(data["currently_canonical"], "bead");
+    assert_eq!(data["deprecated"], serde_json::json!(["bf", "br"]));
 }
 
 #[test]
@@ -54,22 +58,28 @@ fn canonical_cli_is_allowed_and_deprecated_cli_is_denied_on_both_front_ends() {
     let engine = load_misc_engine();
 
     assert_eq!(
-        engine.evaluate_command(&CommandSource::Hook("bf list".to_string())),
+        engine.evaluate_command(&CommandSource::Hook("bead list".to_string())),
         CheckResult::Allowed
     );
     assert_deprecated_denied(
-        engine.evaluate_command(&CommandSource::Hook("sudo br list".to_string())),
+        engine.evaluate_command(&CommandSource::Hook("sudo bf list".to_string())),
         "misc",
         "deprecated-bead-cli",
-        "sudo br list",
+        "sudo bf list",
+    );
+    assert_deprecated_denied(
+        engine.evaluate_command(&CommandSource::Hook("br list".to_string())),
+        "misc",
+        "deprecated-bead-cli",
+        "br list",
     );
 
-    let argv = ["br", "list"].into_iter().map(str::to_string).collect();
+    let argv = ["bf", "list"].into_iter().map(str::to_string).collect();
     assert_deprecated_denied(
         engine.evaluate_command(&engine.read_from_argv(argv)),
         "misc",
         "deprecated-bead-cli",
-        "br list (wrapper argv)",
+        "bf list (wrapper argv)",
     );
 }
 

@@ -21,9 +21,12 @@ Stated plainly, because it's easy to assume more than is actually true:
 
 - **This is a backstop for an honest, fallible agent, not a defense against
   a genuinely adversarial or compromised one.** An agent that deliberately
-  wants to defeat this guard can — the deploy-location work that would
-  make the rule source tamper-resistant against the very agent it guards
-  is still in progress (`docs/plan/plan.md` Phase 0). See
+  wants to defeat this guard can — the artifacts live in root-owned
+  locations (`/usr/local/bin/icg`, `/etc/icg/packs`,
+  `/etc/icg/trust-pointer.json`) so the guarded agent cannot rewrite them,
+  but the release pipeline that vets what loads has not yet produced a
+  verified end-to-end release (`docs/plan/plan.md` Phase 0; tracked as
+  `irrevers-84b36e47`). See
   `docs/notes/runtime-config-vs-hardcoded.md`.
 - **It does not reach OpenAI's cloud-hosted Codex** (ChatGPT web / async
   "Codex cloud tasks"). Only the local `codex` and Claude Code CLIs are

@@ -23,8 +23,8 @@
       "type": "predicate",
       "predicate_name": "deprecated_command",
       "data": {
-        "currently_canonical": "bf",
-        "deprecated": ["br"]
+        "currently_canonical": "bead",
+        "deprecated": ["bf", "br"]
       },
       "tier": "tier1",
       "severity": "Medium",
