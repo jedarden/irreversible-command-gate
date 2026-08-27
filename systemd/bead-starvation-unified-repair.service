@@ -8,7 +8,7 @@ Type=oneshot
 WorkingDirectory=/home/coding/irreversible-command-gate
 Environment="DB_PATH=/home/coding/irreversible-command-gate/.beads/beads.db"
 Environment="PATH=/home/coding/.cargo/bin:/home/coding/.local/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="CHECKPOINT_AUTO_FLUSH=false"
+Environment="CHECKPOINT_AUTO_FLUSH=true"
 ExecStart=/home/coding/irreversible-command-gate/scripts/bead-starvation-unified-repair.sh
 StandardOutput=journal
 StandardError=journal
