@@ -81,7 +81,12 @@ fn maintenance_scenario_2_status_shows_rule_pack_info() {
     ]);
 
     // Should succeed
-    assert!(status.status.success(), "Status command should succeed");
+    assert!(
+        status.status.success(),
+        "Status command should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&status.stdout);
     // Should show rule pack version or status
@@ -140,11 +145,21 @@ fn maintenance_scenario_3_trust_command_works() {
         "--path",
         &trust_path.to_string_lossy(),
     ]);
-    assert!(set.status.success(), "Trust set should succeed");
+    assert!(
+        set.status.success(),
+        "Trust set should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&set.stdout),
+        String::from_utf8_lossy(&set.stderr)
+    );
 
     // Show the trust pointer
     let show = icg(&["trust", "show", "--path", &trust_path.to_string_lossy()]);
-    assert!(show.status.success(), "Trust show should succeed");
+    assert!(
+        show.status.success(),
+        "Trust show should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&show.stdout),
+        String::from_utf8_lossy(&show.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&show.stdout);
     assert!(
@@ -160,7 +175,12 @@ fn maintenance_scenario_3_trust_command_works() {
         "--path",
         &trust_path.to_string_lossy(),
     ]);
-    assert!(check.status.success(), "Trust check should succeed");
+    assert!(
+        check.status.success(),
+        "Trust check should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&check.stdout);
     assert!(
@@ -384,7 +404,9 @@ fn maintenance_scenario_trust_channel_support() {
 
     assert!(
         set.status.success(),
-        "Trust set with channel should succeed"
+        "Trust set with channel should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&set.stdout),
+        String::from_utf8_lossy(&set.stderr)
     );
 
     // Show for canary channel
