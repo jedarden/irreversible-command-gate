@@ -35,5 +35,9 @@ path = "src/bin/checkpoint-monitor.rs"
 name = "pluck-query-debugger"
 path = "src/bin/pluck-query-debugger.rs"
 
+[[bin]]
+name = "starvation-diagnostic"
+path = "src/bin/starvation-diagnostic.rs"
+
 [dev-dependencies]
 tempfile = "3.13"
