@@ -12,6 +12,7 @@
 //! This tests regular maintenance operations for operators.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::tempdir;
@@ -21,6 +22,20 @@ fn icg(args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("icg should run")
+}
+
+/// A tempdir with permissions forced to 0700, not left to the process
+/// umask. tempfile::tempdir() requests 0700 but the OS still applies the
+/// umask on top -- under this CI image's umask 0, that yields 0777, which
+/// trips verify_artifact_directory_security()'s world-writable check
+/// before `status`/`trust` can do anything (same fix as trust_pointer.rs's
+/// own secure_tempdir() test helper).
+fn secure_tempdir() -> tempfile::TempDir {
+    let dir = tempdir().unwrap();
+    let mut perms = fs::metadata(dir.path()).unwrap().permissions();
+    perms.set_mode(0o700);
+    fs::set_permissions(dir.path(), perms).unwrap();
+    dir
 }
 
 #[test]
@@ -72,7 +87,7 @@ fn maintenance_scenario_2_status_shows_rule_pack_info() {
     // that path is baked into the CI builder image as world-writable, which
     // trips the tool's own directory-security check before status can print
     // anything.
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = secure_tempdir();
     let trust_pointer_path = temp_dir.path().join("trust-pointer.json");
     let status = icg(&[
         "status",
@@ -99,7 +114,7 @@ fn maintenance_scenario_2_status_shows_rule_pack_info() {
 #[test]
 fn maintenance_scenario_2_status_shows_trust_pointer() {
     // Verify status shows trust pointer information (isolated, see above)
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = secure_tempdir();
     let trust_pointer_path = temp_dir.path().join("trust-pointer.json");
     let status = icg(&[
         "status",
@@ -134,7 +149,7 @@ fn maintenance_scenario_3_update_command_exists() {
 #[test]
 fn maintenance_scenario_3_trust_command_works() {
     // Verify trust pointer commands work
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = secure_tempdir();
     let trust_path = temp_dir.path().join("test-trust.json");
 
     // Set a trust pointer
@@ -388,7 +403,7 @@ fn maintenance_scenario_override_command_exists() {
 #[test]
 fn maintenance_scenario_trust_channel_support() {
     // Verify trust commands support channels (for canary rollout maintenance)
-    let temp_dir = tempdir().unwrap();
+    let temp_dir = secure_tempdir();
     let trust_path = temp_dir.path().join("test-trust-canary.json");
 
     // Set trust pointer for canary channel
