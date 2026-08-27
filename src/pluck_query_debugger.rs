@@ -802,16 +802,16 @@ impl PluckQueryDebugger {
 
     /// Check if the report contains actionable findings that warrant a diagnostic bead
     fn has_actionable_findings(&self, report: &PluckQueryDebugReport) -> bool {
-        // Filter out starvation-resolution beads that are legitimately being worked on
-        // These beads are correctly excluded from the ready frontier (in_progress with assignee)
-        // and should not trigger new starvation alerts to prevent circular false positives
+        // Filter out beads that are legitimately being worked on
+        // Any bead that is in_progress with an assignee is correctly excluded from the
+        // ready frontier (status filter), so excluding it is not a bug.
+        // This prevents circular false positives where working on any starvation-related
+        // bead triggers creation of another starvation-resolution bead.
         let actionable_analyses: Vec<_> = report.bead_analyses.iter()
             .filter(|analysis| {
-                // Skip starvation-resolution beads that are in_progress with an assignee
+                // Skip ANY beads that are in_progress with an assignee
                 // (they're being worked on, so exclusion is legitimate)
-                if analysis.labels.contains(&"starvation-resolution".to_string())
-                    && analysis.status == "in_progress"
-                    && analysis.assignee.is_some() {
+                if analysis.status == "in_progress" && analysis.assignee.is_some() {
                     return false;
                 }
                 true
