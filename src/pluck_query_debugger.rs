@@ -802,8 +802,24 @@ impl PluckQueryDebugger {
 
     /// Check if the report contains actionable findings that warrant a diagnostic bead
     fn has_actionable_findings(&self, report: &PluckQueryDebugReport) -> bool {
+        // Filter out starvation-resolution beads that are legitimately being worked on
+        // These beads are correctly excluded from the ready frontier (in_progress with assignee)
+        // and should not trigger new starvation alerts to prevent circular false positives
+        let actionable_analyses: Vec<_> = report.bead_analyses.iter()
+            .filter(|analysis| {
+                // Skip starvation-resolution beads that are in_progress with an assignee
+                // (they're being worked on, so exclusion is legitimate)
+                if analysis.labels.contains(&"starvation-resolution".to_string())
+                    && analysis.status == "in_progress"
+                    && analysis.assignee.is_some() {
+                    return false;
+                }
+                true
+            })
+            .collect();
+
         // Actionable if relaxed queries found candidates that shouldn't be excluded
-        let has_visible_at_relaxed_level = report.bead_analyses.iter().any(|analysis| {
+        let has_visible_at_relaxed_level = actionable_analyses.iter().any(|analysis| {
             analysis.visible_at_level.is_some() &&
             analysis.visible_at_level != Some(QueryLevel::Exact)
         });
