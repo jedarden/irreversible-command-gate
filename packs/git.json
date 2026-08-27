@@ -57,7 +57,7 @@
     {
       "id": "git-force-push",
       "type": "command_regex",
-      "regex": "^git\\s+push(?:\\s+\\S+)*\\s+(?:--force-with-lease(?:=\\S+)?|--force|-f)(?:\\s|$)",
+      "regex": "^git\\s+push.*\\s(?:--force-with-lease(?:=\\S+)?|--force|-f)(?:\\s|$)",
       "tier": "tier1",
       "severity": "Critical",
       "explanation": "Force-push flags can rewrite git history and lose commits",
@@ -71,7 +71,7 @@
     {
       "id": "git-commit-without-pathspec",
       "type": "command_regex",
-      "regex": "^(?:git\\s+commit(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^\\s'\"]+))*\\s+(?:-a[a-zA-Z]*|--all(?:=[^\\s]*)?)(?:\\s|$)|git\\s+commit(?:\\s+(?:--?[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\\s]*)?|-[A-Za-z0-9]+))*\\s+(?:-m(?:=|\\s+)|--message(?:=|\\s+))(?:'[^']*'|\"[^\"]*\"|[^\\s'\"]+)(?:\\s+(?:--?[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\\s]*)?|-[A-Za-z0-9]+))*$)",
+      "regex": "^(?:git\\s+commit(?:\\s+(?:'[^']*'|\"[^\"]*\"|[^\\s'\"][^\\s'\"]*))*\\s+(?:-a[a-zA-Z]*|--all(?:=[^\\s]*)?)(?:\\s|$)|git\\s+commit(?:\\s+(?:--?[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\\s]*)?|-[A-Za-z0-9][A-Za-z0-9]*))*\\s+(?:-m(?:=|\\s+)|--message(?:=|\\s+))(?:'[^']*'|\"[^\"]*\"|[^\\s'\"][^\\s'\"]*)(?:\\s+(?:--?[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\\s]*)?|-[A-Za-z0-9][A-Za-z0-9]*))*$)",
       "tier": "tier1",
       "severity": "High",
       "explanation": "A git commit without an explicit pathspec commits the entire staged index, which may include unrelated pre-staged changes",
