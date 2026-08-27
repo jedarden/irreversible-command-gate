@@ -67,8 +67,18 @@ fn maintenance_scenario_1_health_shows_binary_status() {
 
 #[test]
 fn maintenance_scenario_2_status_shows_rule_pack_info() {
-    // Step 2: Verify status shows rule pack information
-    let status = icg(&["status"]);
+    // Step 2: Verify status shows rule pack information. Isolated from the
+    // default /etc/icg/trust-pointer.json (same as installation_scenario_5):
+    // that path is baked into the CI builder image as world-writable, which
+    // trips the tool's own directory-security check before status can print
+    // anything.
+    let temp_dir = tempdir().unwrap();
+    let trust_pointer_path = temp_dir.path().join("trust-pointer.json");
+    let status = icg(&[
+        "status",
+        "--trust-pointer-path",
+        &trust_pointer_path.to_string_lossy(),
+    ]);
 
     // Should succeed
     assert!(status.status.success(), "Status command should succeed");
@@ -83,8 +93,14 @@ fn maintenance_scenario_2_status_shows_rule_pack_info() {
 
 #[test]
 fn maintenance_scenario_2_status_shows_trust_pointer() {
-    // Verify status shows trust pointer information
-    let status = icg(&["status"]);
+    // Verify status shows trust pointer information (isolated, see above)
+    let temp_dir = tempdir().unwrap();
+    let trust_pointer_path = temp_dir.path().join("trust-pointer.json");
+    let status = icg(&[
+        "status",
+        "--trust-pointer-path",
+        &trust_pointer_path.to_string_lossy(),
+    ]);
 
     let stdout = String::from_utf8_lossy(&status.stdout);
     // Should show trust pointer or reference information
