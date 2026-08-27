@@ -857,11 +857,11 @@ fn print_denial_trend(denials: &[OperatorDenial], since: &str) {
 
     // Parse time window and determine grouping strategy
     let (num_periods, period_name, period_hours) = match parse_time_window(since) {
-        Some((hours, _name)) if hours <= 48 => (4, "Hour", 1),          // For short windows, use hourly
-        Some((hours, _name)) if hours <= 168 => (7, "Day", 24),         // For ≤1 week, use daily
-        Some((hours, _name)) if hours <= 720 => (4, "Week", 168),       // For ≤1 month, use weekly
-        Some((_hours, _name)) => (6, "Week", 168),                      // For longer windows, use 6 weeks
-        None => (7, "Day", 24),                                         // Default to daily
+        Some((hours, _name)) if hours <= 48 => (4, "Hour", 1), // For short windows, use hourly
+        Some((hours, _name)) if hours <= 168 => (7, "Day", 24), // For ≤1 week, use daily
+        Some((hours, _name)) if hours <= 720 => (4, "Week", 168), // For ≤1 month, use weekly
+        Some((_hours, _name)) => (6, "Week", 168),             // For longer windows, use 6 weeks
+        None => (7, "Day", 24),                                // Default to daily
     };
 
     // Group denials by time period
@@ -881,11 +881,18 @@ fn print_denial_trend(denials: &[OperatorDenial], since: &str) {
     println!("{header}");
 
     // Display separator line
-    let separator: String = period_counts.iter().map(|_| "────────").collect::<Vec<&str>>().join("─");
+    let separator: String = period_counts
+        .iter()
+        .map(|_| "────────")
+        .collect::<Vec<&str>>()
+        .join("─");
     println!("{separator}");
 
     // Display counts per period
-    let counts: Vec<String> = period_counts.iter().map(|count| format!("{:<4}", count)).collect();
+    let counts: Vec<String> = period_counts
+        .iter()
+        .map(|count| format!("{:<4}", count))
+        .collect();
     println!("{}", counts.join("   "));
 
     // Calculate and display trend
@@ -906,7 +913,11 @@ fn parse_time_window(since: &str) -> Option<(i64, String)> {
     }
 }
 
-fn group_denials_by_period(denials: &[OperatorDenial], num_periods: usize, period_hours: i64) -> Vec<usize> {
+fn group_denials_by_period(
+    denials: &[OperatorDenial],
+    num_periods: usize,
+    period_hours: i64,
+) -> Vec<usize> {
     let mut counts = vec![0; num_periods];
 
     for denial in denials {
@@ -932,7 +943,8 @@ fn calculate_trend(counts: &[usize]) -> String {
     // Calculate simple trend: compare first half vs second half
     let midpoint = counts.len() / 2;
     let first_half_avg: f64 = counts[..midpoint].iter().sum::<usize>() as f64 / midpoint as f64;
-    let second_half_avg: f64 = counts[midpoint..].iter().sum::<usize>() as f64 / (counts.len() - midpoint) as f64;
+    let second_half_avg: f64 =
+        counts[midpoint..].iter().sum::<usize>() as f64 / (counts.len() - midpoint) as f64;
 
     let change_percent = if first_half_avg > 0.0 {
         ((second_half_avg - first_half_avg) / first_half_avg) * 100.0
@@ -942,9 +954,15 @@ fn calculate_trend(counts: &[usize]) -> String {
 
     // Determine trend direction and message
     if change_percent < -20.0 {
-        format!("↘ Decreasing {}% (good - users learning safe patterns)", change_percent.abs() as i32)
+        format!(
+            "↘ Decreasing {}% (good - users learning safe patterns)",
+            change_percent.abs() as i32
+        )
     } else if change_percent > 20.0 {
-        format!("↗ Increasing {}% (concerning - more risky patterns detected)", change_percent as i32)
+        format!(
+            "↗ Increasing {}% (concerning - more risky patterns detected)",
+            change_percent as i32
+        )
     } else {
         format!("→ Stable (within normal variation)")
     }

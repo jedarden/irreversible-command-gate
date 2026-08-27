@@ -42,7 +42,8 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let workspace_path = args.db_path
+    let workspace_path = args
+        .db_path
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.to_path_buf())

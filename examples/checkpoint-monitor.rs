@@ -6,8 +6,8 @@
 //! cargo run --example checkpoint-monitor
 //! ```
 
-use icg::checkpoint_monitor::{CheckpointMonitor, CheckpointMonitorConfig};
 use anyhow::Result;
+use icg::checkpoint_monitor::{CheckpointMonitor, CheckpointMonitorConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,7 +16,10 @@ async fn main() -> Result<()> {
     println!("🩺 Checkpoint Monitor Configuration:");
     println!("  📁 Workspace: {}", config.workspace_path.display());
     println!("  ⏱️  Check interval: {}s", config.check_interval.as_secs());
-    println!("  📊 Stale threshold: {} minutes", config.stale_threshold_minutes);
+    println!(
+        "  📊 Stale threshold: {} minutes",
+        config.stale_threshold_minutes
+    );
     println!("  🔧 Auto-repair: {}", config.auto_repair_enabled);
     println!();
 

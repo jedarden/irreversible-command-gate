@@ -102,7 +102,10 @@ fn main() -> Result<()> {
         eprintln!();
         eprintln!("Configuration:");
         eprintln!("  Workspace: {}", config.workspace_path.display());
-        eprintln!("  Check interval: {} seconds", config.check_interval.as_secs());
+        eprintln!(
+            "  Check interval: {} seconds",
+            config.check_interval.as_secs()
+        );
         eprintln!("  Alert threshold: {} stuck beads", config.alert_threshold);
         eprintln!("  Auto-repair: {}", config.auto_repair_enabled);
         eprintln!("  HTTP server: {}", config.http_config.bind_address());

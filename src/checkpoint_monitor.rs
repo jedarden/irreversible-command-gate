@@ -357,12 +357,11 @@ impl CheckpointMonitor {
         };
 
         // Determine if repair is needed
-        let repair_needed = self.config.auto_repair_enabled && (
-            database_health.corrupted ||
-            checkpoint_sync.corrupted ||
-            !checkpoint_sync.checkpoint_exists ||
-            checkpoint_sync.stale
-        );
+        let repair_needed = self.config.auto_repair_enabled
+            && (database_health.corrupted
+                || checkpoint_sync.corrupted
+                || !checkpoint_sync.checkpoint_exists
+                || checkpoint_sync.stale);
 
         // Perform repairs if needed
         let (repairs_performed, recommended_actions) = if repair_needed {
@@ -420,13 +419,16 @@ impl CheckpointMonitor {
                                     Ok(dt) => {
                                         checkpoint_timestamp = Some(dt.with_timezone(&Utc));
                                         // Check if stale
-                                        let age = Utc::now().signed_duration_since(dt.with_timezone(&Utc));
+                                        let age = Utc::now()
+                                            .signed_duration_since(dt.with_timezone(&Utc));
                                         stale_minutes = Some(age.num_minutes());
-                                        stale = age.num_minutes() > self.config.stale_threshold_minutes;
+                                        stale =
+                                            age.num_minutes() > self.config.stale_threshold_minutes;
                                     }
                                     Err(e) => {
                                         corrupted = true;
-                                        corruption_details = Some(format!("Invalid timestamp format: {}", e));
+                                        corruption_details =
+                                            Some(format!("Invalid timestamp format: {}", e));
                                     }
                                 }
                             }
@@ -544,13 +546,14 @@ impl CheckpointMonitor {
         }
 
         // Try to read database
-        let (readable, schema_valid, corrupted, error_details) = match self.check_database_readable() {
-            Ok(()) => (true, true, false, None),
-            Err(e) => {
-                let error_msg = format!("Database check failed: {}", e);
-                (false, false, true, Some(error_msg))
-            }
-        };
+        let (readable, schema_valid, corrupted, error_details) =
+            match self.check_database_readable() {
+                Ok(()) => (true, true, false, None),
+                Err(e) => {
+                    let error_msg = format!("Database check failed: {}", e);
+                    (false, false, true, Some(error_msg))
+                }
+            };
 
         Ok(DatabaseHealthStatus {
             exists: true,
@@ -614,8 +617,8 @@ impl CheckpointMonitor {
             return Ok(Vec::new());
         }
 
-        let content = fs::read_to_string(&forensic_path)
-            .context("Failed to read forensic.jsonl")?;
+        let content =
+            fs::read_to_string(&forensic_path).context("Failed to read forensic.jsonl")?;
 
         let mut bead_ids = Vec::new();
 
@@ -684,8 +687,10 @@ impl CheckpointMonitor {
 
         // Priority 3: Flush stale checkpoint
         if checkpoint_sync.stale && !checkpoint_sync.corrupted {
-            eprintln!("🔧 Checkpoint stale by {} minutes - flushing",
-                checkpoint_sync.stale_minutes.unwrap_or(0));
+            eprintln!(
+                "🔧 Checkpoint stale by {} minutes - flushing",
+                checkpoint_sync.stale_minutes.unwrap_or(0)
+            );
             match self.repair_stale_checkpoint() {
                 Ok(repair) => {
                     eprintln!("✅ Checkpoint flushed successfully");
@@ -836,8 +841,7 @@ impl CheckpointMonitor {
             .open(self.config.events_path())
             .context("Failed to open events.jsonl for writing")?;
 
-        writeln!(file, "{}", event)
-            .context("Failed to write repair event to events.jsonl")?;
+        writeln!(file, "{}", event).context("Failed to write repair event to events.jsonl")?;
 
         Ok(())
     }
@@ -852,9 +856,7 @@ impl CheckpointMonitor {
 
         if database_health.corrupted {
             if database_health.exists {
-                actions.push(
-                    "Database is corrupted. Run: bead doctor --repair".to_string()
-                );
+                actions.push("Database is corrupted. Run: bead doctor --repair".to_string());
             } else {
                 actions.push(
                     "Database is missing. Run: bead sync import-only --restore-into-empty --input .beads/checkpoint/forensic.jsonl --actor <your-name>".to_string()
@@ -869,9 +871,8 @@ impl CheckpointMonitor {
         }
 
         if !checkpoint_sync.checkpoint_exists {
-            actions.push(
-                "Checkpoint is missing. Create checkpoint: bead sync flush-only".to_string()
-            );
+            actions
+                .push("Checkpoint is missing. Create checkpoint: bead sync flush-only".to_string());
         }
 
         if checkpoint_sync.stale && !checkpoint_sync.corrupted {
@@ -916,8 +917,7 @@ impl CheckpointMonitor {
             .open(&report_path)
             .context("Failed to open checkpoint monitor report file")?;
 
-        writeln!(file, "{}", json_line)
-            .context("Failed to write checkpoint monitor report")?;
+        writeln!(file, "{}", json_line).context("Failed to write checkpoint monitor report")?;
 
         eprintln!(
             "📋 Checkpoint monitor report published to {}",
@@ -952,14 +952,15 @@ impl CheckpointMonitor {
                 if report.checkpoint_sync.stale { 1 } else { 0 }
             ));
             if let Some(minutes) = report.checkpoint_sync.stale_minutes {
-                output.push_str(&format!(
-                    "icg_checkpoint_stale_minutes {}\n",
-                    minutes
-                ));
+                output.push_str(&format!("icg_checkpoint_stale_minutes {}\n", minutes));
             }
             output.push_str(&format!(
                 "icg_checkpoint_corrupted {}\n",
-                if report.checkpoint_sync.corrupted { 1 } else { 0 }
+                if report.checkpoint_sync.corrupted {
+                    1
+                } else {
+                    0
+                }
             ));
             output.push_str(&format!(
                 "icg_checkpoint_issue_count {}\n",
@@ -973,11 +974,19 @@ impl CheckpointMonitor {
             output.push_str("\n# Database health status\n");
             output.push_str(&format!(
                 "icg_database_corrupted {}\n",
-                if report.database_health.corrupted { 1 } else { 0 }
+                if report.database_health.corrupted {
+                    1
+                } else {
+                    0
+                }
             ));
             output.push_str(&format!(
                 "icg_database_readable {}\n",
-                if report.database_health.readable { 1 } else { 0 }
+                if report.database_health.readable {
+                    1
+                } else {
+                    0
+                }
             ));
 
             output.push_str("\n# Health status\n");
@@ -1003,7 +1012,10 @@ impl CheckpointMonitor {
     /// Print a human-readable summary of the checkpoint status
     pub fn print_summary(&self, report: &CheckpointMonitorReport) {
         println!("\n=== Checkpoint Health Monitor Report ===\n");
-        println!("Timestamp: {}", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "Timestamp: {}",
+            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        );
         println!("Health Status: {}", report.health_status);
 
         println!("\n--- Checkpoint Sync Status ---");
@@ -1033,7 +1045,10 @@ impl CheckpointMonitor {
         println!("Readable: {}", report.database_health.readable);
         println!("Schema Valid: {}", report.database_health.schema_valid);
         println!("Corrupted: {}", report.database_health.corrupted);
-        println!("Database Issues: {}", report.checkpoint_sync.database_issue_count);
+        println!(
+            "Database Issues: {}",
+            report.checkpoint_sync.database_issue_count
+        );
 
         if report.database_health.corrupted {
             if let Some(details) = &report.database_health.error_details {
@@ -1044,10 +1059,15 @@ impl CheckpointMonitor {
         if !report.repairs_performed.is_empty() {
             println!("\n--- Repairs Performed ---");
             for (i, repair) in report.repairs_performed.iter().enumerate() {
-                println!("{}. [{}] {} - {}",
+                println!(
+                    "{}. [{}] {} - {}",
                     i + 1,
                     repair.repair_type,
-                    if repair.success { "✅ SUCCESS" } else { "❌ FAILED" },
+                    if repair.success {
+                        "✅ SUCCESS"
+                    } else {
+                        "❌ FAILED"
+                    },
                     repair.message
                 );
                 println!("   Duration: {:.2}s", repair.duration_seconds);
@@ -1076,8 +1096,14 @@ impl CheckpointMonitor {
     pub async fn run(&mut self) -> Result<()> {
         eprintln!("🩺 Checkpoint health monitor starting");
         eprintln!("📁 Workspace: {}", self.config.workspace_path.display());
-        eprintln!("⏱️  Check interval: {} seconds", self.config.check_interval.as_secs());
-        eprintln!("📊 Stale threshold: {} minutes", self.config.stale_threshold_minutes);
+        eprintln!(
+            "⏱️  Check interval: {} seconds",
+            self.config.check_interval.as_secs()
+        );
+        eprintln!(
+            "📊 Stale threshold: {} minutes",
+            self.config.stale_threshold_minutes
+        );
         eprintln!("🔧 Auto-repair: {}", self.config.auto_repair_enabled);
 
         // Ensure diagnostics directory exists
@@ -1096,15 +1122,18 @@ impl CheckpointMonitor {
 
             match self.run_check() {
                 Ok(report) => {
-                    eprintln!("✅ Checkpoint check completed: status={}, sync={}, db_corrupted={}",
+                    eprintln!(
+                        "✅ Checkpoint check completed: status={}, sync={}, db_corrupted={}",
                         report.health_status,
                         report.checkpoint_sync.sync_status,
                         report.database_health.corrupted
                     );
 
                     if report.repair_triggered {
-                        eprintln!("🔧 Auto-repair triggered: {} repairs performed",
-                            report.repairs_performed.len());
+                        eprintln!(
+                            "🔧 Auto-repair triggered: {} repairs performed",
+                            report.repairs_performed.len()
+                        );
                         for repair in &report.repairs_performed {
                             if repair.success {
                                 eprintln!("  ✅ {}: {}", repair.repair_type, repair.message);

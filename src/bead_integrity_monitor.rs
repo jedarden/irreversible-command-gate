@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
-use tokio::time::interval;
 use tokio::sync::{oneshot, Mutex};
+use tokio::time::interval;
 
 /// Configuration for the bead integrity monitor
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,8 +454,8 @@ impl IntegrityMonitor {
             );
         }
 
-        let json = String::from_utf8(output.stdout)
-            .context("bead doctor output is not valid UTF-8")?;
+        let json =
+            String::from_utf8(output.stdout).context("bead doctor output is not valid UTF-8")?;
 
         serde_json::from_str(&json).context("Failed to parse bead doctor JSON output")
     }
@@ -641,8 +641,8 @@ impl IntegrityMonitor {
     /// Publish the integrity report to the JSONL file
     fn publish_report(&self, report: &IntegrityReport) -> Result<()> {
         let report_path = self.config.integrity_report_path();
-        let json_line = serde_json::to_string(report)
-            .context("Failed to serialize integrity report")?;
+        let json_line =
+            serde_json::to_string(report).context("Failed to serialize integrity report")?;
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -651,13 +651,9 @@ impl IntegrityMonitor {
             .context("Failed to open integrity report file")?;
 
         use std::io::Write;
-        writeln!(file, "{}", json_line)
-            .context("Failed to write integrity report")?;
+        writeln!(file, "{}", json_line).context("Failed to write integrity report")?;
 
-        eprintln!(
-            "📋 Integrity report published to {}",
-            report_path.display()
-        );
+        eprintln!("📋 Integrity report published to {}", report_path.display());
 
         Ok(())
     }
@@ -692,10 +688,7 @@ impl IntegrityMonitor {
         // Bead metrics
         if let Some(ref metrics) = self.state.bead_metrics {
             output.push_str("\n# Bead database metrics\n");
-            output.push_str(&format!(
-                "icg_beads_total {}\n",
-                metrics.total_beads
-            ));
+            output.push_str(&format!("icg_beads_total {}\n", metrics.total_beads));
 
             for (status, count) in &metrics.beads_by_status {
                 let status_safe = status.replace('-', "_");
@@ -713,10 +706,7 @@ impl IntegrityMonitor {
                 ));
             }
 
-            output.push_str(&format!(
-                "icg_beads_stuck_total {}\n",
-                metrics.stuck_beads
-            ));
+            output.push_str(&format!("icg_beads_stuck_total {}\n", metrics.stuck_beads));
         }
 
         // Last integrity check results
@@ -755,8 +745,14 @@ impl IntegrityMonitor {
     pub async fn run(&mut self) -> Result<()> {
         eprintln!("🩺 Bead integrity monitor starting");
         eprintln!("📁 Workspace: {}", self.config.workspace_path.display());
-        eprintln!("⏱️  Check interval: {} seconds", self.config.check_interval.as_secs());
-        eprintln!("🚨 Alert threshold: {} stuck beads", self.config.alert_threshold);
+        eprintln!(
+            "⏱️  Check interval: {} seconds",
+            self.config.check_interval.as_secs()
+        );
+        eprintln!(
+            "🚨 Alert threshold: {} stuck beads",
+            self.config.alert_threshold
+        );
         eprintln!("🔧 Auto-repair: {}", self.config.auto_repair_enabled);
 
         // Create diagnostics directory
@@ -774,13 +770,17 @@ impl IntegrityMonitor {
 
             match self.run_check() {
                 Ok(report) => {
-                    eprintln!("✅ Integrity check completed: status={}, failed={}, warning={}",
-                        report.status, report.failed_checks, report.warning_checks);
+                    eprintln!(
+                        "✅ Integrity check completed: status={}, failed={}, warning={}",
+                        report.status, report.failed_checks, report.warning_checks
+                    );
 
                     if report.repair_triggered {
                         if let Some(ref repair) = report.repair_result {
-                            eprintln!("🔧 Auto-repair: success={}, issues_fixed={}",
-                                repair.success, repair.issues_repaired);
+                            eprintln!(
+                                "🔧 Auto-repair: success={}, issues_fixed={}",
+                                repair.success, repair.issues_repaired
+                            );
                         }
                     }
 
@@ -836,13 +836,19 @@ async fn start_http_server(
 ) -> Result<()> {
     use tokio::net::TcpListener;
 
-    let listener = TcpListener::bind(&config.bind_address()).await
+    let listener = TcpListener::bind(&config.bind_address())
+        .await
         .with_context(|| format!("Failed to bind HTTP server to {}", config.bind_address()))?;
 
-    eprintln!("🌐 HTTP server accepting connections on http://{}", config.bind_address());
+    eprintln!(
+        "🌐 HTTP server accepting connections on http://{}",
+        config.bind_address()
+    );
 
     loop {
-        let (stream, _) = listener.accept().await
+        let (stream, _) = listener
+            .accept()
+            .await
             .context("Failed to accept connection")?;
 
         let state = state.clone();
@@ -895,7 +901,14 @@ async fn handle_http_connection(
     let path = parts[1];
 
     if method != "GET" {
-        return send_response(&mut stream, 405, "Method Not Allowed", "text/plain", "Method not allowed").await;
+        return send_response(
+            &mut stream,
+            405,
+            "Method Not Allowed",
+            "text/plain",
+            "Method not allowed",
+        )
+        .await;
     }
 
     let state_guard = state.lock().await;
@@ -916,7 +929,12 @@ async fn handle_http_connection(
                 "last_check": state_guard.last_check,
                 "healthy": state_guard.healthy
             });
-            (200, "OK", "application/json", serde_json::to_string_pretty(&body)?)
+            (
+                200,
+                "OK",
+                "application/json",
+                serde_json::to_string_pretty(&body)?,
+            )
         }
         "/health/live" => {
             let body = serde_json::json!({
@@ -924,7 +942,12 @@ async fn handle_http_connection(
                 "timestamp": Utc::now(),
                 "uptime_seconds": uptime.num_seconds() as f64
             });
-            (200, "OK", "application/json", serde_json::to_string_pretty(&body)?)
+            (
+                200,
+                "OK",
+                "application/json",
+                serde_json::to_string_pretty(&body)?,
+            )
         }
         "/health/ready" => {
             let ready = state_guard.healthy;
@@ -944,7 +967,12 @@ async fn handle_http_connection(
             };
             let status = if ready { 200 } else { 503 };
             let status_text = if ready { "OK" } else { "Service Unavailable" };
-            (status, status_text, "application/json", serde_json::to_string_pretty(&body)?)
+            (
+                status,
+                status_text,
+                "application/json",
+                serde_json::to_string_pretty(&body)?,
+            )
         }
         "/metrics" => {
             let metrics = format!(
@@ -973,17 +1001,38 @@ async fn handle_http_connection(
                         assignee_safe, count
                     ));
                 }
-                full_metrics.push_str(&format!("icg_beads_stuck_total {}\n", bead_metrics.stuck_beads));
+                full_metrics.push_str(&format!(
+                    "icg_beads_stuck_total {}\n",
+                    bead_metrics.stuck_beads
+                ));
             }
 
             if let Some(ref report) = state_guard.last_report {
                 full_metrics.push_str("\n# Last check results\n");
-                full_metrics.push_str(&format!("icg_integrity_check_total {}\n", report.total_checks));
-                full_metrics.push_str(&format!("icg_integrity_check_passed {}\n", report.passed_checks));
-                full_metrics.push_str(&format!("icg_integrity_check_failed {}\n", report.failed_checks));
-                full_metrics.push_str(&format!("icg_integrity_check_warning {}\n", report.warning_checks));
-                full_metrics.push_str(&format!("icg_integrity_repair_triggered {}\n", if report.repair_triggered { 1 } else { 0 }));
-                full_metrics.push_str(&format!("icg_integrity_alert_triggered {}\n", if report.alert_triggered { 1 } else { 0 }));
+                full_metrics.push_str(&format!(
+                    "icg_integrity_check_total {}\n",
+                    report.total_checks
+                ));
+                full_metrics.push_str(&format!(
+                    "icg_integrity_check_passed {}\n",
+                    report.passed_checks
+                ));
+                full_metrics.push_str(&format!(
+                    "icg_integrity_check_failed {}\n",
+                    report.failed_checks
+                ));
+                full_metrics.push_str(&format!(
+                    "icg_integrity_check_warning {}\n",
+                    report.warning_checks
+                ));
+                full_metrics.push_str(&format!(
+                    "icg_integrity_repair_triggered {}\n",
+                    if report.repair_triggered { 1 } else { 0 }
+                ));
+                full_metrics.push_str(&format!(
+                    "icg_integrity_alert_triggered {}\n",
+                    if report.alert_triggered { 1 } else { 0 }
+                ));
             }
 
             (200, "OK", "text/plain", full_metrics)

@@ -46,7 +46,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -66,8 +66,7 @@ pub struct ValidatorConfig {
 
 impl Default for ValidatorConfig {
     fn default() -> Self {
-        let workspace_path = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let workspace_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             db_path: workspace_path.join(".beads/beads.db"),
             events_path: workspace_path.join(".beads/events.jsonl"),
@@ -153,8 +152,7 @@ impl DependencyValidator {
 
     /// Run validation and apply fixes
     pub fn validate_and_fix(&mut self) -> Result<ValidationResult> {
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
 
         let mut result = ValidationResult {
             issues_found: Vec::new(),
@@ -175,13 +173,14 @@ impl DependencyValidator {
         let circular_issues = self.detect_circular_dependencies(&beads, &dependencies)?;
         for issue in circular_issues {
             result.issues_found.push(issue.clone());
-            if let Issue::CircularDependency { cycle, younger_bead, blocker_to_remove } = issue {
-                let fix = self.fix_circular_dependency(
-                    &conn,
-                    &younger_bead,
-                    &blocker_to_remove,
-                    &cycle,
-                )?;
+            if let Issue::CircularDependency {
+                cycle,
+                younger_bead,
+                blocker_to_remove,
+            } = issue
+            {
+                let fix =
+                    self.fix_circular_dependency(&conn, &younger_bead, &blocker_to_remove, &cycle)?;
                 result.fixes_applied.push(fix);
             }
         }
@@ -190,7 +189,11 @@ impl DependencyValidator {
         let orphaned_issues = self.detect_orphaned_dependencies(&beads, &dependencies)?;
         for issue in orphaned_issues {
             result.issues_found.push(issue.clone());
-            if let Issue::OrphanedDependency { bead_id, missing_blocker } = issue {
+            if let Issue::OrphanedDependency {
+                bead_id,
+                missing_blocker,
+            } = issue
+            {
                 let fix = self.fix_orphaned_dependency(&conn, &bead_id, &missing_blocker)?;
                 result.fixes_applied.push(fix);
             }
@@ -203,34 +206,35 @@ impl DependencyValidator {
     fn load_beads(&self, conn: &Connection) -> Result<HashMap<String, Bead>> {
         let mut stmt = conn.prepare(
             "SELECT id, title, base_status, created_at, assignee, manual_blocked
-             FROM issues"
+             FROM issues",
         )?;
 
-        let bead_map = stmt.query_and_then([], |row| {
-            let id: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let status: String = row.get(2)?;
-            let created_at_str: String = row.get(3)?;
-            let assignee: Option<String> = row.get(4)?;
-            let manual_blocked: i32 = row.get(5)?;
+        let bead_map = stmt
+            .query_and_then([], |row| {
+                let id: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let status: String = row.get(2)?;
+                let created_at_str: String = row.get(3)?;
+                let assignee: Option<String> = row.get(4)?;
+                let manual_blocked: i32 = row.get(5)?;
 
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
 
-            Ok((
-                id.clone(),
-                Bead {
-                    id,
-                    title,
-                    status,
-                    created_at,
-                    assignee,
-                    manual_blocked: manual_blocked == 1,
-                },
-            ))
-        })?
-        .collect::<Result<HashMap<_, _>>>()?;
+                Ok((
+                    id.clone(),
+                    Bead {
+                        id,
+                        title,
+                        status,
+                        created_at,
+                        assignee,
+                        manual_blocked: manual_blocked == 1,
+                    },
+                ))
+            })?
+            .collect::<Result<HashMap<_, _>>>()?;
 
         Ok(bead_map)
     }
@@ -239,17 +243,18 @@ impl DependencyValidator {
     fn load_dependencies(&self, conn: &Connection) -> Result<Vec<Dependency>> {
         let mut stmt = conn.prepare(
             "SELECT blocked_issue_id, blocker_issue_id, kind
-             FROM dependencies WHERE kind = 'blocks'"
+             FROM dependencies WHERE kind = 'blocks'",
         )?;
 
-        let dependencies = stmt.query_and_then([], |row| {
-            Ok(Dependency {
-                blocked_issue_id: row.get(0)?,
-                blocker_issue_id: row.get(1)?,
-                kind: row.get(2)?,
-            })
-        })?
-        .collect::<Result<Vec<_>>>()?;
+        let dependencies = stmt
+            .query_and_then([], |row| {
+                Ok(Dependency {
+                    blocked_issue_id: row.get(0)?,
+                    blocker_issue_id: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(dependencies)
     }
@@ -292,9 +297,7 @@ impl DependencyValidator {
 
         // Convert cycles to issues
         for cycle in cycles_found {
-            if let Some((younger_bead, blocker_to_remove)) =
-                self.resolve_cycle(&cycle, beads)
-            {
+            if let Some((younger_bead, blocker_to_remove)) = self.resolve_cycle(&cycle, beads) {
                 issues.push(Issue::CircularDependency {
                     cycle,
                     younger_bead,
@@ -323,19 +326,14 @@ impl DependencyValidator {
         if let Some(neighbors) = graph.get(node) {
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
-                    self.dfs_cycle_detect(
-                        neighbor,
-                        graph,
-                        visited,
-                        rec_stack,
-                        path,
-                        cycles_found,
-                    );
+                    self.dfs_cycle_detect(neighbor, graph, visited, rec_stack, path, cycles_found);
                 } else if rec_stack.contains(neighbor) {
                     // Found a cycle - extract it
                     if let Some(cycle_start) = path.iter().position(|x| x == neighbor) {
-                        let cycle: Vec<String> =
-                            path[cycle_start..].iter().map(|x| x.to_string() + " -> ").collect();
+                        let cycle: Vec<String> = path[cycle_start..]
+                            .iter()
+                            .map(|x| x.to_string() + " -> ")
+                            .collect();
                         let mut cycle_str = cycle.join("");
                         cycle_str.push_str(neighbor);
                         let cycle_vec: Vec<String> = path[cycle_start..].to_vec();
@@ -558,8 +556,14 @@ impl DependencyValidator {
             Issue::CircularDependency { cycle, .. } => {
                 format!("Circular dependency detected: {}", cycle.join(" -> "))
             }
-            Issue::OrphanedDependency { bead_id, missing_blocker } => {
-                format!("Bead {} blocked by non-existent/closed bead {}", bead_id, missing_blocker)
+            Issue::OrphanedDependency {
+                bead_id,
+                missing_blocker,
+            } => {
+                format!(
+                    "Bead {} blocked by non-existent/closed bead {}",
+                    bead_id, missing_blocker
+                )
             }
         }
     }

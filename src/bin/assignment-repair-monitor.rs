@@ -18,7 +18,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use icg::assignment_repair::{AssignmentRepairMonitor, AssignmentRepairConfig};
+use icg::assignment_repair::{AssignmentRepairConfig, AssignmentRepairMonitor};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -88,7 +88,10 @@ fn main() -> Result<()> {
         eprintln!();
         eprintln!("Configuration:");
         eprintln!("  Workspace: {}", config.workspace_path.display());
-        eprintln!("  Check interval: {} seconds", config.check_interval.as_secs());
+        eprintln!(
+            "  Check interval: {} seconds",
+            config.check_interval.as_secs()
+        );
         eprintln!("  Auto-repair: {}", config.auto_repair_enabled);
         eprintln!("  Dry-run: {}", config.dry_run);
         eprintln!();
@@ -120,7 +123,10 @@ fn main() -> Result<()> {
         eprintln!("{}", monitor.export_prometheus(Some(&report)));
 
         // Exit with error code if stale assignments were detected but not repaired
-        if report.stale_assignments > 0 && report.repairs_performed.is_empty() && !monitor.config().dry_run {
+        if report.stale_assignments > 0
+            && report.repairs_performed.is_empty()
+            && !monitor.config().dry_run
+        {
             eprintln!("⚠️  Stale assignments detected but not repaired");
             std::process::exit(1);
         }

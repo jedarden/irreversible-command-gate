@@ -59,7 +59,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -130,8 +130,7 @@ pub struct PluckQueryDebuggerConfig {
 
 impl Default for PluckQueryDebuggerConfig {
     fn default() -> Self {
-        let workspace_path = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let workspace_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             db_path: workspace_path.join(".beads/beads.db"),
             diagnostics_dir: workspace_path.join(".beads/diagnostics"),
@@ -316,8 +315,7 @@ impl PluckQueryDebugger {
     /// excluded from the ready frontier (they're being worked on), so they
     /// should NOT trigger starvation alerts.
     fn count_total_open_beads(&self) -> Result<usize> {
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
 
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
@@ -338,10 +336,8 @@ impl PluckQueryDebugger {
             let visible_beads = self.execute_query(&sql_query)?;
 
             // Calculate newly visible beads
-            let current_visible: HashSet<String> = visible_beads
-                .iter()
-                .map(|b| b.id.clone())
-                .collect();
+            let current_visible: HashSet<String> =
+                visible_beads.iter().map(|b| b.id.clone()).collect();
 
             let newly_visible_beads: Vec<String> = current_visible
                 .difference(&previous_visible)
@@ -394,7 +390,8 @@ impl PluckQueryDebugger {
                             AND l.label IN ('deprecated', 'blocked', 'on-hold')
                       )
                     ORDER BY i.priority DESC, i.created_at ASC
-                "#.to_string()
+                "#
+                .to_string()
             }
             QueryLevel::WithoutLabels => {
                 // Without label exclusions
@@ -412,7 +409,8 @@ impl PluckQueryDebugger {
                             AND d.kind = 'blocks'
                       )
                     ORDER BY i.priority DESC, i.created_at ASC
-                "#.to_string()
+                "#
+                .to_string()
             }
             QueryLevel::WithoutDependencies => {
                 // Without dependency checks
@@ -430,7 +428,8 @@ impl PluckQueryDebugger {
                             AND l.label IN ('deprecated', 'blocked', 'on-hold')
                       )
                     ORDER BY i.priority DESC, i.created_at ASC
-                "#.to_string()
+                "#
+                .to_string()
             }
             QueryLevel::WithoutAssignee => {
                 // Without assignee filter
@@ -447,7 +446,8 @@ impl PluckQueryDebugger {
                             AND l.label IN ('deprecated', 'blocked', 'on-hold')
                       )
                     ORDER BY i.priority DESC, i.created_at ASC
-                "#.to_string()
+                "#
+                .to_string()
             }
             QueryLevel::Raw => {
                 // Raw base query - only status filter
@@ -458,48 +458,51 @@ impl PluckQueryDebugger {
                     FROM issues i
                     WHERE i.base_status IN ('open', 'in_progress')
                     ORDER BY i.priority DESC, i.created_at ASC
-                "#.to_string()
+                "#
+                .to_string()
             }
         }
     }
 
     /// Execute a query and return the bead records
     fn execute_query(&self, sql_query: &str) -> Result<Vec<BeadRecord>> {
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
 
-        let mut stmt = conn.prepare(sql_query)
-            .context("Failed to prepare query")?;
+        let mut stmt = conn.prepare(sql_query).context("Failed to prepare query")?;
 
-        let beads = stmt.query_and_then([], |row| {
-            let id: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let base_status: String = row.get(2)?;
-            let assignee: Option<String> = row.get(3)?;
-            let manual_blocked: i32 = row.get(4)?;
-            let priority: i32 = row.get(5)?;
-            let created_at: String = row.get(6)?;
-            let updated_at: String = row.get(7)?;
+        let beads = stmt
+            .query_and_then([], |row| {
+                let id: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let base_status: String = row.get(2)?;
+                let assignee: Option<String> = row.get(3)?;
+                let manual_blocked: i32 = row.get(4)?;
+                let priority: i32 = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let updated_at: String = row.get(7)?;
 
-            Ok(BeadRecord {
-                id,
-                title,
-                base_status,
-                assignee,
-                manual_blocked: manual_blocked == 1,
-                priority,
-                created_at,
-                updated_at,
-            })
-        })?
-        .collect::<Result<Vec<_>>>()
-        .context("Failed to read bead records")?;
+                Ok(BeadRecord {
+                    id,
+                    title,
+                    base_status,
+                    assignee,
+                    manual_blocked: manual_blocked == 1,
+                    priority,
+                    created_at,
+                    updated_at,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()
+            .context("Failed to read bead records")?;
 
         Ok(beads)
     }
 
     /// Analyze per-bead exclusion reasons
-    fn analyze_bead_exclusions(&self, level_results: &[LevelResult]) -> Result<Vec<BeadExclusionAnalysis>> {
+    fn analyze_bead_exclusions(
+        &self,
+        level_results: &[LevelResult],
+    ) -> Result<Vec<BeadExclusionAnalysis>> {
         let mut analyses = Vec::new();
 
         // Get all beads from the raw level (Level 4) - clone to avoid lifetime issues
@@ -544,15 +547,13 @@ impl PluckQueryDebugger {
                 } else {
                     // This bead became visible at a relaxed level
                     // Determine which filter excluded it
-                    Self::determine_exclusion_filter(
-                        &bead,
-                        &labels,
-                        &blocking_dependencies,
-                        level,
-                    )
+                    Self::determine_exclusion_filter(&bead, &labels, &blocking_dependencies, level)
                 }
             } else {
-                (None, "Never visible (should not happen at Raw level)".to_string())
+                (
+                    None,
+                    "Never visible (should not happen at Raw level)".to_string(),
+                )
             };
 
             analyses.push(BeadExclusionAnalysis {
@@ -580,9 +581,7 @@ impl PluckQueryDebugger {
         visible_at_level: QueryLevel,
     ) -> (Option<&'static str>, String) {
         match visible_at_level {
-            QueryLevel::Exact => {
-                (None, "Visible in ready frontier".to_string())
-            }
+            QueryLevel::Exact => (None, "Visible in ready frontier".to_string()),
             QueryLevel::WithoutLabels => {
                 // Became visible when label filter was removed
                 let excluded_labels: Vec<&str> = labels
@@ -597,22 +596,37 @@ impl PluckQueryDebugger {
                     "Excluded by label filter"
                 };
 
-                (Some("label exclusions"), format!("{}: has labels {:?}", reason, excluded_labels))
+                (
+                    Some("label exclusions"),
+                    format!("{}: has labels {:?}", reason, excluded_labels),
+                )
             }
             QueryLevel::WithoutDependencies => {
                 // Became visible when dependency filter was removed
                 if blocking_dependencies.is_empty() {
                     (Some("dependency checks"), "Excluded by dependency filter (no blocking dependencies found - may have transitive dependency issue)".to_string())
                 } else {
-                    (Some("dependency checks"), format!("Excluded by dependency filter: blocked by {:?}", blocking_dependencies))
+                    (
+                        Some("dependency checks"),
+                        format!(
+                            "Excluded by dependency filter: blocked by {:?}",
+                            blocking_dependencies
+                        ),
+                    )
                 }
             }
             QueryLevel::WithoutAssignee => {
                 // Became visible when assignee filter was removed
                 if let Some(ref assignee) = bead.assignee {
-                    (Some("assignee filter"), format!("Excluded by assignee filter: assigned to '{}'", assignee))
+                    (
+                        Some("assignee filter"),
+                        format!("Excluded by assignee filter: assigned to '{}'", assignee),
+                    )
                 } else {
-                    (Some("assignee filter"), "Excluded by assignee filter (no assignee found - unexpected)".to_string())
+                    (
+                        Some("assignee filter"),
+                        "Excluded by assignee filter (no assignee found - unexpected)".to_string(),
+                    )
                 }
             }
             QueryLevel::Raw => {
@@ -622,7 +636,13 @@ impl PluckQueryDebugger {
                     (Some("status filter"), "Excluded by status filter: bead status is 'in_progress' (only 'open' beads appear in ready frontier)".to_string())
                 } else if bead.assignee.is_some() {
                     // Assigned open beads also become visible here if they have other blocking factors
-                    (Some("assignee filter"), format!("Excluded by assignee filter: assigned to '{}'", bead.assignee.as_ref().unwrap()))
+                    (
+                        Some("assignee filter"),
+                        format!(
+                            "Excluded by assignee filter: assigned to '{}'",
+                            bead.assignee.as_ref().unwrap()
+                        ),
+                    )
                 } else {
                     (Some("unknown"), "Excluded by unknown filter".to_string())
                 }
@@ -632,18 +652,16 @@ impl PluckQueryDebugger {
 
     /// Get labels for a bead
     fn get_bead_labels(&self, bead_id: &str) -> Result<Vec<String>> {
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
 
-        let mut stmt = conn.prepare(
-            "SELECT label FROM labels WHERE issue_id = ?1"
-        )?;
+        let mut stmt = conn.prepare("SELECT label FROM labels WHERE issue_id = ?1")?;
 
-        let labels = stmt.query_and_then(params![bead_id], |row| {
-            let name: String = row.get(0)?;
-            Ok(name)
-        })?
-        .collect::<Result<Vec<_>>>()?;
+        let labels = stmt
+            .query_and_then(params![bead_id], |row| {
+                let name: String = row.get(0)?;
+                Ok(name)
+            })?
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(labels)
     }
@@ -657,7 +675,7 @@ impl PluckQueryDebugger {
 
         let mut stmt = match conn.prepare(
             "SELECT blocker_issue_id FROM dependencies
-             WHERE blocked_issue_id = ?1 AND kind = 'blocks'"
+             WHERE blocked_issue_id = ?1 AND kind = 'blocks'",
         ) {
             Ok(stmt) => stmt,
             Err(_) => return Vec::new(),
@@ -678,7 +696,10 @@ impl PluckQueryDebugger {
     }
 
     /// Analyze patterns in excluded beads
-    fn analyze_exclusion_patterns(&self, analyses: &[BeadExclusionAnalysis]) -> Vec<ExclusionPattern> {
+    fn analyze_exclusion_patterns(
+        &self,
+        analyses: &[BeadExclusionAnalysis],
+    ) -> Vec<ExclusionPattern> {
         let mut patterns = Vec::new();
 
         // Group beads by exclusion filter
@@ -713,7 +734,10 @@ impl PluckQueryDebugger {
         if !by_assignee.is_empty() {
             patterns.push(ExclusionPattern {
                 pattern: "assignee_exclusion".to_string(),
-                description: format!("{} beads are assigned to workers and excluded by assignee filter", by_assignee.len()),
+                description: format!(
+                    "{} beads are assigned to workers and excluded by assignee filter",
+                    by_assignee.len()
+                ),
                 matching_beads: by_assignee,
                 suggested_fix: None, // This is expected behavior, not a bug
             });
@@ -744,12 +768,20 @@ impl PluckQueryDebugger {
                 // If multiple beads share the same exclusion label
                 let pattern = ExclusionPattern {
                     pattern: format!("label_exclusion_{}", label),
-                    description: format!("{} beads have label '{}' causing exclusion", bead_ids.len(), label),
+                    description: format!(
+                        "{} beads have label '{}' causing exclusion",
+                        bead_ids.len(),
+                        label
+                    ),
                     matching_beads: bead_ids,
-                    suggested_fix: if ["deprecated", "blocked", "on-hold"].contains(&label.as_str()) {
+                    suggested_fix: if ["deprecated", "blocked", "on-hold"].contains(&label.as_str())
+                    {
                         None // Standard exclusion labels, not a bug
                     } else {
-                        Some(format!("Review whether label '{}' should be excluded by Pluck query", label))
+                        Some(format!(
+                            "Review whether label '{}' should be excluded by Pluck query",
+                            label
+                        ))
                     },
                 };
                 patterns.push(pattern);
@@ -760,7 +792,10 @@ impl PluckQueryDebugger {
     }
 
     /// Analyze dependency-based exclusion patterns
-    fn analyze_dependency_patterns(&self, analyses: &[BeadExclusionAnalysis]) -> Vec<ExclusionPattern> {
+    fn analyze_dependency_patterns(
+        &self,
+        analyses: &[BeadExclusionAnalysis],
+    ) -> Vec<ExclusionPattern> {
         let mut patterns = Vec::new();
         let mut blocker_counts: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -780,9 +815,16 @@ impl PluckQueryDebugger {
             if bead_ids.len() >= 2 {
                 patterns.push(ExclusionPattern {
                     pattern: format!("dependency_blocker_{}", blocker),
-                    description: format!("{} beads are blocked by dependency on '{}'", bead_ids.len(), blocker),
+                    description: format!(
+                        "{} beads are blocked by dependency on '{}'",
+                        bead_ids.len(),
+                        blocker
+                    ),
                     matching_beads: bead_ids,
-                    suggested_fix: Some(format!("Check if bead '{}' is stuck and needs to be closed or updated", blocker)),
+                    suggested_fix: Some(format!(
+                        "Check if bead '{}' is stuck and needs to be closed or updated",
+                        blocker
+                    )),
                 });
             }
         }
@@ -814,7 +856,9 @@ impl PluckQueryDebugger {
         // ready frontier (status filter), so excluding it is not a bug.
         // This prevents circular false positives where working on any starvation-related
         // bead triggers creation of another starvation-resolution bead.
-        let actionable_analyses: Vec<_> = report.bead_analyses.iter()
+        let actionable_analyses: Vec<_> = report
+            .bead_analyses
+            .iter()
             .filter(|analysis| {
                 // Skip ANY beads that are in_progress with an assignee
                 // (they're being worked on, so exclusion is legitimate)
@@ -827,8 +871,8 @@ impl PluckQueryDebugger {
 
         // Actionable if relaxed queries found candidates that shouldn't be excluded
         let has_visible_at_relaxed_level = actionable_analyses.iter().any(|analysis| {
-            analysis.visible_at_level.is_some() &&
-            analysis.visible_at_level != Some(QueryLevel::Exact)
+            analysis.visible_at_level.is_some()
+                && analysis.visible_at_level != Some(QueryLevel::Exact)
         });
 
         // Actionable if patterns have suggested fixes
@@ -843,8 +887,8 @@ impl PluckQueryDebugger {
     /// This creates a claimable bead for agents (not a human-blocked alert bead)
     fn file_diagnostic_bead(&self, report: &PluckQueryDebugReport) -> Result<()> {
         // Use current working directory as workspace path
-        let workspace_path = std::env::current_dir()
-            .context("Failed to get current working directory")?;
+        let workspace_path =
+            std::env::current_dir().context("Failed to get current working directory")?;
 
         // Generate bead title with key information
         let title = format!(
@@ -871,14 +915,22 @@ impl PluckQueryDebugger {
         let output = Command::new(&bead_path)
             .args([
                 "create",
-                "--title", &title,
-                "--priority", "3",  // Higher than normal (3) to ensure quick pickup
-                "--issue-type", "task",
-                "--label", "starvation-resolution",
-                "--label", "auto-generated",
-                "--label", "agent-claimable",
-                "--label", &format!("filter-{}", primary_filter.replace(' ', "-")),
-                "--description", &description,
+                "--title",
+                &title,
+                "--priority",
+                "3", // Higher than normal (3) to ensure quick pickup
+                "--issue-type",
+                "task",
+                "--label",
+                "starvation-resolution",
+                "--label",
+                "auto-generated",
+                "--label",
+                "agent-claimable",
+                "--label",
+                &format!("filter-{}", primary_filter.replace(' ', "-")),
+                "--description",
+                &description,
             ])
             .current_dir(&workspace_path)
             .output()
@@ -893,8 +945,8 @@ impl PluckQueryDebugger {
             ));
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("bead create output is not valid UTF-8")?;
+        let stdout =
+            String::from_utf8(output.stdout).context("bead create output is not valid UTF-8")?;
 
         // Extract bead ID from output - format is usually just the ID
         let bead_id = stdout.lines().next().map(|s| s.trim().to_string());
@@ -906,18 +958,17 @@ impl PluckQueryDebugger {
 
             // Update the bead with notes
             let update_output = Command::new(&bead_path)
-                .args([
-                    "update",
-                    id,
-                    "--notes", &notes,
-                ])
+                .args(["update", id, "--notes", &notes])
                 .current_dir(&workspace_path)
                 .output()
                 .context("Failed to execute bead update command for notes")?;
 
             if !update_output.status.success() {
                 let stderr = String::from_utf8_lossy(&update_output.stderr);
-                eprintln!("⚠️  Warning: bead update for notes failed (bead still created): {}", stderr);
+                eprintln!(
+                    "⚠️  Warning: bead update for notes failed (bead still created): {}",
+                    stderr
+                );
             } else {
                 eprintln!("📝 Added resolution plan to bead: {}", id);
             }
@@ -946,7 +997,11 @@ impl PluckQueryDebugger {
     }
 
     /// Generate summary description for the diagnostic bead
-    fn generate_summary_description(&self, report: &PluckQueryDebugReport, primary_filter: &str) -> String {
+    fn generate_summary_description(
+        &self,
+        report: &PluckQueryDebugReport,
+        primary_filter: &str,
+    ) -> String {
         format!(
             "Auto-detected at {}: Pluck ready frontier is empty despite {} open beads existing. \
              Primary filter issue: {}. {} beads become visible with relaxed filters. \
@@ -963,33 +1018,62 @@ impl PluckQueryDebugger {
         let mut notes = String::new();
 
         notes.push_str("## Auto-Generated Diagnostic Report\n\n");
-        notes.push_str(&format!("**Generated at:** {}\n\n", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")));
+        notes.push_str(&format!(
+            "**Generated at:** {}\n\n",
+            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
         notes.push_str(&format!("**Database:** {}\n\n", report.db_path));
-        notes.push_str(&format!("**Total open beads:** {}\n\n", report.total_open_beads));
-        notes.push_str(&format!("**Ready frontier count:** {}\n\n", report.ready_frontier_count));
-        notes.push_str(&format!("**Starvation detected:** {}\n\n", report.starvation_detected));
+        notes.push_str(&format!(
+            "**Total open beads:** {}\n\n",
+            report.total_open_beads
+        ));
+        notes.push_str(&format!(
+            "**Ready frontier count:** {}\n\n",
+            report.ready_frontier_count
+        ));
+        notes.push_str(&format!(
+            "**Starvation detected:** {}\n\n",
+            report.starvation_detected
+        ));
 
         // Query results by level
         notes.push_str("## Query Results by Relaxation Level\n\n");
         for result in &report.level_results {
-            notes.push_str(&format!("### Level {} - {}\n\n", result.level as i32, result.level_description));
-            notes.push_str(&format!("- **Visible beads:** {}\n", result.visible_beads.len()));
-            notes.push_str(&format!("- **Newly visible at this level:** {}\n", result.newly_visible_beads.len()));
+            notes.push_str(&format!(
+                "### Level {} - {}\n\n",
+                result.level as i32, result.level_description
+            ));
+            notes.push_str(&format!(
+                "- **Visible beads:** {}\n",
+                result.visible_beads.len()
+            ));
+            notes.push_str(&format!(
+                "- **Newly visible at this level:** {}\n",
+                result.newly_visible_beads.len()
+            ));
             if !result.newly_visible_beads.is_empty() {
-                notes.push_str(&format!("- **Bead IDs:** {:?}\n", result.newly_visible_beads));
+                notes.push_str(&format!(
+                    "- **Bead IDs:** {:?}\n",
+                    result.newly_visible_beads
+                ));
             }
             notes.push_str("\n");
         }
 
         // Excluded beads analysis (top 10 to avoid overwhelming)
         notes.push_str("## Sample of Excluded Beads (first 10)\n\n");
-        let excluded_analyses: Vec<_> = report.bead_analyses.iter()
+        let excluded_analyses: Vec<_> = report
+            .bead_analyses
+            .iter()
             .filter(|a| a.visible_at_level != Some(QueryLevel::Exact))
             .take(10)
             .collect();
 
         for analysis in excluded_analyses {
-            notes.push_str(&format!("### [{}] {}\n\n", analysis.bead_id, analysis.bead_title));
+            notes.push_str(&format!(
+                "### [{}] {}\n\n",
+                analysis.bead_id, analysis.bead_title
+            ));
             notes.push_str(&format!("- **Status:** {}\n", analysis.status));
             if let Some(ref assignee) = analysis.assignee {
                 notes.push_str(&format!("- **Assignee:** {}\n", assignee));
@@ -1001,10 +1085,17 @@ impl PluckQueryDebugger {
                 notes.push_str(&format!("- **Labels:** {:?}\n", analysis.labels));
             }
             if !analysis.blocking_dependencies.is_empty() {
-                notes.push_str(&format!("- **Blocked by:** {:?}\n", analysis.blocking_dependencies));
+                notes.push_str(&format!(
+                    "- **Blocked by:** {:?}\n",
+                    analysis.blocking_dependencies
+                ));
             }
             if let Some(level) = analysis.visible_at_level {
-                notes.push_str(&format!("- **Visible at:** Level {} ({})\n", level as i32, level.description()));
+                notes.push_str(&format!(
+                    "- **Visible at:** Level {} ({})\n",
+                    level as i32,
+                    level.description()
+                ));
             }
             if let Some(ref filter) = analysis.excluded_by_filter {
                 notes.push_str(&format!("- **Excluded by:** {}\n", filter));
@@ -1019,7 +1110,10 @@ impl PluckQueryDebugger {
                 notes.push_str(&format!("{}. Pattern: {}\n", i + 1, pattern.pattern));
                 notes.push_str(&format!("   {}\n", pattern.description));
                 if !pattern.matching_beads.is_empty() {
-                    notes.push_str(&format!("   **Affected beads:** {:?}\n", pattern.matching_beads));
+                    notes.push_str(&format!(
+                        "   **Affected beads:** {:?}\n",
+                        pattern.matching_beads
+                    ));
                 }
                 if let Some(ref fix) = pattern.suggested_fix {
                     notes.push_str(&format!("   **Suggested fix:** {}\n", fix));
@@ -1050,38 +1144,68 @@ impl PluckQueryDebugger {
         notes.push_str("**Auto-generated at:** ");
         notes.push_str(&report.timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string());
         notes.push_str("\n\n");
-        notes.push_str("**Purpose:** This bead contains a clear action plan to resolve bead starvation.\n\n");
+        notes.push_str(
+            "**Purpose:** This bead contains a clear action plan to resolve bead starvation.\n\n",
+        );
         notes.push_str("**Agents should claim this bead to execute the resolution steps.**\n\n");
 
         // Problem statement
         notes.push_str("## Problem Statement\n\n");
-        notes.push_str(&format!("- **Total open beads:** {}\n", report.total_open_beads));
-        notes.push_str(&format!("- **Ready frontier (visible to agents):** {}\n", report.ready_frontier_count));
-        notes.push_str(&format!("- **Invisible beads:** {}\n", report.total_open_beads - report.ready_frontier_count));
-        notes.push_str(&format!("- **Starvation detected:** {}\n\n", report.starvation_detected));
+        notes.push_str(&format!(
+            "- **Total open beads:** {}\n",
+            report.total_open_beads
+        ));
+        notes.push_str(&format!(
+            "- **Ready frontier (visible to agents):** {}\n",
+            report.ready_frontier_count
+        ));
+        notes.push_str(&format!(
+            "- **Invisible beads:** {}\n",
+            report.total_open_beads - report.ready_frontier_count
+        ));
+        notes.push_str(&format!(
+            "- **Starvation detected:** {}\n\n",
+            report.starvation_detected
+        ));
 
         // SQL Query Analysis
         notes.push_str("## SQL Query Analysis Results\n\n");
         notes.push_str("The following filters are excluding beads from the ready frontier:\n\n");
         for result in &report.level_results {
             if result.level != QueryLevel::Exact && !result.newly_visible_beads.is_empty() {
-                notes.push_str(&format!("### {} ({})\n\n", result.level_description, result.level as i32));
-                notes.push_str(&format!("- **Beads that become visible:** {}\n", result.newly_visible_beads.len()));
-                notes.push_str(&format!("- **Filter relaxed:** {}\n",
-                    result.level.relaxed_filter().unwrap_or("unknown")));
-                notes.push_str(&format!("- **Affected bead IDs:** `{:?}`\n\n", result.newly_visible_beads));
+                notes.push_str(&format!(
+                    "### {} ({})\n\n",
+                    result.level_description, result.level as i32
+                ));
+                notes.push_str(&format!(
+                    "- **Beads that become visible:** {}\n",
+                    result.newly_visible_beads.len()
+                ));
+                notes.push_str(&format!(
+                    "- **Filter relaxed:** {}\n",
+                    result.level.relaxed_filter().unwrap_or("unknown")
+                ));
+                notes.push_str(&format!(
+                    "- **Affected bead IDs:** `{:?}`\n\n",
+                    result.newly_visible_beads
+                ));
             }
         }
 
         // Exclusion Reasons
         notes.push_str("## Exclusion Reasons by Bead\n\n");
-        let excluded_analyses: Vec<_> = report.bead_analyses.iter()
+        let excluded_analyses: Vec<_> = report
+            .bead_analyses
+            .iter()
             .filter(|a| a.visible_at_level != Some(QueryLevel::Exact))
             .take(15)
             .collect();
 
         for analysis in excluded_analyses {
-            notes.push_str(&format!("### [{}] {}\n\n", analysis.bead_id, analysis.bead_title));
+            notes.push_str(&format!(
+                "### [{}] {}\n\n",
+                analysis.bead_id, analysis.bead_title
+            ));
             if let Some(ref filter) = analysis.excluded_by_filter {
                 notes.push_str(&format!("- **Excluded by:** `{}`\n", filter));
             }
@@ -1090,16 +1214,24 @@ impl PluckQueryDebugger {
             // Add specific context based on filter type
             if analysis.excluded_by_filter.as_deref() == Some("label exclusions") {
                 if !analysis.labels.is_empty() {
-                    notes.push_str(&format!("- **Labels causing exclusion:** {:?}\n", analysis.labels));
+                    notes.push_str(&format!(
+                        "- **Labels causing exclusion:** {:?}\n",
+                        analysis.labels
+                    ));
                 }
             } else if analysis.excluded_by_filter.as_deref() == Some("dependency checks") {
                 if !analysis.blocking_dependencies.is_empty() {
-                    notes.push_str(&format!("- **Blocking dependencies:** {:?}\n", analysis.blocking_dependencies));
+                    notes.push_str(&format!(
+                        "- **Blocking dependencies:** {:?}\n",
+                        analysis.blocking_dependencies
+                    ));
                 }
             } else if analysis.excluded_by_filter.as_deref() == Some("assignee filter") {
                 if let Some(ref assignee) = analysis.assignee {
                     notes.push_str(&format!("- **Current assignee:** `{}`\n", assignee));
-                    notes.push_str("- **Action:** Check if worker is still active; if not, clear assignee\n");
+                    notes.push_str(
+                        "- **Action:** Check if worker is still active; if not, clear assignee\n",
+                    );
                 }
             }
             notes.push_str("\n");
@@ -1112,7 +1244,10 @@ impl PluckQueryDebugger {
                 notes.push_str(&format!("{}. **Pattern:** `{}`\n", i + 1, pattern.pattern));
                 notes.push_str(&format!("   **Description:** {}\n", pattern.description));
                 if !pattern.matching_beads.is_empty() {
-                    notes.push_str(&format!("   **Affected beads:** {:?}\n", pattern.matching_beads));
+                    notes.push_str(&format!(
+                        "   **Affected beads:** {:?}\n",
+                        pattern.matching_beads
+                    ));
                 }
                 if let Some(ref fix) = pattern.suggested_fix {
                     notes.push_str(&format!("   **Suggested fix:** {}\n", fix));
@@ -1136,60 +1271,97 @@ impl PluckQueryDebugger {
         let mut step_num = 1;
 
         // Step 1: Analyze the primary filter issue
-        notes.push_str(&format!("{}. **Analyze the primary filter issue**\n", step_num));
+        notes.push_str(&format!(
+            "{}. **Analyze the primary filter issue**\n",
+            step_num
+        ));
         notes.push_str("   - Review the exclusion reasons above\n");
         notes.push_str("   - Identify the most common exclusion pattern\n");
-        notes.push_str(&format!("   - Primary filter: {}\n\n", self.determine_primary_filter(report)));
+        notes.push_str(&format!(
+            "   - Primary filter: {}\n\n",
+            self.determine_primary_filter(report)
+        ));
         step_num += 1;
 
         // Step 2: Check if beads should be excluded
-        notes.push_str(&format!("{}. **Verify beads are being excluded correctly**\n", step_num));
+        notes.push_str(&format!(
+            "{}. **Verify beads are being excluded correctly**\n",
+            step_num
+        ));
         notes.push_str("   - For label exclusions: Verify labels are correct and intentional\n");
         notes.push_str("   - For dependency exclusions: Check if blocking beads are stuck\n");
         notes.push_str("   - For assignee exclusions: Verify workers are still active\n\n");
         step_num += 1;
 
         // Step 3: Execute specific fixes
-        notes.push_str(&format!("{}. **Execute specific resolution actions**\n", step_num));
+        notes.push_str(&format!(
+            "{}. **Execute specific resolution actions**\n",
+            step_num
+        ));
 
-        let has_stale_assignees = report.bead_analyses.iter()
+        let has_stale_assignees = report
+            .bead_analyses
+            .iter()
             .any(|a| a.excluded_by_filter.as_deref() == Some("assignee filter"));
 
-        let has_label_issues = report.bead_analyses.iter()
+        let has_label_issues = report
+            .bead_analyses
+            .iter()
             .any(|a| a.excluded_by_filter.as_deref() == Some("label exclusions"));
 
-        let has_dep_issues = report.bead_analyses.iter()
+        let has_dep_issues = report
+            .bead_analyses
+            .iter()
             .any(|a| a.excluded_by_filter.as_deref() == Some("dependency checks"));
 
         if has_stale_assignees {
-            notes.push_str("   - **Stale assignees:** Clear assignee from beads with inactive workers:\n");
-            for analysis in report.bead_analyses.iter()
-                .filter(|a| a.excluded_by_filter.as_deref() == Some("assignee filter")) {
+            notes.push_str(
+                "   - **Stale assignees:** Clear assignee from beads with inactive workers:\n",
+            );
+            for analysis in report
+                .bead_analyses
+                .iter()
+                .filter(|a| a.excluded_by_filter.as_deref() == Some("assignee filter"))
+            {
                 if let Some(ref assignee) = analysis.assignee {
-                    notes.push_str(&format!("     - `bead update {} --clear-assignee` (worker: {})\n",
-                        analysis.bead_id, assignee));
+                    notes.push_str(&format!(
+                        "     - `bead update {} --clear-assignee` (worker: {})\n",
+                        analysis.bead_id, assignee
+                    ));
                 }
             }
             notes.push_str("\n");
         }
 
         if has_label_issues {
-            notes.push_str("   - **Label issues:** Review and correct inappropriate label exclusions:\n");
-            for analysis in report.bead_analyses.iter()
-                .filter(|a| a.excluded_by_filter.as_deref() == Some("label exclusions")) {
-                notes.push_str(&format!("     - [{}] has labels: {:?}\n",
-                    analysis.bead_id, analysis.labels));
+            notes.push_str(
+                "   - **Label issues:** Review and correct inappropriate label exclusions:\n",
+            );
+            for analysis in report
+                .bead_analyses
+                .iter()
+                .filter(|a| a.excluded_by_filter.as_deref() == Some("label exclusions"))
+            {
+                notes.push_str(&format!(
+                    "     - [{}] has labels: {:?}\n",
+                    analysis.bead_id, analysis.labels
+                ));
             }
             notes.push_str("\n");
         }
 
         if has_dep_issues {
             notes.push_str("   - **Dependency issues:** Investigate blocking beads:\n");
-            for analysis in report.bead_analyses.iter()
-                .filter(|a| a.excluded_by_filter.as_deref() == Some("dependency checks")) {
+            for analysis in report
+                .bead_analyses
+                .iter()
+                .filter(|a| a.excluded_by_filter.as_deref() == Some("dependency checks"))
+            {
                 if !analysis.blocking_dependencies.is_empty() {
-                    notes.push_str(&format!("     - [{}] blocked by: {:?}\n",
-                        analysis.bead_id, analysis.blocking_dependencies));
+                    notes.push_str(&format!(
+                        "     - [{}] blocked by: {:?}\n",
+                        analysis.bead_id, analysis.blocking_dependencies
+                    ));
                 }
             }
             notes.push_str("\n");
@@ -1219,9 +1391,12 @@ impl PluckQueryDebugger {
 
     /// Publish the debug report to JSONL file
     fn publish_report(&self, report: &PluckQueryDebugReport) -> Result<()> {
-        let report_path = self.config.diagnostics_dir.join("pluck-query-debug-report.jsonl");
-        let json_line = serde_json::to_string(report)
-            .context("Failed to serialize debug report")?;
+        let report_path = self
+            .config
+            .diagnostics_dir
+            .join("pluck-query-debug-report.jsonl");
+        let json_line =
+            serde_json::to_string(report).context("Failed to serialize debug report")?;
 
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -1229,10 +1404,12 @@ impl PluckQueryDebugger {
             .open(&report_path)
             .context("Failed to open debug report file")?;
 
-        writeln!(file, "{}", json_line)
-            .context("Failed to write debug report")?;
+        writeln!(file, "{}", json_line).context("Failed to write debug report")?;
 
-        eprintln!("📋 Pluck query debug report published to {}", report_path.display());
+        eprintln!(
+            "📋 Pluck query debug report published to {}",
+            report_path.display()
+        );
 
         Ok(())
     }
@@ -1240,7 +1417,10 @@ impl PluckQueryDebugger {
     /// Print a human-readable summary of the report
     pub fn print_summary(&self, report: &PluckQueryDebugReport) {
         println!("\n=== Pluck Query Debug Report ===\n");
-        println!("Timestamp: {}", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "Timestamp: {}",
+            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        );
         println!("Database: {}", report.db_path);
         println!("Total open beads: {}", report.total_open_beads);
         println!("Ready frontier (Level 0): {}", report.ready_frontier_count);
@@ -1248,9 +1428,9 @@ impl PluckQueryDebugger {
 
         println!("\n--- Query Results by Level ---");
         for result in &report.level_results {
-            println!("\nLevel {} - {}",
-                result.level as i32,
-                result.level_description
+            println!(
+                "\nLevel {} - {}",
+                result.level as i32, result.level_description
             );
             println!("  Visible beads: {}", result.visible_beads.len());
             println!("  Newly visible: {}", result.newly_visible_beads.len());
@@ -1275,7 +1455,11 @@ impl PluckQueryDebugger {
                         println!("  Blocked by: {:?}", analysis.blocking_dependencies);
                     }
                     if let Some(level) = analysis.visible_at_level {
-                        println!("  Visible at: Level {} ({})", level as i32, level.description());
+                        println!(
+                            "  Visible at: Level {} ({})",
+                            level as i32,
+                            level.description()
+                        );
                     }
                     if let Some(ref filter) = analysis.excluded_by_filter {
                         println!("  Excluded by: {}", filter);
@@ -1334,17 +1518,35 @@ mod tests {
 
     #[test]
     fn test_level_descriptions() {
-        assert_eq!(QueryLevel::Exact.description(), "Exact Pluck query (all filters applied)");
-        assert_eq!(QueryLevel::Raw.description(), "Raw base query (status only)");
+        assert_eq!(
+            QueryLevel::Exact.description(),
+            "Exact Pluck query (all filters applied)"
+        );
+        assert_eq!(
+            QueryLevel::Raw.description(),
+            "Raw base query (status only)"
+        );
     }
 
     #[test]
     fn test_relaxed_filter() {
         assert_eq!(QueryLevel::Exact.relaxed_filter(), None);
-        assert_eq!(QueryLevel::WithoutLabels.relaxed_filter(), Some("label exclusions"));
-        assert_eq!(QueryLevel::WithoutDependencies.relaxed_filter(), Some("dependency checks"));
-        assert_eq!(QueryLevel::WithoutAssignee.relaxed_filter(), Some("assignee filter"));
-        assert_eq!(QueryLevel::Raw.relaxed_filter(), Some("all filters except status"));
+        assert_eq!(
+            QueryLevel::WithoutLabels.relaxed_filter(),
+            Some("label exclusions")
+        );
+        assert_eq!(
+            QueryLevel::WithoutDependencies.relaxed_filter(),
+            Some("dependency checks")
+        );
+        assert_eq!(
+            QueryLevel::WithoutAssignee.relaxed_filter(),
+            Some("assignee filter")
+        );
+        assert_eq!(
+            QueryLevel::Raw.relaxed_filter(),
+            Some("all filters except status")
+        );
     }
 
     #[test]

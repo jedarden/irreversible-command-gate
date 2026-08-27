@@ -360,8 +360,8 @@ impl AssignmentRepairMonitor {
             );
         }
 
-        let json = String::from_utf8(output.stdout)
-            .context("bead list output is not valid UTF-8")?;
+        let json =
+            String::from_utf8(output.stdout).context("bead list output is not valid UTF-8")?;
 
         let mut assigned_beads = Vec::new();
 
@@ -377,26 +377,28 @@ impl AssignmentRepairMonitor {
                     if !assignee.is_empty() {
                         if let (Some(id), Some(title)) = (
                             value.get("id").and_then(|v| v.as_str()),
-                            value.get("title").and_then(|v| v.as_str())
+                            value.get("title").and_then(|v| v.as_str()),
                         ) {
-                            let status = value.get("status")
+                            let status = value
+                                .get("status")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            let created_at = value.get("created_at")
+                            let created_at = value
+                                .get("created_at")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
 
-                            let updated_at = value.get("updated_at")
+                            let updated_at = value
+                                .get("updated_at")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
 
-                            let revision = value.get("revision")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0) as i32;
+                            let revision =
+                                value.get("revision").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
                             assigned_beads.push(AssignedBead {
                                 id: id.to_string(),
@@ -419,10 +421,7 @@ impl AssignmentRepairMonitor {
     /// Check if a worker process is still alive
     fn check_worker_alive(&self, worker_name: &str) -> Result<WorkerStatus> {
         // Method 1: Try ps aux (most portable)
-        let ps_output = match Command::new("ps")
-            .args(&["aux", "--sort=-pid"])
-            .output()
-        {
+        let ps_output = match Command::new("ps").args(&["aux", "--sort=-pid"]).output() {
             Ok(output) => String::from_utf8_lossy(&output.stdout).to_string(),
             Err(_) => {
                 // If ps fails, try /proc reading on Linux
@@ -488,20 +487,18 @@ impl AssignmentRepairMonitor {
         let is_alive_result = proc_path
             .read_dir()
             .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .any(|entry| {
-                        let dir_name = entry.file_name();
-                        if let Some(pid_str) = dir_name.to_str() {
-                            if pid_str.chars().all(|c| c.is_ascii_digit()) {
-                                let cmdline_path = entry.path().join("cmdline");
-                                if let Ok(cmdline) = fs::read_to_string(cmdline_path) {
-                                    return cmdline.contains(worker_name);
-                                }
+                entries.filter_map(|e| e.ok()).any(|entry| {
+                    let dir_name = entry.file_name();
+                    if let Some(pid_str) = dir_name.to_str() {
+                        if pid_str.chars().all(|c| c.is_ascii_digit()) {
+                            let cmdline_path = entry.path().join("cmdline");
+                            if let Ok(cmdline) = fs::read_to_string(cmdline_path) {
+                                return cmdline.contains(worker_name);
                             }
                         }
-                        false
-                    })
+                    }
+                    false
+                })
             })
             .unwrap_or(false);
 
@@ -541,20 +538,21 @@ impl AssignmentRepairMonitor {
         eprintln!("🔧 Repairing {} stale assignments", stale_beads.len());
 
         for bead in stale_beads {
-            let worker_status = worker_status_map.get(&bead.assignee)
-                .cloned()
-                .unwrap_or(WorkerStatus {
-                    worker_name: bead.assignee.clone(),
-                    is_active: false,
-                    pid: None,
-                    last_activity: None,
-                    detection_method: "unknown".to_string(),
-                });
+            let worker_status =
+                worker_status_map
+                    .get(&bead.assignee)
+                    .cloned()
+                    .unwrap_or(WorkerStatus {
+                        worker_name: bead.assignee.clone(),
+                        is_active: false,
+                        pid: None,
+                        last_activity: None,
+                        detection_method: "unknown".to_string(),
+                    });
 
             let reason = format!(
                 "Worker '{}' is inactive (detected via {})",
-                bead.assignee,
-                worker_status.detection_method
+                bead.assignee, worker_status.detection_method
             );
 
             // Attempt to clear the assignee using bead CLI
@@ -567,9 +565,7 @@ impl AssignmentRepairMonitor {
                 previous_assignee: bead.assignee.clone(),
                 worker_status: format!(
                     "worker={}, active={}, method={}",
-                    bead.assignee,
-                    worker_status.is_active,
-                    worker_status.detection_method
+                    bead.assignee, worker_status.is_active, worker_status.detection_method
                 ),
                 reason: reason.clone(),
                 success: repair_result.is_ok(),
@@ -649,8 +645,7 @@ impl AssignmentRepairMonitor {
             .open(&self.config.events_path())
             .context("Failed to open events.jsonl for writing")?;
 
-        writeln!(file, "{}", event)
-            .context("Failed to write repair event to events.jsonl")?;
+        writeln!(file, "{}", event).context("Failed to write repair event to events.jsonl")?;
 
         Ok(())
     }
@@ -667,8 +662,7 @@ impl AssignmentRepairMonitor {
             .open(&report_path)
             .context("Failed to open assignment repair log file")?;
 
-        writeln!(file, "{}", json_line)
-            .context("Failed to write assignment repair report")?;
+        writeln!(file, "{}", json_line).context("Failed to write assignment repair report")?;
 
         eprintln!(
             "📋 Assignment repair report published to {}",
@@ -681,7 +675,10 @@ impl AssignmentRepairMonitor {
     /// Print a human-readable summary of the repair status
     pub fn print_summary(&self, report: &AssignmentRepairReport) {
         println!("\n=== Assignment Repair Monitor Report ===\n");
-        println!("Timestamp: {}", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "Timestamp: {}",
+            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        );
         println!("Total assigned beads: {}", report.total_assigned_beads);
         println!("Active assignments: {}", report.active_assignments);
         println!("Stale assignments: {}", report.stale_assignments);
@@ -702,8 +699,18 @@ impl AssignmentRepairMonitor {
         if !report.repairs_performed.is_empty() {
             println!("\n--- Repairs Performed ---");
             for (i, repair) in report.repairs_performed.iter().enumerate() {
-                let status = if repair.success { "✅ SUCCESS" } else { "❌ FAILED" };
-                println!("{}. [{}] {} - {}", i + 1, repair.bead_id, status, repair.bead_title);
+                let status = if repair.success {
+                    "✅ SUCCESS"
+                } else {
+                    "❌ FAILED"
+                };
+                println!(
+                    "{}. [{}] {} - {}",
+                    i + 1,
+                    repair.bead_id,
+                    status,
+                    repair.bead_title
+                );
                 println!("   Previous assignee: '{}'", repair.previous_assignee);
                 println!("   Reason: {}", repair.reason);
                 println!("   Worker status: {}", repair.worker_status);
@@ -712,7 +719,10 @@ impl AssignmentRepairMonitor {
 
         if report.stale_assignments > 0 && !self.config.auto_repair_enabled {
             println!("\n--- Recommended Actions ---");
-            println!("{} stale assignments detected but auto-repair is disabled", report.stale_assignments);
+            println!(
+                "{} stale assignments detected but auto-repair is disabled",
+                report.stale_assignments
+            );
             println!("Enable auto-repair or run: bead update <id> --clear-assignee");
         }
 
@@ -721,7 +731,10 @@ impl AssignmentRepairMonitor {
         } else if report.stale_assignments == 0 {
             println!("\n✅ All assignments are active - no stale assignments detected");
         } else {
-            println!("\n⚠️  {} stale assignments detected and processed", report.stale_assignments);
+            println!(
+                "\n⚠️  {} stale assignments detected and processed",
+                report.stale_assignments
+            );
         }
     }
 
@@ -765,22 +778,20 @@ impl AssignmentRepairMonitor {
             ));
 
             // Worker status counts
-            let active_workers = report.worker_status_summary.values()
+            let active_workers = report
+                .worker_status_summary
+                .values()
                 .filter(|s| s.is_active)
                 .count();
-            let inactive_workers = report.worker_status_summary.values()
+            let inactive_workers = report
+                .worker_status_summary
+                .values()
                 .filter(|s| !s.is_active)
                 .count();
 
             output.push_str("\n# Worker status\n");
-            output.push_str(&format!(
-                "icg_active_workers {}\n",
-                active_workers
-            ));
-            output.push_str(&format!(
-                "icg_inactive_workers {}\n",
-                inactive_workers
-            ));
+            output.push_str(&format!("icg_active_workers {}\n", active_workers));
+            output.push_str(&format!("icg_inactive_workers {}\n", inactive_workers));
         }
 
         output
@@ -790,7 +801,10 @@ impl AssignmentRepairMonitor {
     pub async fn run(&mut self) -> Result<()> {
         eprintln!("🔧 Assignment repair monitor starting");
         eprintln!("📁 Workspace: {}", self.config.workspace_path.display());
-        eprintln!("⏱️  Check interval: {} seconds", self.config.check_interval.as_secs());
+        eprintln!(
+            "⏱️  Check interval: {} seconds",
+            self.config.check_interval.as_secs()
+        );
         eprintln!("🔧 Auto-repair: {}", self.config.auto_repair_enabled);
 
         if self.config.dry_run {

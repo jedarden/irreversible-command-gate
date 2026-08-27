@@ -78,8 +78,8 @@ async fn main() -> Result<()> {
     };
 
     // Create monitor
-    let mut monitor = CheckpointMonitor::with_config(config)
-        .context("Failed to create checkpoint monitor")?;
+    let mut monitor =
+        CheckpointMonitor::with_config(config).context("Failed to create checkpoint monitor")?;
 
     println!("🔍 Checkpoint Monitor started");
     println!("   Workspace: {}", args.workspace.display());
@@ -102,7 +102,10 @@ async fn main() -> Result<()> {
 /// Run a single checkpoint health check
 fn run_single_check(monitor: &mut CheckpointMonitor, verbose: bool) -> Result<()> {
     let timestamp = Utc::now();
-    println!("🕥 Running checkpoint health check at {}", timestamp.to_rfc3339());
+    println!(
+        "🕥 Running checkpoint health check at {}",
+        timestamp.to_rfc3339()
+    );
 
     let report = monitor
         .run_check()
@@ -115,15 +118,14 @@ fn run_single_check(monitor: &mut CheckpointMonitor, verbose: bool) -> Result<()
     fs::create_dir_all(report_path.parent().unwrap())
         .context("Failed to create diagnostics directory")?;
 
-    let report_json = serde_json::to_string_pretty(&report)
-        .context("Failed to serialize report")?;
+    let report_json =
+        serde_json::to_string_pretty(&report).context("Failed to serialize report")?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&report_path)
         .context("Failed to open report file")?;
-    writeln!(file, "{}", report_json)
-        .context("Failed to write report")?;
+    writeln!(file, "{}", report_json).context("Failed to write report")?;
 
     if verbose {
         println!("📝 Report saved to {}", report_path.display());
@@ -191,30 +193,55 @@ fn print_report(report: &CheckpointMonitorReport, verbose: bool) -> std::io::Res
 
     // Bead-level drift information
     if report.checkpoint_sync.drift_count > 0 {
-        println!("   Drift: {} beads differ", report.checkpoint_sync.drift_count);
+        println!(
+            "   Drift: {} beads differ",
+            report.checkpoint_sync.drift_count
+        );
         if !report.checkpoint_sync.beads_missing_in_database.is_empty() {
-            println!("   Missing in database: {} beads",
-                report.checkpoint_sync.beads_missing_in_database.len());
+            println!(
+                "   Missing in database: {} beads",
+                report.checkpoint_sync.beads_missing_in_database.len()
+            );
             if verbose {
-                for id in report.checkpoint_sync.beads_missing_in_database.iter().take(5) {
+                for id in report
+                    .checkpoint_sync
+                    .beads_missing_in_database
+                    .iter()
+                    .take(5)
+                {
                     println!("     - {}", id);
                 }
                 if report.checkpoint_sync.beads_missing_in_database.len() > 5 {
-                    println!("     ... and {} more",
-                        report.checkpoint_sync.beads_missing_in_database.len() - 5);
+                    println!(
+                        "     ... and {} more",
+                        report.checkpoint_sync.beads_missing_in_database.len() - 5
+                    );
                 }
             }
         }
-        if !report.checkpoint_sync.beads_missing_in_checkpoint.is_empty() {
-            println!("   Missing in checkpoint: {} beads",
-                report.checkpoint_sync.beads_missing_in_checkpoint.len());
+        if !report
+            .checkpoint_sync
+            .beads_missing_in_checkpoint
+            .is_empty()
+        {
+            println!(
+                "   Missing in checkpoint: {} beads",
+                report.checkpoint_sync.beads_missing_in_checkpoint.len()
+            );
             if verbose {
-                for id in report.checkpoint_sync.beads_missing_in_checkpoint.iter().take(5) {
+                for id in report
+                    .checkpoint_sync
+                    .beads_missing_in_checkpoint
+                    .iter()
+                    .take(5)
+                {
                     println!("     - {}", id);
                 }
                 if report.checkpoint_sync.beads_missing_in_checkpoint.len() > 5 {
-                    println!("     ... and {} more",
-                        report.checkpoint_sync.beads_missing_in_checkpoint.len() - 5);
+                    println!(
+                        "     ... and {} more",
+                        report.checkpoint_sync.beads_missing_in_checkpoint.len() - 5
+                    );
                 }
             }
         }

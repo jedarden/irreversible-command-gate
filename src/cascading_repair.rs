@@ -115,15 +115,18 @@ impl CascadingRepairConfig {
         }
 
         if let Ok(enabled) = std::env::var("ICG_DEPENDENCY_PRUNING_ENABLED") {
-            config.dependency_pruning_enabled = enabled.eq_ignore_ascii_case("true") || enabled == "1";
+            config.dependency_pruning_enabled =
+                enabled.eq_ignore_ascii_case("true") || enabled == "1";
         }
 
         if let Ok(enabled) = std::env::var("ICG_ASSIGNEE_CLEARING_ENABLED") {
-            config.assignee_clearing_enabled = enabled.eq_ignore_ascii_case("true") || enabled == "1";
+            config.assignee_clearing_enabled =
+                enabled.eq_ignore_ascii_case("true") || enabled == "1";
         }
 
         if let Ok(enabled) = std::env::var("ICG_FILTER_RELAXATION_ENABLED") {
-            config.filter_relaxation_enabled = enabled.eq_ignore_ascii_case("true") || enabled == "1";
+            config.filter_relaxation_enabled =
+                enabled.eq_ignore_ascii_case("true") || enabled == "1";
         }
 
         if let Ok(enabled) = std::env::var("ICG_STATE_RESET_ENABLED") {
@@ -252,7 +255,10 @@ impl CascadingRepairService {
 
         // Get initial ready bead count
         let ready_beads_before = self.get_ready_bead_count()?;
-        eprintln!("📊 Ready beads before cascading repair: {}", ready_beads_before);
+        eprintln!(
+            "📊 Ready beads before cascading repair: {}",
+            ready_beads_before
+        );
 
         let mut strategies = Vec::new();
         let mut ready_beads_count = ready_beads_before;
@@ -268,7 +274,12 @@ impl CascadingRepairService {
             // If we have ready beads now, we can stop
             if ready_beads_count > 0 {
                 eprintln!("🎉 Recovery successful after dependency pruning");
-                return self.finalize_report(start_time, ready_beads_before, ready_beads_count, strategies);
+                return self.finalize_report(
+                    start_time,
+                    ready_beads_before,
+                    ready_beads_count,
+                    strategies,
+                );
             }
         }
 
@@ -282,7 +293,12 @@ impl CascadingRepairService {
 
             if ready_beads_count > 0 {
                 eprintln!("🎉 Recovery successful after assignee clearing");
-                return self.finalize_report(start_time, ready_beads_before, ready_beads_count, strategies);
+                return self.finalize_report(
+                    start_time,
+                    ready_beads_before,
+                    ready_beads_count,
+                    strategies,
+                );
             }
         }
 
@@ -296,7 +312,12 @@ impl CascadingRepairService {
 
             if ready_beads_count > 0 {
                 eprintln!("🎉 Recovery successful after filter relaxation");
-                return self.finalize_report(start_time, ready_beads_before, ready_beads_count, strategies);
+                return self.finalize_report(
+                    start_time,
+                    ready_beads_before,
+                    ready_beads_count,
+                    strategies,
+                );
             }
         }
 
@@ -310,12 +331,22 @@ impl CascadingRepairService {
 
             if ready_beads_count > 0 {
                 eprintln!("🎉 Recovery successful after state reset");
-                return self.finalize_report(start_time, ready_beads_before, ready_beads_count, strategies);
+                return self.finalize_report(
+                    start_time,
+                    ready_beads_before,
+                    ready_beads_count,
+                    strategies,
+                );
             }
         }
 
         // All strategies exhausted - finalize report
-        self.finalize_report(start_time, ready_beads_before, ready_beads_count, strategies)
+        self.finalize_report(
+            start_time,
+            ready_beads_before,
+            ready_beads_count,
+            strategies,
+        )
     }
 
     /// Finalize the cascading repair report
@@ -328,16 +359,22 @@ impl CascadingRepairService {
     ) -> Result<CascadingRepairReport> {
         let end_time = Utc::now();
         let duration = end_time.signed_duration_since(start_time);
-        let duration_seconds = duration.num_seconds() as f64 + duration.num_milliseconds() as f64 / 1000.0;
+        let duration_seconds =
+            duration.num_seconds() as f64 + duration.num_milliseconds() as f64 / 1000.0;
 
         let overall_success = ready_beads_after > 0;
         let mut recommendations = Vec::new();
 
         if !overall_success {
-            recommendations.push("Manual investigation required - all automatic repair strategies exhausted".to_string());
-            recommendations.push("Check bead database integrity: bead doctor --rehearse".to_string());
+            recommendations.push(
+                "Manual investigation required - all automatic repair strategies exhausted"
+                    .to_string(),
+            );
+            recommendations
+                .push("Check bead database integrity: bead doctor --rehearse".to_string());
             recommendations.push("Verify no systemic issues with the bead CLI version".to_string());
-            recommendations.push("Consider NEEDLE worker restart if this is a transient issue".to_string());
+            recommendations
+                .push("Consider NEEDLE worker restart if this is a transient issue".to_string());
         }
 
         let report = CascadingRepairReport {
@@ -366,7 +403,10 @@ impl CascadingRepairService {
         let stale_threshold = Duration::hours(self.config.stale_threshold_hours);
         let cutoff_time = Utc::now() - stale_threshold;
 
-        eprintln!("  🔍 Finding stale blockers (not updated in >{} hours)", self.config.stale_threshold_hours);
+        eprintln!(
+            "  🔍 Finding stale blockers (not updated in >{} hours)",
+            self.config.stale_threshold_hours
+        );
 
         // Query for dependencies where blocker hasn't been updated in >24 hours
         let stale_blockers = self.find_stale_blockers(cutoff_time)?;
@@ -452,7 +492,10 @@ impl CascadingRepairService {
             });
         }
 
-        eprintln!("  🎯 Found {} human-labeled assigned beads", human_labeled_beads.len());
+        eprintln!(
+            "  🎯 Found {} human-labeled assigned beads",
+            human_labeled_beads.len()
+        );
 
         for (bead_id, _title, assignee) in &human_labeled_beads {
             let action_desc = format!(
@@ -525,7 +568,10 @@ impl CascadingRepairService {
             });
         }
 
-        eprintln!("  🎯 Found {} beads excluded by filters", excluded_beads.len());
+        eprintln!(
+            "  🎯 Found {} beads excluded by filters",
+            excluded_beads.len()
+        );
 
         for (bead_id, title, labels) in &excluded_beads {
             let action_desc = format!(
@@ -568,7 +614,10 @@ impl CascadingRepairService {
         let inactive_threshold = Duration::hours(self.config.inactive_threshold_hours);
         let cutoff_time = Utc::now() - inactive_threshold;
 
-        eprintln!("  🔍 Finding inactive beads (no activity in >{} hours)", self.config.inactive_threshold_hours);
+        eprintln!(
+            "  🔍 Finding inactive beads (no activity in >{} hours)",
+            self.config.inactive_threshold_hours
+        );
 
         // Query for beads that haven't been updated in >48 hours
         let inactive_beads = self.find_inactive_beads(cutoff_time)?;
@@ -630,7 +679,10 @@ impl CascadingRepairService {
     }
 
     /// Find stale blockers (dependencies where blocker hasn't been updated in >24 hours)
-    fn find_stale_blockers(&self, cutoff_time: DateTime<Utc>) -> Result<Vec<(String, String, String)>> {
+    fn find_stale_blockers(
+        &self,
+        cutoff_time: DateTime<Utc>,
+    ) -> Result<Vec<(String, String, String)>> {
         let db_path = self.config.beads_db_path();
 
         let query = format!(
@@ -765,7 +817,10 @@ impl CascadingRepairService {
     }
 
     /// Find inactive beads (no activity in >48 hours)
-    fn find_inactive_beads(&self, cutoff_time: DateTime<Utc>) -> Result<Vec<(String, String, String, Option<String>, String)>> {
+    fn find_inactive_beads(
+        &self,
+        cutoff_time: DateTime<Utc>,
+    ) -> Result<Vec<(String, String, String, Option<String>, String)>> {
         let db_path = self.config.beads_db_path();
 
         let query = format!(
@@ -975,8 +1030,8 @@ impl CascadingRepairService {
     /// Publish the cascading repair report to the JSONL file
     fn publish_report(&self, report: &CascadingRepairReport) -> Result<()> {
         let report_path = self.config.repair_log_path();
-        let json_line = serde_json::to_string(report)
-            .context("Failed to serialize cascading repair report")?;
+        let json_line =
+            serde_json::to_string(report).context("Failed to serialize cascading repair report")?;
 
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -985,8 +1040,7 @@ impl CascadingRepairService {
             .context("Failed to open cascading repair log file")?;
 
         use std::io::Write;
-        writeln!(file, "{}", json_line)
-            .context("Failed to write cascading repair report")?;
+        writeln!(file, "{}", json_line).context("Failed to write cascading repair report")?;
 
         eprintln!(
             "📝 Cascading repair report published to {}",
@@ -1023,7 +1077,10 @@ impl CascadingRepairService {
         writeln!(file, "{}", event)
             .context("Failed to write cascading repair event to events.jsonl")?;
 
-        eprintln!("📊 Cascading repair event logged to {}", self.config.events_path().display());
+        eprintln!(
+            "📊 Cascading repair event logged to {}",
+            self.config.events_path().display()
+        );
 
         Ok(())
     }

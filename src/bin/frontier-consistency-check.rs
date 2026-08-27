@@ -67,8 +67,8 @@ fn main() -> Result<()> {
         let report = service.run_once()?;
 
         // Output JSON report
-        let json = serde_json::to_string_pretty(&report)
-            .context("Failed to serialize report to JSON")?;
+        let json =
+            serde_json::to_string_pretty(&report).context("Failed to serialize report to JSON")?;
         println!("{}", json);
 
         // Exit with appropriate code
@@ -91,10 +91,19 @@ fn run_human_readable(args: Args) -> Result<()> {
 
     println!("🧭 Frontier Consistency Checker");
     println!("═════════════════════════════════════════════════════");
-    println!("📁 Workspace: {}", service.config().workspace_path.display());
-    println!("⏱️  Check interval: {} seconds", service.config().check_interval.as_secs());
+    println!(
+        "📁 Workspace: {}",
+        service.config().workspace_path.display()
+    );
+    println!(
+        "⏱️  Check interval: {} seconds",
+        service.config().check_interval.as_secs()
+    );
     println!("🔧 Auto-repair: {}", service.config().auto_repair_enabled);
-    println!("🚨 Alert on persistent: {}", service.config().alert_on_persistent);
+    println!(
+        "🚨 Alert on persistent: {}",
+        service.config().alert_on_persistent
+    );
     println!();
 
     if args.once {
@@ -118,12 +127,9 @@ fn run_human_readable(args: Args) -> Result<()> {
         println!("   Press Ctrl+C to stop\n");
 
         // Create a runtime for the async service
-        let rt = tokio::runtime::Runtime::new()
-            .context("Failed to create async runtime")?;
+        let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
-        rt.block_on(async {
-            service.run().await
-        })?;
+        rt.block_on(async { service.run().await })?;
     }
 
     Ok(())
@@ -133,38 +139,14 @@ fn display_report(report: &icg::frontier_consistency_service::ConsistencyCycleRe
     println!("┌─ Consistency Check Cycle Report ─────────────────────────────────┐");
     println!("│ 📊 Cycle Summary                                                 │");
     println!("├───────────────────────────────────────────────────────────────────┤");
-    println!(
-        " │ Duration: {:.2}s",
-        report.duration_seconds
-    );
-    println!(
-        " │ Database beads: {}",
-        report.total_database_beads
-    );
-    println!(
-        " │ Ready frontier beads: {}",
-        report.total_ready_beads
-    );
-    println!(
-        " │ Discrepancies found: {}",
-        report.discrepancies.len()
-    );
-    println!(
-        " │ Diagnoses performed: {}",
-        report.diagnoses.len()
-    );
-    println!(
-        " │ Repairs attempted: {}",
-        report.repairs.len()
-    );
-    println!(
-        " │ Verifications: {}",
-        report.verifications.len()
-    );
-    println!(
-        " │ Persistent issues: {}",
-        report.persistent_reports.len()
-    );
+    println!(" │ Duration: {:.2}s", report.duration_seconds);
+    println!(" │ Database beads: {}", report.total_database_beads);
+    println!(" │ Ready frontier beads: {}", report.total_ready_beads);
+    println!(" │ Discrepancies found: {}", report.discrepancies.len());
+    println!(" │ Diagnoses performed: {}", report.diagnoses.len());
+    println!(" │ Repairs attempted: {}", report.repairs.len());
+    println!(" │ Verifications: {}", report.verifications.len());
+    println!(" │ Persistent issues: {}", report.persistent_reports.len());
     println!("└───────────────────────────────────────────────────────────────────┘");
     println!();
 
@@ -188,7 +170,10 @@ fn display_report(report: &icg::frontier_consistency_service::ConsistencyCycleRe
                     println!("     - {} ({})", dep.blocker_issue_id, dep.kind);
                 }
             }
-            println!("   Detected: {}", discrepancy.detected_at.format("%Y-%m-%d %H:%M:%S UTC"));
+            println!(
+                "   Detected: {}",
+                discrepancy.detected_at.format("%Y-%m-%d %H:%M:%S UTC")
+            );
             println!();
         }
     }
@@ -252,7 +237,10 @@ fn display_report(report: &icg::frontier_consistency_service::ConsistencyCycleRe
             if !rep.dependencies.is_empty() {
                 println!("   Dependencies:");
                 for dep in &rep.dependencies {
-                    println!("     - {} blocks {}", dep.blocker_issue_id, dep.blocked_issue_id);
+                    println!(
+                        "     - {} blocks {}",
+                        dep.blocker_issue_id, dep.blocked_issue_id
+                    );
                 }
             }
             if !rep.labels.is_empty() {

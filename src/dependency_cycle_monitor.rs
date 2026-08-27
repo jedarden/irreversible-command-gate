@@ -59,7 +59,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -336,8 +336,8 @@ impl DependencyCycleMonitor {
             .context("Failed to create diagnostics directory")?;
 
         // Open database connection
-        let conn = Connection::open(&self.config.beads_db_path())
-            .context("Failed to open database")?;
+        let conn =
+            Connection::open(&self.config.beads_db_path()).context("Failed to open database")?;
 
         // Step 1: Load all beads
         let beads = self.load_beads(&conn)?;
@@ -381,36 +381,37 @@ impl DependencyCycleMonitor {
     fn load_beads(&self, conn: &Connection) -> Result<HashMap<String, Bead>> {
         let mut stmt = conn.prepare(
             "SELECT id, title, base_status, created_at, assignee, manual_blocked, priority
-             FROM issues"
+             FROM issues",
         )?;
 
-        let bead_map = stmt.query_and_then([], |row| {
-            let id: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let status: String = row.get(2)?;
-            let created_at_str: String = row.get(3)?;
-            let assignee: Option<String> = row.get(4)?;
-            let manual_blocked: i32 = row.get(5)?;
-            let priority: i32 = row.get(6)?;
+        let bead_map = stmt
+            .query_and_then([], |row| {
+                let id: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let status: String = row.get(2)?;
+                let created_at_str: String = row.get(3)?;
+                let assignee: Option<String> = row.get(4)?;
+                let manual_blocked: i32 = row.get(5)?;
+                let priority: i32 = row.get(6)?;
 
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
 
-            Ok((
-                id.clone(),
-                Bead {
-                    id,
-                    title,
-                    status,
-                    created_at,
-                    assignee,
-                    manual_blocked: manual_blocked == 1,
-                    priority,
-                },
-            ))
-        })?
-        .collect::<Result<HashMap<_, _>>>()?;
+                Ok((
+                    id.clone(),
+                    Bead {
+                        id,
+                        title,
+                        status,
+                        created_at,
+                        assignee,
+                        manual_blocked: manual_blocked == 1,
+                        priority,
+                    },
+                ))
+            })?
+            .collect::<Result<HashMap<_, _>>>()?;
 
         Ok(bead_map)
     }
@@ -419,17 +420,18 @@ impl DependencyCycleMonitor {
     fn load_dependencies(&self, conn: &Connection) -> Result<Vec<Dependency>> {
         let mut stmt = conn.prepare(
             "SELECT blocked_issue_id, blocker_issue_id, kind
-             FROM dependencies WHERE kind = 'blocks'"
+             FROM dependencies WHERE kind = 'blocks'",
         )?;
 
-        let dependencies = stmt.query_and_then([], |row| {
-            Ok(Dependency {
-                blocked_issue_id: row.get(0)?,
-                blocker_issue_id: row.get(1)?,
-                kind: row.get(2)?,
-            })
-        })?
-        .collect::<Result<Vec<_>>>()?;
+        let dependencies = stmt
+            .query_and_then([], |row| {
+                Ok(Dependency {
+                    blocked_issue_id: row.get(0)?,
+                    blocker_issue_id: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(dependencies)
     }
@@ -506,14 +508,7 @@ impl DependencyCycleMonitor {
         if let Some(neighbors) = graph.get(node) {
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
-                    self.dfs_cycle_detect(
-                        neighbor,
-                        graph,
-                        visited,
-                        rec_stack,
-                        path,
-                        cycles_found,
-                    );
+                    self.dfs_cycle_detect(neighbor, graph, visited, rec_stack, path, cycles_found);
                 } else if rec_stack.contains(neighbor) {
                     // Found a cycle - extract it
                     if let Some(cycle_start) = path.iter().position(|x| x == neighbor) {
@@ -551,7 +546,8 @@ impl DependencyCycleMonitor {
                 // Lower priority (higher number) wins
                 // If priorities are equal, younger bead wins (more recent)
                 if bead.priority > lowest_priority
-                    || (bead.priority == lowest_priority && bead.created_at > created_at) {
+                    || (bead.priority == lowest_priority && bead.created_at > created_at)
+                {
                     lowest_priority_bead = bead_id;
                     lowest_priority = bead.priority;
                     created_at = bead.created_at;
@@ -599,7 +595,10 @@ impl DependencyCycleMonitor {
                     bead_id: dep.blocked_issue_id.clone(),
                     bead_title: blocked_bead.map(|b| b.title.clone()).unwrap_or_default(),
                     missing_blocker: dep.blocker_issue_id.clone(),
-                    reason: format!("Blocker '{}' does not exist in database", dep.blocker_issue_id),
+                    reason: format!(
+                        "Blocker '{}' does not exist in database",
+                        dep.blocker_issue_id
+                    ),
                 });
             }
         }
@@ -629,18 +628,27 @@ impl DependencyCycleMonitor {
             let repair_result = self.fix_circular_dependency(conn, cycle);
 
             let was_converted = repair_result.as_ref().ok().copied().unwrap_or(false);
-            let action = if was_converted { "Converted to non-blocking" } else { "Removed" };
+            let action = if was_converted {
+                "Converted to non-blocking"
+            } else {
+                "Removed"
+            };
 
             let repair = DependencyRepair {
                 timestamp: Utc::now(),
                 repair_type: "circular_dependency".to_string(),
                 bead_id: cycle.bead_to_modify.clone(),
-                bead_title: cycle.cycle.first()
-                    .and_then(|id| conn.query_row(
-                        "SELECT title FROM issues WHERE id = ?1",
-                        &[&cycle.bead_to_modify],
-                        |row| row.get(0)
-                    ).ok())
+                bead_title: cycle
+                    .cycle
+                    .first()
+                    .and_then(|id| {
+                        conn.query_row(
+                            "SELECT title FROM issues WHERE id = ?1",
+                            &[&cycle.bead_to_modify],
+                            |row| row.get(0),
+                        )
+                        .ok()
+                    })
                     .unwrap_or_default(),
                 previous_blocker: Some(cycle.blocker_to_remove.clone()),
                 reason: format!(
@@ -658,7 +666,10 @@ impl DependencyCycleMonitor {
                 self.log_repair(&repair)?;
                 eprintln!(
                     "  ✅ [{}] {} circular dependency: {} was blocked by {}",
-                    repair.bead_id, action, repair.bead_id, repair.previous_blocker.as_ref().unwrap()
+                    repair.bead_id,
+                    action,
+                    repair.bead_id,
+                    repair.previous_blocker.as_ref().unwrap()
                 );
             } else {
                 eprintln!(
@@ -691,7 +702,9 @@ impl DependencyCycleMonitor {
                 self.log_repair(&repair)?;
                 eprintln!(
                     "  ✅ [{}] Removed orphaned dependency: {} was blocked by {}",
-                    repair.bead_id, repair.bead_id, repair.previous_blocker.as_ref().unwrap()
+                    repair.bead_id,
+                    repair.bead_id,
+                    repair.previous_blocker.as_ref().unwrap()
                 );
             } else {
                 eprintln!(
@@ -707,11 +720,7 @@ impl DependencyCycleMonitor {
     }
 
     /// Fix a circular dependency by removing the blocking edge or converting to non-blocking
-    fn fix_circular_dependency(
-        &self,
-        conn: &Connection,
-        cycle: &DetectedCycle,
-    ) -> Result<bool> {
+    fn fix_circular_dependency(&self, conn: &Connection, cycle: &DetectedCycle) -> Result<bool> {
         if self.config.convert_to_non_blocking {
             // Convert the blocking edge to a non-blocking reference
             conn.execute(
@@ -772,8 +781,7 @@ impl DependencyCycleMonitor {
             .open(&self.config.events_path())
             .context("Failed to open events.jsonl for writing")?;
 
-        writeln!(file, "{}", event)
-            .context("Failed to write repair event to events.jsonl")?;
+        writeln!(file, "{}", event).context("Failed to write repair event to events.jsonl")?;
 
         Ok(())
     }
@@ -781,8 +789,8 @@ impl DependencyCycleMonitor {
     /// Publish the repair report to JSONL file
     fn publish_report(&self, report: &DependencyCycleReport) -> Result<()> {
         let report_path = self.config.report_log_path();
-        let json_line = serde_json::to_string(report)
-            .context("Failed to serialize dependency cycle report")?;
+        let json_line =
+            serde_json::to_string(report).context("Failed to serialize dependency cycle report")?;
 
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -790,8 +798,7 @@ impl DependencyCycleMonitor {
             .open(&report_path)
             .context("Failed to open dependency cycle report log file")?;
 
-        writeln!(file, "{}", json_line)
-            .context("Failed to write dependency cycle report")?;
+        writeln!(file, "{}", json_line).context("Failed to write dependency cycle report")?;
 
         eprintln!(
             "📋 Dependency cycle report published to {}",
@@ -804,11 +811,20 @@ impl DependencyCycleMonitor {
     /// Print a human-readable summary of the repair status
     pub fn print_summary(&self, report: &DependencyCycleReport) {
         println!("\n=== Dependency Cycle Monitor Report ===\n");
-        println!("Timestamp: {}", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "Timestamp: {}",
+            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        );
         println!("Total open beads: {}", report.total_open_beads);
         println!("Total dependencies: {}", report.total_dependencies);
-        println!("Circular dependencies found: {}", report.circular_dependencies_found);
-        println!("Orphaned dependencies found: {}", report.orphaned_dependencies_found);
+        println!(
+            "Circular dependencies found: {}",
+            report.circular_dependencies_found
+        );
+        println!(
+            "Orphaned dependencies found: {}",
+            report.orphaned_dependencies_found
+        );
         println!("Repairs performed: {}", report.repairs_performed.len());
 
         if !report.detected_cycles.is_empty() {
@@ -819,8 +835,16 @@ impl DependencyCycleMonitor {
                 } else {
                     "⚠ Too long (skipped)"
                 };
-                println!("{}. Cycle (length {}): {}", i + 1, cycle.length, cycle.cycle.join(" -> "));
-                println!("   Bead to modify: {} (priority {}), Blocker to remove: {}", cycle.bead_to_modify, cycle.priority, cycle.blocker_to_remove);
+                println!(
+                    "{}. Cycle (length {}): {}",
+                    i + 1,
+                    cycle.length,
+                    cycle.cycle.join(" -> ")
+                );
+                println!(
+                    "   Bead to modify: {} (priority {}), Blocker to remove: {}",
+                    cycle.bead_to_modify, cycle.priority, cycle.blocker_to_remove
+                );
                 println!("   Status: {}", status);
             }
         }
@@ -836,7 +860,11 @@ impl DependencyCycleMonitor {
         if !report.repairs_performed.is_empty() {
             println!("\n--- Repairs Performed ---");
             for (i, repair) in report.repairs_performed.iter().enumerate() {
-                let status = if repair.success { "✅ SUCCESS" } else { "❌ FAILED" };
+                let status = if repair.success {
+                    "✅ SUCCESS"
+                } else {
+                    "❌ FAILED"
+                };
                 println!("{}. [{}] {}", i + 1, repair.bead_id, status);
                 println!("   Type: {}", repair.repair_type);
                 if let Some(blocker) = &repair.previous_blocker {
@@ -849,7 +877,10 @@ impl DependencyCycleMonitor {
         if report.circular_dependencies_found == 0 && report.orphaned_dependencies_found == 0 {
             println!("\n✅ No dependency issues detected - graph is healthy!");
         } else if !report.repairs_performed.is_empty() {
-            println!("\n✅ {} dependency issues repaired successfully", report.repairs_performed.len());
+            println!(
+                "\n✅ {} dependency issues repaired successfully",
+                report.repairs_performed.len()
+            );
         } else if !self.config.auto_repair_enabled {
             println!("\n⚠️  Issues detected but auto-repair is disabled");
             println!("Enable auto-repair to automatically fix dependency issues");
@@ -912,7 +943,10 @@ impl DependencyCycleMonitor {
     pub async fn run(&mut self) -> Result<()> {
         eprintln!("🔗 Dependency cycle monitor starting");
         eprintln!("📁 Workspace: {}", self.config.workspace_path.display());
-        eprintln!("⏱️  Check interval: {} seconds", self.config.check_interval.as_secs());
+        eprintln!(
+            "⏱️  Check interval: {} seconds",
+            self.config.check_interval.as_secs()
+        );
         eprintln!("🔧 Auto-repair: {}", self.config.auto_repair_enabled);
         eprintln!("📏 Max cycle length: {}", self.config.max_cycle_length);
 

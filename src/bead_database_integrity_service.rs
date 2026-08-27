@@ -206,8 +206,10 @@ impl DatabaseIntegrityService {
         // Run rehearsal
         let rehearsal = self.run_rehearsal()?;
 
-        eprintln!("📋 Rehearsal completed: success={}, data_loss={}, issues_found={}",
-            rehearsal.success, rehearsal.data_loss_detected, rehearsal.issues_found);
+        eprintln!(
+            "📋 Rehearsal completed: success={}, data_loss={}, issues_found={}",
+            rehearsal.success, rehearsal.data_loss_detected, rehearsal.issues_found
+        );
 
         // Determine if repair should be attempted
         let repair_attempted = self.config.auto_repair_enabled
@@ -222,10 +224,20 @@ impl DatabaseIntegrityService {
         };
 
         // Determine if alert should be triggered
-        let (alert_triggered, alert_reason) = if self.config.alert_on_data_loss && rehearsal.data_loss_detected {
-            (true, Some("Data loss detected during rehearsal - requires human intervention".to_string()))
+        let (alert_triggered, alert_reason) = if self.config.alert_on_data_loss
+            && rehearsal.data_loss_detected
+        {
+            (
+                true,
+                Some(
+                    "Data loss detected during rehearsal - requires human intervention".to_string(),
+                ),
+            )
         } else if !rehearsal.success {
-            (true, Some("Rehearsal failed - requires human intervention".to_string()))
+            (
+                true,
+                Some("Rehearsal failed - requires human intervention".to_string()),
+            )
         } else {
             (false, None)
         };
@@ -236,7 +248,8 @@ impl DatabaseIntegrityService {
         let report = IntegrityCycleReport {
             cycle_start,
             cycle_end,
-            duration_seconds: duration.num_seconds() as f64 + duration.num_milliseconds() as f64 / 1000.0,
+            duration_seconds: duration.num_seconds() as f64
+                + duration.num_milliseconds() as f64 / 1000.0,
             rehearsal,
             repair_attempted,
             repair,
@@ -248,15 +261,20 @@ impl DatabaseIntegrityService {
         self.publish_report(&report)?;
 
         // Log status
-        eprintln!("✅ Integrity check cycle completed in {:.2}s", report.duration_seconds);
+        eprintln!(
+            "✅ Integrity check cycle completed in {:.2}s",
+            report.duration_seconds
+        );
         if report.alert_triggered {
             if let Some(ref reason) = report.alert_reason {
                 eprintln!("🚨 ALERT TRIGGERED: {}", reason);
             }
         } else if report.repair_attempted {
             if let Some(ref repair) = report.repair {
-                eprintln!("🔧 Auto-repair: success={}, issues_repaired={}",
-                    repair.success, repair.issues_repaired);
+                eprintln!(
+                    "🔧 Auto-repair: success={}, issues_repaired={}",
+                    repair.success, repair.issues_repaired
+                );
             }
         } else {
             eprintln!("✅ No repairs needed");
@@ -288,7 +306,11 @@ impl DatabaseIntegrityService {
         let issues_found = self.count_issues_from_output(&stdout);
 
         let error = if !success {
-            Some(format!("Exit code: {:?}, Error: {}", output.status.code(), stderr))
+            Some(format!(
+                "Exit code: {:?}, Error: {}",
+                output.status.code(),
+                stderr
+            ))
         } else {
             None
         };
@@ -377,7 +399,11 @@ impl DatabaseIntegrityService {
         let issues_repaired = self.count_repaired_issues(&stdout);
 
         let error = if !success {
-            Some(format!("Exit code: {:?}, Error: {}", output.status.code(), stderr))
+            Some(format!(
+                "Exit code: {:?}, Error: {}",
+                output.status.code(),
+                stderr
+            ))
         } else {
             None
         };
@@ -410,8 +436,8 @@ impl DatabaseIntegrityService {
     /// Publish the integrity cycle report to the JSONL file
     fn publish_report(&self, report: &IntegrityCycleReport) -> Result<()> {
         let report_path = self.config.auto_repair_log_path();
-        let json_line = serde_json::to_string(report)
-            .context("Failed to serialize integrity cycle report")?;
+        let json_line =
+            serde_json::to_string(report).context("Failed to serialize integrity cycle report")?;
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -420,8 +446,7 @@ impl DatabaseIntegrityService {
             .context("Failed to open auto-repair log file")?;
 
         use std::io::Write;
-        writeln!(file, "{}", json_line)
-            .context("Failed to write integrity cycle report")?;
+        writeln!(file, "{}", json_line).context("Failed to write integrity cycle report")?;
 
         eprintln!(
             "📝 Integrity cycle report logged to {}",
@@ -440,7 +465,10 @@ impl DatabaseIntegrityService {
     pub async fn run(&mut self) -> Result<()> {
         eprintln!("🩺 Bead database integrity service starting");
         eprintln!("📁 Workspace: {}", self.config.workspace_path.display());
-        eprintln!("⏱️  Check interval: {} seconds", self.config.check_interval.as_secs());
+        eprintln!(
+            "⏱️  Check interval: {} seconds",
+            self.config.check_interval.as_secs()
+        );
         eprintln!("🔧 Auto-repair: {}", self.config.auto_repair_enabled);
         eprintln!("🚨 Alert on data loss: {}", self.config.alert_on_data_loss);
 

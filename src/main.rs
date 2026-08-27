@@ -1866,8 +1866,10 @@ fn main() -> Result<()> {
         } => {
             use icg::dependency_cycle_monitor::DependencyCycleMonitor;
 
-            let workspace = workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let mut config = icg::dependency_cycle_monitor::DependencyCycleConfig::from_environment();
+            let workspace =
+                workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let mut config =
+                icg::dependency_cycle_monitor::DependencyCycleConfig::from_environment();
             config.workspace_path = workspace;
             config.check_interval = std::time::Duration::from_secs(interval_secs.max(60));
             config.dry_run = dry_run;
@@ -1880,11 +1882,15 @@ fn main() -> Result<()> {
                 // Run once and exit
                 let report = monitor.run_check()?;
                 monitor.print_summary(&report);
-                std::process::exit(if report.circular_dependencies_found > 0 || report.orphaned_dependencies_found > 0 {
-                    2  // Exit with error code if issues were found
-                } else {
-                    0  // Exit successfully if no issues
-                });
+                std::process::exit(
+                    if report.circular_dependencies_found > 0
+                        || report.orphaned_dependencies_found > 0
+                    {
+                        2 // Exit with error code if issues were found
+                    } else {
+                        0 // Exit successfully if no issues
+                    },
+                );
             } else {
                 // Run continuous monitoring
                 #[cfg(feature = "monitoring")]
@@ -1906,7 +1912,8 @@ fn main() -> Result<()> {
         } => {
             use icg::bead_database_integrity_service::DatabaseIntegrityService;
 
-            let workspace = workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let workspace =
+                workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
             let mut config = icg::bead_database_integrity_service::DatabaseIntegrityServiceConfig::from_environment();
             config.workspace_path = workspace;
             config.check_interval = std::time::Duration::from_secs(interval_secs.max(60));
@@ -1918,10 +1925,20 @@ fn main() -> Result<()> {
                 // Run once and exit
                 let report = service.run_once()?;
                 println!("# Database Integrity Check Report");
-                println!("**Status:** {}", if report.rehearsal.success { "✅ Healthy" } else { "❌ Issues detected" });
+                println!(
+                    "**Status:** {}",
+                    if report.rehearsal.success {
+                        "✅ Healthy"
+                    } else {
+                        "❌ Issues detected"
+                    }
+                );
                 println!("**Duration:** {:.2}s", report.duration_seconds);
                 println!("**Issues found:** {}", report.rehearsal.issues_found);
-                println!("**Data loss detected:** {}", report.rehearsal.data_loss_detected);
+                println!(
+                    "**Data loss detected:** {}",
+                    report.rehearsal.data_loss_detected
+                );
                 if let Some(ref repair) = report.repair {
                     println!("**Repair attempted:** Yes");
                     println!("**Repair successful:** {}", repair.success);
@@ -1938,9 +1955,9 @@ fn main() -> Result<()> {
                     println!("**Alert triggered:** No");
                 }
                 std::process::exit(if report.rehearsal.success && !report.alert_triggered {
-                    0  // Exit successfully if no issues
+                    0 // Exit successfully if no issues
                 } else {
-                    1  // Exit with error code if issues or alerts
+                    1 // Exit with error code if issues or alerts
                 });
             } else {
                 // Run continuous monitoring

@@ -25,7 +25,9 @@ use std::process::Command;
 use std::time::Duration;
 use tokio::time::interval;
 
-use crate::cascading_repair::{CascadingRepairConfig, CascadingRepairReport, CascadingRepairService};
+use crate::cascading_repair::{
+    CascadingRepairConfig, CascadingRepairReport, CascadingRepairService,
+};
 
 /// Configuration for the frontier consistency service
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,7 +400,10 @@ impl FrontierConsistencyService {
 
         // Step 1: Query database for all open/in_progress beads
         let database_beads = self.query_database_beads()?;
-        eprintln!("📊 Found {} open/in_progress beads in database", database_beads.len());
+        eprintln!(
+            "📊 Found {} open/in_progress beads in database",
+            database_beads.len()
+        );
 
         // Step 2: Get ready frontier via bead list --ready
         let ready_beads = self.get_ready_frontier()?;
@@ -433,7 +438,8 @@ impl FrontierConsistencyService {
 
                 // If still invisible after repair, create persistent report
                 if !verification.visible {
-                    let report = self.create_persistent_report(discrepancy, Some(diagnosis), Some(repair))?;
+                    let report =
+                        self.create_persistent_report(discrepancy, Some(diagnosis), Some(repair))?;
                     persistent_reports.push(report);
                 }
             } else {
@@ -445,14 +451,23 @@ impl FrontierConsistencyService {
 
         // Determine if alert should be triggered
         let has_persistent_reports = !persistent_reports.is_empty();
-        let (alert_triggered, alert_reason) = if self.config.alert_on_persistent && has_persistent_reports {
-            (true, Some(format!("{} beads remain invisible after repair attempts", persistent_reports.len())))
-        } else {
-            (false, None)
-        };
+        let (alert_triggered, alert_reason) =
+            if self.config.alert_on_persistent && has_persistent_reports {
+                (
+                    true,
+                    Some(format!(
+                        "{} beads remain invisible after repair attempts",
+                        persistent_reports.len()
+                    )),
+                )
+            } else {
+                (false, None)
+            };
 
         // Trigger cascading repair if ready bead count is 0 after primary repairs
-        let (cascading_repair_triggered, cascading_repair_report) = if ready_beads.is_empty() && !discrepancies.is_empty() {
+        let (cascading_repair_triggered, cascading_repair_report) = if ready_beads.is_empty()
+            && !discrepancies.is_empty()
+        {
             eprintln!("🚨 STARVATION DETECTED: 0 ready beads after primary repairs - triggering cascading repair");
 
             // Create cascading repair config from current config
@@ -465,12 +480,17 @@ impl FrontierConsistencyService {
 
             match cascading_service.execute_cascading_repair() {
                 Ok(report) => {
-                    eprintln!("📊 Cascading repair complete: {} -> {} ready beads",
-                        report.ready_beads_before, report.ready_beads_after);
+                    eprintln!(
+                        "📊 Cascading repair complete: {} -> {} ready beads",
+                        report.ready_beads_before, report.ready_beads_after
+                    );
 
                     // Re-verify ready frontier after cascading repair
                     let updated_ready_beads = self.get_ready_frontier()?;
-                    eprintln!("✅ Verified ready bead count after cascading repair: {}", updated_ready_beads.len());
+                    eprintln!(
+                        "✅ Verified ready bead count after cascading repair: {}",
+                        updated_ready_beads.len()
+                    );
 
                     (true, Some(report))
                 }
@@ -504,7 +524,8 @@ impl FrontierConsistencyService {
         let report = ConsistencyCycleReport {
             cycle_start,
             cycle_end,
-            duration_seconds: duration.num_seconds() as f64 + duration.num_milliseconds() as f64 / 1000.0,
+            duration_seconds: duration.num_seconds() as f64
+                + duration.num_milliseconds() as f64 / 1000.0,
             total_database_beads: database_beads.len(),
             total_ready_beads: final_ready_beads,
             discrepancies,
@@ -522,13 +543,19 @@ impl FrontierConsistencyService {
         self.publish_report(&report)?;
 
         // Log status
-        eprintln!("✅ Consistency check cycle completed in {:.2}s", report.duration_seconds);
+        eprintln!(
+            "✅ Consistency check cycle completed in {:.2}s",
+            report.duration_seconds
+        );
         if report.alert_triggered {
             if let Some(ref reason) = report.alert_reason {
                 eprintln!("🚨 ALERT TRIGGERED: {}", reason);
             }
         } else if !report.persistent_reports.is_empty() {
-            eprintln!("⚠️  {} beads remain invisible (auto-repair disabled)", report.persistent_reports.len());
+            eprintln!(
+                "⚠️  {} beads remain invisible (auto-repair disabled)",
+                report.persistent_reports.len()
+            );
         } else {
             eprintln!("✅ All visible beads accounted for - no discrepancies detected");
         }
@@ -571,7 +598,11 @@ impl FrontierConsistencyService {
 
             let parts: Vec<&str> = line.split('|').collect();
             if parts.len() >= 8 {
-                let assignee = if parts[3].is_empty() { None } else { Some(parts[3].to_string()) };
+                let assignee = if parts[3].is_empty() {
+                    None
+                } else {
+                    Some(parts[3].to_string())
+                };
                 let manual_blocked = parts[4].parse::<i32>().unwrap_or(0);
                 let priority = parts[5].parse::<i32>().unwrap_or(0);
 
@@ -648,7 +679,8 @@ impl FrontierConsistencyService {
                 let blocking_dependencies = self.get_blocking_dependencies(&bead.id)?;
 
                 // Determine exclusion reason
-                let exclusion_reason = self.determine_exclusion_reason(bead, &blocking_dependencies);
+                let exclusion_reason =
+                    self.determine_exclusion_reason(bead, &blocking_dependencies);
 
                 discrepancies.push(FrontierDiscrepancy {
                     bead_id: bead.id.clone(),
@@ -970,8 +1002,7 @@ impl FrontierConsistencyService {
             .context("Failed to open frontier repair log file")?;
 
         use std::io::Write;
-        writeln!(file, "{}", json_line)
-            .context("Failed to write consistency cycle report")?;
+        writeln!(file, "{}", json_line).context("Failed to write consistency cycle report")?;
 
         eprintln!(
             "📝 Consistency cycle report logged to {}",
@@ -986,7 +1017,11 @@ impl FrontierConsistencyService {
 
     /// Emit a structured event to .beads/events.jsonl for monitoring dashboards
     fn emit_monitoring_event(&self, report: &ConsistencyCycleReport) -> Result<()> {
-        let events_path = self.config.workspace_path.join(".beads").join("events.jsonl");
+        let events_path = self
+            .config
+            .workspace_path
+            .join(".beads")
+            .join("events.jsonl");
 
         let event = FrontierConsistencyEvent {
             event_type: "frontier-consistency-check".to_string(),
@@ -1003,16 +1038,20 @@ impl FrontierConsistencyService {
             alert_reason: report.alert_reason.clone(),
             auto_repair_enabled: self.config.auto_repair_enabled,
             cascading_repair_triggered: report.cascading_repair_triggered,
-            cascading_repair_success: report.cascading_repair_report.as_ref()
+            cascading_repair_success: report
+                .cascading_repair_report
+                .as_ref()
                 .map(|r| r.overall_success)
                 .unwrap_or(false),
-            cascading_repair_ready_beads_after: report.cascading_repair_report.as_ref()
+            cascading_repair_ready_beads_after: report
+                .cascading_repair_report
+                .as_ref()
                 .map(|r| r.ready_beads_after)
                 .unwrap_or(0),
         };
 
-        let json_line = serde_json::to_string(&event)
-            .context("Failed to serialize monitoring event")?;
+        let json_line =
+            serde_json::to_string(&event).context("Failed to serialize monitoring event")?;
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -1021,13 +1060,9 @@ impl FrontierConsistencyService {
             .context("Failed to open events.jsonl file")?;
 
         use std::io::Write;
-        writeln!(file, "{}", json_line)
-            .context("Failed to write monitoring event")?;
+        writeln!(file, "{}", json_line).context("Failed to write monitoring event")?;
 
-        eprintln!(
-            "📊 Monitoring event emitted to {}",
-            events_path.display()
-        );
+        eprintln!("📊 Monitoring event emitted to {}", events_path.display());
 
         Ok(())
     }
@@ -1041,9 +1076,15 @@ impl FrontierConsistencyService {
     pub async fn run(&mut self) -> Result<()> {
         eprintln!("🧭 Bead frontier consistency service starting");
         eprintln!("📁 Workspace: {}", self.config.workspace_path.display());
-        eprintln!("⏱️  Check interval: {} seconds", self.config.check_interval.as_secs());
+        eprintln!(
+            "⏱️  Check interval: {} seconds",
+            self.config.check_interval.as_secs()
+        );
         eprintln!("🔧 Auto-repair: {}", self.config.auto_repair_enabled);
-        eprintln!("🚨 Alert on persistent: {}", self.config.alert_on_persistent);
+        eprintln!(
+            "🚨 Alert on persistent: {}",
+            self.config.alert_on_persistent
+        );
 
         // Run initial check
         self.run_once()?;
@@ -1112,13 +1153,11 @@ mod tests {
         assert_eq!(reason, "Manually blocked");
 
         // Test unassigned with dependencies (before assigning)
-        let deps = vec![
-            BeadDependency {
-                blocked_issue_id: "test-1".to_string(),
-                blocker_issue_id: "blocker-1".to_string(),
-                kind: "blocks".to_string(),
-            },
-        ];
+        let deps = vec![BeadDependency {
+            blocked_issue_id: "test-1".to_string(),
+            blocker_issue_id: "blocker-1".to_string(),
+            kind: "blocks".to_string(),
+        }];
         let bead_unassigned = DatabaseBead {
             assignee: None,
             manual_blocked: 0,

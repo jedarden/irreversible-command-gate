@@ -44,7 +44,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -70,8 +70,7 @@ pub struct StarvationDiagnosticConfig {
 
 impl Default for StarvationDiagnosticConfig {
     fn default() -> Self {
-        let workspace_path = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let workspace_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             db_path: workspace_path.join(".beads/beads.db"),
             diagnostics_dir: workspace_path.join(".beads/diagnostics"),
@@ -266,7 +265,8 @@ impl StarvationDiagnostic {
         };
 
         // Count ready beads (open, no assignee, not blocked)
-        let ready_beads = open_beads.iter()
+        let ready_beads = open_beads
+            .iter()
             .filter(|b| b.status == "open" && b.assignee.is_none() && !b.manual_blocked)
             .count();
 
@@ -332,62 +332,62 @@ impl StarvationDiagnostic {
 
     /// Load all open beads from the database
     fn load_open_beads(&self) -> Result<Vec<BeadState>> {
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
 
         let mut stmt = conn.prepare(
             "SELECT id, title, base_status, assignee, manual_blocked,
                     priority, created_at, updated_at, revision
              FROM issues
              WHERE base_status IN ('open', 'in_progress')
-             ORDER BY priority DESC, created_at, id"
+             ORDER BY priority DESC, created_at, id",
         )?;
 
-        let beads = stmt.query_and_then([], |row| {
-            let id: String = row.get(0)?;
-            let title: String = row.get(1)?;
-            let status: String = row.get(2)?;
-            let assignee: Option<String> = row.get(3)?;
-            let manual_blocked: i32 = row.get(4)?;
-            let priority: i32 = row.get(5)?;
-            let created_at: String = row.get(6)?;
-            let updated_at: String = row.get(7)?;
-            let revision: i32 = row.get(8)?;
+        let beads = stmt
+            .query_and_then([], |row| {
+                let id: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let status: String = row.get(2)?;
+                let assignee: Option<String> = row.get(3)?;
+                let manual_blocked: i32 = row.get(4)?;
+                let priority: i32 = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let updated_at: String = row.get(7)?;
+                let revision: i32 = row.get(8)?;
 
-            Ok(BeadState {
-                id,
-                title,
-                status,
-                assignee,
-                manual_blocked: manual_blocked == 1,
-                priority,
-                created_at,
-                updated_at,
-                revision,
-                dependencies: Vec::new(), // Loaded separately
-            })
-        })?
-        .collect::<Result<Vec<_>>>()?;
+                Ok(BeadState {
+                    id,
+                    title,
+                    status,
+                    assignee,
+                    manual_blocked: manual_blocked == 1,
+                    priority,
+                    created_at,
+                    updated_at,
+                    revision,
+                    dependencies: Vec::new(), // Loaded separately
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(beads)
     }
 
     /// Load dependencies for a specific bead
     fn load_bead_dependencies(&self, bead_id: &str) -> Result<Vec<String>> {
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
 
         let mut stmt = conn.prepare(
             "SELECT blocker_issue_id
              FROM dependencies
-             WHERE blocked_issue_id = ?1 AND kind = 'blocks'"
+             WHERE blocked_issue_id = ?1 AND kind = 'blocks'",
         )?;
 
-        let blockers = stmt.query_and_then(params![bead_id], |row| {
-            let blocker: String = row.get(0)?;
-            Ok(blocker)
-        })?
-        .collect::<Result<Vec<_>>>()?;
+        let blockers = stmt
+            .query_and_then(params![bead_id], |row| {
+                let blocker: String = row.get(0)?;
+                Ok(blocker)
+            })?
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(blockers)
     }
@@ -399,9 +399,7 @@ impl StarvationDiagnostic {
         for bead in open_beads {
             // Check if bead would be in the ready frontier
             // Ready = open AND no assignee AND not manually blocked
-            let is_ready = bead.status == "open"
-                && bead.assignee.is_none()
-                && !bead.manual_blocked;
+            let is_ready = bead.status == "open" && bead.assignee.is_none() && !bead.manual_blocked;
 
             if !is_ready {
                 let reason = if bead.assignee.is_some() {
@@ -420,11 +418,12 @@ impl StarvationDiagnostic {
 
                 let description = match &reason {
                     ExclusionReason::HasAssignee { assignee } => {
-                        format!("Bead has assignee '{}', excluded from ready frontier", assignee)
+                        format!(
+                            "Bead has assignee '{}', excluded from ready frontier",
+                            assignee
+                        )
                     }
-                    ExclusionReason::ManualBlocked => {
-                        "Bead is manually blocked".to_string()
-                    }
+                    ExclusionReason::ManualBlocked => "Bead is manually blocked".to_string(),
                     ExclusionReason::WrongStatus { status } => {
                         format!("Bead status is '{}', not 'open'", status)
                     }
@@ -450,7 +449,10 @@ impl StarvationDiagnostic {
 
     /// Verify checkpoint sync status
     fn verify_checkpoint_sync(&self) -> Result<CheckpointStatus> {
-        let workspace_path = self.config.db_path.parent()
+        let workspace_path = self
+            .config
+            .db_path
+            .parent()
             .and_then(|p| p.parent())
             .unwrap_or_else(|| Path::new("."));
 
@@ -483,11 +485,8 @@ impl StarvationDiagnostic {
         // Count database issues
         let database_issue_count = if database_exists {
             let conn = Connection::open(&self.config.db_path)?;
-            conn.query_row(
-                "SELECT COUNT(*) FROM issues",
-                [],
-                |row| row.get(0)
-            ).unwrap_or(0)
+            conn.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))
+                .unwrap_or(0)
         } else {
             0
         };
@@ -560,10 +559,7 @@ impl StarvationDiagnostic {
         // We check if any running process matches the worker name pattern
         // by querying the process table via ps(1)
 
-        let output = match Command::new("ps")
-            .args(&["aux", "--sort=-pid"])
-            .output()
-        {
+        let output = match Command::new("ps").args(&["aux", "--sort=-pid"]).output() {
             Ok(output) => output,
             Err(e) => {
                 eprintln!("Warning: Failed to run ps to check worker status: {}", e);
@@ -577,7 +573,8 @@ impl StarvationDiagnostic {
 
         // Check if any process line contains the worker name
         // We need to be careful not to match the ps command itself or the diagnostic process
-        let is_alive = ps_output.lines()
+        let is_alive = ps_output
+            .lines()
             .skip(1) // Skip header
             .any(|line| {
                 // Skip our own process
@@ -598,11 +595,15 @@ impl StarvationDiagnostic {
     }
 
     /// Repair stale assignees by clearing them from the database
-    fn repair_stale_assignees(&self, stale_assignees: &[StaleAssignee]) -> Result<Vec<AssigneeRepair>> {
+    fn repair_stale_assignees(
+        &self,
+        stale_assignees: &[StaleAssignee],
+    ) -> Result<Vec<AssigneeRepair>> {
         let mut repairs = Vec::new();
 
         // Filter to only those that need clearing
-        let to_clear: Vec<_> = stale_assignees.iter()
+        let to_clear: Vec<_> = stale_assignees
+            .iter()
             .filter(|sa| sa.should_clear)
             .collect();
 
@@ -610,8 +611,8 @@ impl StarvationDiagnostic {
             return Ok(repairs);
         }
 
-        let conn = Connection::open(&self.config.db_path)
-            .context("Failed to open database for repair")?;
+        let conn =
+            Connection::open(&self.config.db_path).context("Failed to open database for repair")?;
 
         for sa in to_clear {
             // Clear the assignee field
@@ -622,7 +623,7 @@ impl StarvationDiagnostic {
                     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     &sa.bead_id,
                     &sa.assignee
-                ]
+                ],
             ) {
                 Ok(rows_affected) => {
                     if rows_affected > 0 {
@@ -676,8 +677,7 @@ impl StarvationDiagnostic {
             .open(&self.config.events_path)
             .context("Failed to open events.jsonl for writing")?;
 
-        writeln!(file, "{}", event)
-            .context("Failed to write repair event to events.jsonl")?;
+        writeln!(file, "{}", event).context("Failed to write repair event to events.jsonl")?;
 
         eprintln!(
             "🔧 Repaired bead {} - cleared stale assignee '{}'",
@@ -705,11 +705,7 @@ impl StarvationDiagnostic {
         };
 
         // Check schema validity
-        let schema_valid = match conn.query_row(
-            "SELECT COUNT(*) FROM issues",
-            [],
-            |_| Ok(())
-        ) {
+        let schema_valid = match conn.query_row("SELECT COUNT(*) FROM issues", [], |_| Ok(())) {
             Ok(_) => true,
             Err(e) => {
                 issues.push(format!("Schema check failed: {}", e));
@@ -721,7 +717,7 @@ impl StarvationDiagnostic {
         let indexes_valid = match conn.query_row(
             "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
             [],
-            |_| Ok(())
+            |_| Ok(()),
         ) {
             Ok(_) => true,
             Err(e) => {
@@ -754,7 +750,8 @@ impl StarvationDiagnostic {
             return "database_corruption".to_string();
         }
 
-        if checkpoint_status.sync_status == "missing" || checkpoint_status.sync_status == "invalid" {
+        if checkpoint_status.sync_status == "missing" || checkpoint_status.sync_status == "invalid"
+        {
             return "checkpoint_failure".to_string();
         }
 
@@ -763,7 +760,8 @@ impl StarvationDiagnostic {
             return format!("stale_assignees_({}_beads)", stale_count);
         }
 
-        let assigned_count = excluded_beads.iter()
+        let assigned_count = excluded_beads
+            .iter()
             .filter(|e| matches!(&e.reason, ExclusionReason::HasAssignee { .. }))
             .count();
 
@@ -771,7 +769,8 @@ impl StarvationDiagnostic {
             return format!("active_assignments_({}_beads)", assigned_count);
         }
 
-        let blocked_count = excluded_beads.iter()
+        let blocked_count = excluded_beads
+            .iter()
             .filter(|e| matches!(&e.reason, ExclusionReason::ManualBlocked))
             .count();
 
@@ -799,9 +798,14 @@ impl StarvationDiagnostic {
         }
 
         if checkpoint_status.sync_status == "missing" {
-            actions.push("Checkpoint missing. Run 'bead sync flush-only' to create checkpoint.".to_string());
+            actions.push(
+                "Checkpoint missing. Run 'bead sync flush-only' to create checkpoint.".to_string(),
+            );
         } else if checkpoint_status.sync_status == "stale" {
-            actions.push(format!("Checkpoint stale by {} minutes. Run 'bead sync flush-only' to sync.", checkpoint_status.stale_minutes.unwrap_or(0)));
+            actions.push(format!(
+                "Checkpoint stale by {} minutes. Run 'bead sync flush-only' to sync.",
+                checkpoint_status.stale_minutes.unwrap_or(0)
+            ));
         } else if checkpoint_status.sync_status == "desynchronized" {
             actions.push(format!("Checkpoint desynchronized (checkpoint: {} issues, database: {} issues). Run 'bead sync flush-only'.",
                 checkpoint_status.checkpoint_issue_count.unwrap_or(0),
@@ -810,25 +814,43 @@ impl StarvationDiagnostic {
 
         // If auto-repair was performed, report it
         if !repairs_performed.is_empty() {
-            actions.push(format!("AUTO-REPAIRED: Cleared stale assignees from {} beads", repairs_performed.len()));
+            actions.push(format!(
+                "AUTO-REPAIRED: Cleared stale assignees from {} beads",
+                repairs_performed.len()
+            ));
             for repair in repairs_performed {
-                actions.push(format!("  ✓ [{}] Cleared '{}' - {}", repair.bead_id, repair.previous_assignee, repair.reason));
+                actions.push(format!(
+                    "  ✓ [{}] Cleared '{}' - {}",
+                    repair.bead_id, repair.previous_assignee, repair.reason
+                ));
             }
         } else {
             // Only recommend manual action if auto-repair was not enabled
             let stale_count = stale_assignees.iter().filter(|s| s.should_clear).count();
             if stale_count > 0 {
-                actions.push(format!("Clear stale assignees from {} assigned-but-open beads", stale_count));
+                actions.push(format!(
+                    "Clear stale assignees from {} assigned-but-open beads",
+                    stale_count
+                ));
                 if !self.config.auto_repair {
-                    actions.push("  Option 1: Run with --auto-repair to clear automatically".to_string());
-                    actions.push("  Option 2: Manual 'bead update --clear-assignee' for each bead".to_string());
+                    actions.push(
+                        "  Option 1: Run with --auto-repair to clear automatically".to_string(),
+                    );
+                    actions.push(
+                        "  Option 2: Manual 'bead update --clear-assignee' for each bead"
+                            .to_string(),
+                    );
                 }
                 for sa in stale_assignees.iter().filter(|s| s.should_clear) {
-                    actions.push(format!("  - [{}] Clear assignee '{}'", sa.bead_id, sa.assignee));
+                    actions.push(format!(
+                        "  - [{}] Clear assignee '{}'",
+                        sa.bead_id, sa.assignee
+                    ));
                 }
             }
 
-            let assigned_count = excluded_beads.iter()
+            let assigned_count = excluded_beads
+                .iter()
                 .filter(|e| matches!(&e.reason, ExclusionReason::HasAssignee { .. }))
                 .count();
 
@@ -838,11 +860,16 @@ impl StarvationDiagnostic {
         }
 
         if summary.total_open_beads == 0 {
-            actions.push("No open beads found in database. Workspace may be idle or all work is complete.".to_string());
+            actions.push(
+                "No open beads found in database. Workspace may be idle or all work is complete."
+                    .to_string(),
+            );
         }
 
         if actions.is_empty() {
-            actions.push("No issues detected. Starvation may be transient or already resolved.".to_string());
+            actions.push(
+                "No issues detected. Starvation may be transient or already resolved.".to_string(),
+            );
         }
 
         actions
@@ -851,8 +878,8 @@ impl StarvationDiagnostic {
     /// Publish the diagnostic report to JSONL file
     fn publish_report(&self, report: &StarvationDiagnosticReport) -> Result<()> {
         let report_path = self.config.diagnostics_dir.join("starvation-report.jsonl");
-        let json_line = serde_json::to_string(report)
-            .context("Failed to serialize diagnostic report")?;
+        let json_line =
+            serde_json::to_string(report).context("Failed to serialize diagnostic report")?;
 
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -861,10 +888,12 @@ impl StarvationDiagnostic {
             .context("Failed to open diagnostic report file")?;
 
         use std::io::Write;
-        writeln!(file, "{}", json_line)
-            .context("Failed to write diagnostic report")?;
+        writeln!(file, "{}", json_line).context("Failed to write diagnostic report")?;
 
-        eprintln!("📋 Starvation diagnostic report published to {}", report_path.display());
+        eprintln!(
+            "📋 Starvation diagnostic report published to {}",
+            report_path.display()
+        );
 
         Ok(())
     }
@@ -879,12 +908,15 @@ impl StarvationDiagnostic {
 
         // Checkpoint is missing or invalid - requires manual checkpoint restore
         if report.checkpoint_status.sync_status == "missing"
-            || report.checkpoint_status.sync_status == "invalid" {
+            || report.checkpoint_status.sync_status == "invalid"
+        {
             return true;
         }
 
         // Stale assignees exist but auto-repair was disabled or failed
-        let stale_count = report.stale_assignees.iter()
+        let stale_count = report
+            .stale_assignees
+            .iter()
             .filter(|s| s.should_clear)
             .count();
 
@@ -907,7 +939,10 @@ impl StarvationDiagnostic {
     /// Create a starvation-resolution bead when unrecoverable conditions are detected
     /// This creates a claimable bead for agents (not a human-blocked repair bead)
     fn create_repair_bead(&self, report: &StarvationDiagnosticReport) -> Result<String> {
-        let workspace_path = self.config.db_path.parent()
+        let workspace_path = self
+            .config
+            .db_path
+            .parent()
             .and_then(|p| p.parent())
             .unwrap_or_else(|| Path::new("."));
 
@@ -927,7 +962,9 @@ impl StarvationDiagnostic {
             workspace_path.display()
         );
 
-        notes.push_str("**Purpose:** This bead contains a clear action plan to resolve bead starvation.\n\n");
+        notes.push_str(
+            "**Purpose:** This bead contains a clear action plan to resolve bead starvation.\n\n",
+        );
         notes.push_str("**Agents should claim this bead to execute the resolution steps.**\n\n");
 
         // Problem statement
@@ -960,16 +997,21 @@ impl StarvationDiagnostic {
 
         // Checkpoint status
         notes.push_str("### Checkpoint Status\n");
-        notes.push_str(&format!("- **Status:** {}\n", report.checkpoint_status.sync_status));
-        notes.push_str(&format!("- **Exists:** {}\n", report.checkpoint_status.checkpoint_exists));
+        notes.push_str(&format!(
+            "- **Status:** {}\n",
+            report.checkpoint_status.sync_status
+        ));
+        notes.push_str(&format!(
+            "- **Exists:** {}\n",
+            report.checkpoint_status.checkpoint_exists
+        ));
         if let Some(minutes) = report.checkpoint_status.stale_minutes {
             notes.push_str(&format!("- **Stale by:** {} minutes\n", minutes));
         }
         if let Some(cp_count) = report.checkpoint_status.checkpoint_issue_count {
             notes.push_str(&format!(
                 "- **Issue count:** checkpoint={}, database={}\n",
-                cp_count,
-                report.checkpoint_status.database_issue_count
+                cp_count, report.checkpoint_status.database_issue_count
             ));
         }
         notes.push_str("\n");
@@ -992,7 +1034,10 @@ impl StarvationDiagnostic {
         // Attempted repairs
         if !report.repairs_performed.is_empty() {
             notes.push_str("## Auto-Repair Results\n\n");
-            notes.push_str(&format!("Auto-repair performed {} actions:\n", report.repairs_performed.len()));
+            notes.push_str(&format!(
+                "Auto-repair performed {} actions:\n",
+                report.repairs_performed.len()
+            ));
             for repair in &report.repairs_performed {
                 notes.push_str(&format!(
                     "- ✅ [{}] Cleared assignee `{}` - {}\n",
@@ -1010,7 +1055,10 @@ impl StarvationDiagnostic {
 
         // Step 1: Address database corruption if detected
         if report.integrity_check.corruption_detected {
-            notes.push_str(&format!("{}. **URGENT: Address database corruption**\n", step_num));
+            notes.push_str(&format!(
+                "{}. **URGENT: Address database corruption**\n",
+                step_num
+            ));
             notes.push_str("   - Run `bead doctor --repair` to attempt automatic repair\n");
             notes.push_str("   - If repair fails, restore from checkpoint: `bead sync import-only --input .beads/checkpoint/forensic.jsonl --restore-into-empty --actor <you>`\n");
             notes.push_str("   - Verify database integrity before proceeding\n\n");
@@ -1018,7 +1066,9 @@ impl StarvationDiagnostic {
         }
 
         // Step 2: Address checkpoint issues
-        if report.checkpoint_status.sync_status == "missing" || report.checkpoint_status.sync_status == "invalid" {
+        if report.checkpoint_status.sync_status == "missing"
+            || report.checkpoint_status.sync_status == "invalid"
+        {
             notes.push_str(&format!("{}. **Fix checkpoint issues**\n", step_num));
             notes.push_str("   - Create fresh checkpoint: `bead sync flush-only`\n");
             notes.push_str("   - Verify checkpoint was created successfully\n\n");
@@ -1026,18 +1076,30 @@ impl StarvationDiagnostic {
         } else if report.checkpoint_status.sync_status == "stale" {
             notes.push_str(&format!("{}. **Update stale checkpoint**\n", step_num));
             notes.push_str(&format!("   - Sync checkpoint: `bead sync flush-only`\n"));
-            notes.push_str(&format!("   - Checkpoint is stale by {} minutes\n\n", report.checkpoint_status.stale_minutes.unwrap_or(0)));
+            notes.push_str(&format!(
+                "   - Checkpoint is stale by {} minutes\n\n",
+                report.checkpoint_status.stale_minutes.unwrap_or(0)
+            ));
             step_num += 1;
         }
 
         // Step 3: Clear stale assignees
-        let stale_count = report.stale_assignees.iter().filter(|s| s.should_clear).count();
+        let stale_count = report
+            .stale_assignees
+            .iter()
+            .filter(|s| s.should_clear)
+            .count();
         if stale_count > 0 {
             notes.push_str(&format!("{}. **Clear stale assignees**\n", step_num));
-            notes.push_str(&format!("   - Clear assignees from {} beads with inactive workers:\n", stale_count));
+            notes.push_str(&format!(
+                "   - Clear assignees from {} beads with inactive workers:\n",
+                stale_count
+            ));
             for sa in report.stale_assignees.iter().filter(|s| s.should_clear) {
-                notes.push_str(&format!("     - `bead update {} --clear-assignee` (worker: {})\n",
-                    sa.bead_id, sa.assignee));
+                notes.push_str(&format!(
+                    "     - `bead update {} --clear-assignee` (worker: {})\n",
+                    sa.bead_id, sa.assignee
+                ));
             }
             notes.push_str("\n");
             step_num += 1;
@@ -1056,19 +1118,28 @@ impl StarvationDiagnostic {
         notes.push_str("   - `bead close <this-bead-id> --reason 'Starvation resolved - ready frontier populated'\n\n");
 
         notes.push_str("---\n\n");
-        notes.push_str("*This resolution plan was auto-generated by the starvation diagnostic system.*\n");
+        notes.push_str(
+            "*This resolution plan was auto-generated by the starvation diagnostic system.*\n",
+        );
 
         // Create the bead using the bead CLI
         let output = Command::new("bead")
             .args([
                 "create",
-                "--title", &title,
-                "--priority", "3", // Priority 3 for agent-claimable resolution beads
-                "--issue-type", "task",
-                "--label", "starvation-resolution",
-                "--label", "auto-generated",
-                "--label", "agent-claimable",
-                "--label", &format!("cause-{}", report.summary.primary_cause),
+                "--title",
+                &title,
+                "--priority",
+                "3", // Priority 3 for agent-claimable resolution beads
+                "--issue-type",
+                "task",
+                "--label",
+                "starvation-resolution",
+                "--label",
+                "auto-generated",
+                "--label",
+                "agent-claimable",
+                "--label",
+                &format!("cause-{}", report.summary.primary_cause),
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1091,7 +1162,8 @@ impl StarvationDiagnostic {
             .map(|id| format!("irrevers-{}", id.trim().trim_end_matches(':')))
             .or_else(|| {
                 // Fallback: extract ID from any line containing "irrevers-"
-                stdout.lines()
+                stdout
+                    .lines()
                     .find(|line| line.contains("irrevers-"))
                     .and_then(|line| line.split("irrevers-").nth(1))
                     .map(|id| format!("irrevers-{}", id.trim()))
@@ -1103,10 +1175,7 @@ impl StarvationDiagnostic {
 
         // Now add the notes via bead update
         let update_output = Command::new("bead")
-            .args([
-                "update", &bead_id,
-                "--notes", &notes,
-            ])
+            .args(["update", &bead_id, "--notes", &notes])
             .current_dir(workspace_path)
             .output()
             .context("Failed to update bead description")?;
@@ -1124,17 +1193,29 @@ impl StarvationDiagnostic {
     /// Print a human-readable summary of the diagnostic
     pub fn print_summary(&self, report: &StarvationDiagnosticReport) {
         println!("\n=== Starvation Diagnostic Report ===\n");
-        println!("Timestamp: {}", report.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "Timestamp: {}",
+            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        );
         println!("Total open beads: {}", report.summary.total_open_beads);
         println!("Ready beads: {}", report.summary.ready_beads);
         println!("Invisible beads: {}", report.summary.invisible_beads);
-        println!("Starvation detected: {}", report.summary.starvation_detected);
+        println!(
+            "Starvation detected: {}",
+            report.summary.starvation_detected
+        );
         println!("Primary cause: {}", report.summary.primary_cause);
 
         if !report.excluded_beads.is_empty() {
             println!("\n--- Excluded Beads ---");
             for (i, exclusion) in report.excluded_beads.iter().enumerate() {
-                println!("{}. [{}] {} - {}", i + 1, exclusion.bead_id, exclusion.bead_title, exclusion.description);
+                println!(
+                    "{}. [{}] {} - {}",
+                    i + 1,
+                    exclusion.bead_id,
+                    exclusion.bead_title,
+                    exclusion.description
+                );
             }
         }
 
@@ -1145,17 +1226,31 @@ impl StarvationDiagnostic {
             println!("Stale by: {} minutes", minutes);
         }
         if let Some(cp_count) = report.checkpoint_status.checkpoint_issue_count {
-            println!("Issues: checkpoint={}, database={}",
-                cp_count, report.checkpoint_status.database_issue_count);
+            println!(
+                "Issues: checkpoint={}, database={}",
+                cp_count, report.checkpoint_status.database_issue_count
+            );
         }
 
         if !report.stale_assignees.is_empty() {
             println!("\n--- Stale Assignees ---");
             for (i, sa) in report.stale_assignees.iter().enumerate() {
                 if sa.should_clear {
-                    println!("{}. [{}] {} assigned to {} (INACTIVE)", i + 1, sa.bead_id, sa.bead_title, sa.assignee);
+                    println!(
+                        "{}. [{}] {} assigned to {} (INACTIVE)",
+                        i + 1,
+                        sa.bead_id,
+                        sa.bead_title,
+                        sa.assignee
+                    );
                 } else {
-                    println!("{}. [{}] {} assigned to {} (active)", i + 1, sa.bead_id, sa.bead_title, sa.assignee);
+                    println!(
+                        "{}. [{}] {} assigned to {} (active)",
+                        i + 1,
+                        sa.bead_id,
+                        sa.bead_title,
+                        sa.assignee
+                    );
                 }
             }
         }
@@ -1164,10 +1259,18 @@ impl StarvationDiagnostic {
             println!("\n--- Auto-Repair Results ---");
             println!("Repairs performed: {}", report.repairs_performed.len());
             for (i, repair) in report.repairs_performed.iter().enumerate() {
-                println!("{}. [{}] {} - Cleared '{}'",
-                    i + 1, repair.bead_id, repair.bead_title, repair.previous_assignee);
+                println!(
+                    "{}. [{}] {} - Cleared '{}'",
+                    i + 1,
+                    repair.bead_id,
+                    repair.bead_title,
+                    repair.previous_assignee
+                );
                 println!("   Reason: {}", repair.reason);
-                println!("   Timestamp: {}", repair.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+                println!(
+                    "   Timestamp: {}",
+                    repair.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                );
             }
         }
 
@@ -1175,7 +1278,10 @@ impl StarvationDiagnostic {
         println!("Readable: {}", report.integrity_check.database_readable);
         println!("Schema valid: {}", report.integrity_check.schema_valid);
         println!("Indexes valid: {}", report.integrity_check.indexes_valid);
-        println!("Corruption detected: {}", report.integrity_check.corruption_detected);
+        println!(
+            "Corruption detected: {}",
+            report.integrity_check.corruption_detected
+        );
 
         if !report.integrity_check.issues.is_empty() {
             println!("Issues:");
