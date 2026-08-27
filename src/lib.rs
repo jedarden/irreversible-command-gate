@@ -50,5 +50,8 @@ pub mod bead_database_integrity_service;
 // Automated bead frontier consistency checker and repair service
 pub mod frontier_consistency_service;
 
+// Cascading repair strategies for starvation recovery
+pub mod cascading_repair;
+
 // Pluck query debugging system (SQL-level progressive filter relaxation)
 pub mod pluck_query_debugger;

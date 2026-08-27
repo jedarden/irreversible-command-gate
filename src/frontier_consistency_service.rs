@@ -25,6 +25,8 @@ use std::process::Command;
 use std::time::Duration;
 use tokio::time::interval;
 
+use crate::cascading_repair::{CascadingRepairConfig, CascadingRepairReport, CascadingRepairService};
+
 /// Configuration for the frontier consistency service
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrontierConsistencyServiceConfig {
@@ -305,6 +307,12 @@ pub struct ConsistencyCycleReport {
 
     /// Alert reason (if triggered)
     pub alert_reason: Option<String>,
+
+    /// Cascading repair was triggered (ready beads = 0 after primary repairs)
+    pub cascading_repair_triggered: bool,
+
+    /// Cascading repair report (if triggered)
+    pub cascading_repair_report: Option<CascadingRepairReport>,
 }
 
 /// Structured event for .beads/events.jsonl monitoring
@@ -350,6 +358,15 @@ struct FrontierConsistencyEvent {
 
     /// Auto-repair was enabled for this cycle
     auto_repair_enabled: bool,
+
+    /// Cascading repair was triggered
+    cascading_repair_triggered: bool,
+
+    /// Cascading repair succeeded
+    cascading_repair_success: bool,
+
+    /// Ready bead count after cascading repair
+    cascading_repair_ready_beads_after: usize,
 }
 
 /// Bead database frontier consistency service
@@ -434,6 +451,53 @@ impl FrontierConsistencyService {
             (false, None)
         };
 
+        // Trigger cascading repair if ready bead count is 0 after primary repairs
+        let (cascading_repair_triggered, cascading_repair_report) = if ready_beads.is_empty() && !discrepancies.is_empty() {
+            eprintln!("🚨 STARVATION DETECTED: 0 ready beads after primary repairs - triggering cascading repair");
+
+            // Create cascading repair config from current config
+            let cascading_config = CascadingRepairConfig {
+                workspace_path: self.config.workspace_path.clone(),
+                ..Default::default()
+            };
+
+            let mut cascading_service = CascadingRepairService::new(cascading_config);
+
+            match cascading_service.execute_cascading_repair() {
+                Ok(report) => {
+                    eprintln!("📊 Cascading repair complete: {} -> {} ready beads",
+                        report.ready_beads_before, report.ready_beads_after);
+
+                    // Re-verify ready frontier after cascading repair
+                    let updated_ready_beads = self.get_ready_frontier()?;
+                    eprintln!("✅ Verified ready bead count after cascading repair: {}", updated_ready_beads.len());
+
+                    (true, Some(report))
+                }
+                Err(e) => {
+                    eprintln!("❌ Cascading repair failed: {:#}", e);
+                    (true, None) // Triggered but failed
+                }
+            }
+        } else {
+            (false, None)
+        };
+
+        // Update ready bead count after cascading repair if it was triggered and successful
+        let final_ready_beads = if cascading_repair_triggered {
+            if let Some(ref report) = cascading_repair_report {
+                if report.overall_success {
+                    report.ready_beads_after
+                } else {
+                    ready_beads.len()
+                }
+            } else {
+                ready_beads.len()
+            }
+        } else {
+            ready_beads.len()
+        };
+
         let cycle_end = Utc::now();
         let duration = cycle_end.signed_duration_since(cycle_start);
 
@@ -442,7 +506,7 @@ impl FrontierConsistencyService {
             cycle_end,
             duration_seconds: duration.num_seconds() as f64 + duration.num_milliseconds() as f64 / 1000.0,
             total_database_beads: database_beads.len(),
-            total_ready_beads: ready_beads.len(),
+            total_ready_beads: final_ready_beads,
             discrepancies,
             diagnoses,
             repairs,
@@ -450,6 +514,8 @@ impl FrontierConsistencyService {
             persistent_reports,
             alert_triggered,
             alert_reason,
+            cascading_repair_triggered,
+            cascading_repair_report,
         };
 
         // Publish report to log file
@@ -936,6 +1002,13 @@ impl FrontierConsistencyService {
             alert_triggered: report.alert_triggered,
             alert_reason: report.alert_reason.clone(),
             auto_repair_enabled: self.config.auto_repair_enabled,
+            cascading_repair_triggered: report.cascading_repair_triggered,
+            cascading_repair_success: report.cascading_repair_report.as_ref()
+                .map(|r| r.overall_success)
+                .unwrap_or(false),
+            cascading_repair_ready_beads_after: report.cascading_repair_report.as_ref()
+                .map(|r| r.ready_beads_after)
+                .unwrap_or(0),
         };
 
         let json_line = serde_json::to_string(&event)
@@ -1098,6 +1171,8 @@ mod tests {
             persistent_reports: vec![],
             alert_triggered: false,
             alert_reason: None,
+            cascading_repair_triggered: false,
+            cascading_repair_report: None,
         };
 
         let json = serde_json::to_string(&report).unwrap();
