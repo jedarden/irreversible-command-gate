@@ -27,9 +27,33 @@
       "id": "safe-git-branch",
       "type": "command_regex",
       "regex": "^git branch"
+    },
+    {
+      "id": "safe-git-credential-fill-captured",
+      "type": "command_regex",
+      "regex": "(?i)[A-Za-z_][A-Za-z0-9_]*=\\$\\([^\\n]*git\\s+credential\\s+fill\\b"
+    },
+    {
+      "id": "safe-git-credential-fill-redirected",
+      "type": "command_regex",
+      "regex": "(?i)\\bgit\\s+credential\\s+fill\\b[^\\n]*>"
     }
   ],
   "guarded_patterns": [
+    {
+      "id": "git-credential-fill-bare-stdout",
+      "type": "command_regex",
+      "regex": "(?i)\\bgit\\s+credential\\s+fill\\b",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "git credential fill queries the configured credential helper and prints the resolved username AND PASSWORD in plaintext to stdout. Run bare -- even 'just to check it works' or to debug a hang -- the credential value lands directly in the agent transcript, shell history, and any process capturing the terminal, and cannot be un-printed. This happened for real on 2026-08-27: a live Forgejo PAT was printed in full to an agent transcript while debugging a curl auth header, requiring rotation.",
+      "destructive": false,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "git credential fill prints 'password=<value>' to stdout -- never invoke it bare, even for a quick debug check. Capture the whole invocation into a shell variable and only ever reference the variable, never its expansion: TOKEN=$(git credential fill <<< $'protocol=https\\nhost=<host>\\n' | sed -n 's/^password=//p'); then use \"$TOKEN\" (e.g. in a curl -H header) without ever printing it.",
+        "rewrite_template": null
+      }
+    },
     {
       "id": "git-force-push",
       "type": "command_regex",
