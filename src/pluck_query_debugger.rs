@@ -273,6 +273,8 @@ impl PluckQueryDebugger {
             .map(|r| r.visible_beads.len())
             .unwrap_or(0);
 
+        // Starvation exists when there are open beads that are invisible from the ready frontier
+        // If total_open_beads == 0, the frontier is empty - not starved
         let starvation_detected = total_open_beads > 0 && ready_frontier_count == 0;
 
         // Perform per-bead exclusion analysis
