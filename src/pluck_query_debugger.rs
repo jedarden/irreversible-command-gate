@@ -307,13 +307,18 @@ impl PluckQueryDebugger {
         Ok(report)
     }
 
-    /// Count total open/in_progress beads in database
+    /// Count total open beads in database (excludes in_progress beads)
+    ///
+    /// Only counts 'open' beads because starvation is about open beads not
+    /// appearing in the ready frontier. in_progress beads are correctly
+    /// excluded from the ready frontier (they're being worked on), so they
+    /// should NOT trigger starvation alerts.
     fn count_total_open_beads(&self) -> Result<usize> {
         let conn = Connection::open(&self.config.db_path)
             .context("Failed to open database")?;
 
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM issues WHERE base_status IN ('open', 'in_progress')",
+            "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
             [],
             |row| row.get(0),
         )?;
