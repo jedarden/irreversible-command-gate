@@ -1038,16 +1038,7 @@ mod tests {
         let reason = service.determine_exclusion_reason(&bead, &[]);
         assert_eq!(reason, "Manually blocked");
 
-        // Test assigned
-        let bead_assigned = DatabaseBead {
-            assignee: Some("worker-1".to_string()),
-            manual_blocked: 0,
-            ..bead
-        };
-        let reason = service.determine_exclusion_reason(&bead_assigned, &[]);
-        assert!(reason.contains("Assigned to worker-1"));
-
-        // Test blocked by dependencies
+        // Test unassigned with dependencies (before assigning)
         let deps = vec![
             BeadDependency {
                 blocked_issue_id: "test-1".to_string(),
@@ -1058,10 +1049,19 @@ mod tests {
         let bead_unassigned = DatabaseBead {
             assignee: None,
             manual_blocked: 0,
-            ..bead
+            ..bead.clone()
         };
         let reason = service.determine_exclusion_reason(&bead_unassigned, &deps);
         assert!(reason.contains("Blocked by dependencies"));
+
+        // Test assigned (use the original bead since we haven't moved it yet)
+        let bead_assigned = DatabaseBead {
+            assignee: Some("worker-1".to_string()),
+            manual_blocked: 0,
+            ..bead
+        };
+        let reason = service.determine_exclusion_reason(&bead_assigned, &[]);
+        assert!(reason.contains("Assigned to worker-1"));
     }
 
     #[test]
