@@ -616,7 +616,19 @@ mod tests {
             },
         );
 
-        let validator = DependencyValidator::new().unwrap();
+        // resolve_cycle only reads its own arguments, but the constructor
+        // requires a real db_path to exist -- give it an isolated one
+        // instead of relying on whatever .beads/beads.db happens to be in
+        // the working directory (absent in a fresh CI clone).
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("beads.db");
+        Connection::open(&db_path).unwrap();
+        let config = ValidatorConfig {
+            db_path,
+            events_path: temp_dir.path().join("events.jsonl"),
+            dry_run: true,
+        };
+        let validator = DependencyValidator::with_config(config).unwrap();
         let cycle = vec!["a".to_string(), "b".to_string(), "c".to_string()];
 
         let result = validator.resolve_cycle(&cycle, &beads);
