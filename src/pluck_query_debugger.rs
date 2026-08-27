@@ -820,10 +820,9 @@ impl PluckQueryDebugger {
 
     /// File a diagnostic bead for detected filter issues
     fn file_diagnostic_bead(&self, report: &PluckQueryDebugReport) -> Result<()> {
-        let workspace_path = self.config.diagnostics_dir
-            .parent()
-            .and_then(|p| p.parent())
-            .ok_or_else(|| anyhow!("Failed to determine workspace path from diagnostics path"))?;
+        // Use current working directory as workspace path
+        let workspace_path = std::env::current_dir()
+            .context("Failed to get current working directory")?;
 
         // Generate bead title with key information
         let title = format!(
@@ -841,8 +840,13 @@ impl PluckQueryDebugger {
         // Build notes with detailed diagnostic information
         let notes = self.generate_diagnostic_notes(report);
 
-        // Construct the bead create command
-        let output = Command::new("bead")
+        // Construct the bead create command - use full path to bead command
+        let bead_path = std::env::var("CARGO_HOME")
+            .map(|cargo_home| format!("{}/bin/bead", cargo_home))
+            .unwrap_or_else(|_| "/home/coding/.cargo/bin/bead".to_string());
+
+        // Step 1: Create the bead (notes must be added via update)
+        let output = Command::new(&bead_path)
             .args([
                 "create",
                 "--title", &title,
@@ -853,9 +857,8 @@ impl PluckQueryDebugger {
                 "--label", "pluck-filter",
                 "--label", "x",  // Mark as needing attention
                 "--description", &description,
-                "--notes", &notes,
             ])
-            .current_dir(workspace_path)
+            .current_dir(&workspace_path)
             .output()
             .context("Failed to execute bead create command")?;
 
@@ -874,8 +877,27 @@ impl PluckQueryDebugger {
         // Extract bead ID from output - format is usually just the ID
         let bead_id = stdout.lines().next().map(|s| s.trim().to_string());
 
+        // Step 2: Add notes via update (if bead was created successfully)
         if let Some(ref id) = bead_id {
             eprintln!("📋 Auto-filed diagnostic bead: {}", id);
+
+            // Update the bead with notes
+            let update_output = Command::new(&bead_path)
+                .args([
+                    "update",
+                    id,
+                    "--notes", &notes,
+                ])
+                .current_dir(&workspace_path)
+                .output()
+                .context("Failed to execute bead update command for notes")?;
+
+            if !update_output.status.success() {
+                let stderr = String::from_utf8_lossy(&update_output.stderr);
+                eprintln!("⚠️  Warning: bead update for notes failed (bead still created): {}", stderr);
+            } else {
+                eprintln!("📝 Added diagnostic notes to bead: {}", id);
+            }
         }
 
         Ok(())
