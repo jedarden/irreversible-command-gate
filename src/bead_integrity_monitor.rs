@@ -699,7 +699,7 @@ impl IntegrityMonitor {
             }
 
             for (assignee, count) in &metrics.beads_by_assignee {
-                let assignee_safe = assignee.replace('-', "_").replace(':', "_");
+                let assignee_safe = assignee.replace(['-', ':'], "_");
                 output.push_str(&format!(
                     "icg_beads_by_assignee{{assignee=\"{}\"}} {}\n",
                     assignee_safe, count
@@ -995,7 +995,7 @@ async fn handle_http_connection(
                     ));
                 }
                 for (assignee, count) in &bead_metrics.beads_by_assignee {
-                    let assignee_safe = assignee.replace('-', "_").replace(':', "_");
+                    let assignee_safe = assignee.replace(['-', ':'], "_");
                     full_metrics.push_str(&format!(
                         "icg_beads_by_assignee{{assignee=\"{}\"}} {}\n",
                         assignee_safe, count
@@ -1040,7 +1040,7 @@ async fn handle_http_connection(
         _ => (404, "Not Found", "text/plain", "Not found".to_string()),
     };
 
-    send_response(&mut stream, status_code, status_text, &content_type, &body).await
+    send_response(&mut stream, status_code, status_text, content_type, &body).await
 }
 
 /// Send an HTTP response
@@ -1074,7 +1074,6 @@ async fn send_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_default_config() {

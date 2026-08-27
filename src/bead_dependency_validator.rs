@@ -272,7 +272,7 @@ impl DependencyValidator {
         for dep in dependencies {
             graph
                 .entry(dep.blocked_issue_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(dep.blocker_issue_id.clone());
         }
 
@@ -588,7 +588,7 @@ mod tests {
                 id: "a".to_string(),
                 title: "A".to_string(),
                 status: "open".to_string(),
-                created_at: DateTime::from_timestamp(1000, 0).unwrap().into(),
+                created_at: DateTime::from_timestamp(1000, 0).unwrap(),
                 assignee: None,
                 manual_blocked: false,
             },
@@ -599,7 +599,7 @@ mod tests {
                 id: "b".to_string(),
                 title: "B".to_string(),
                 status: "open".to_string(),
-                created_at: DateTime::from_timestamp(2000, 0).unwrap().into(),
+                created_at: DateTime::from_timestamp(2000, 0).unwrap(),
                 assignee: None,
                 manual_blocked: false,
             },
@@ -610,7 +610,7 @@ mod tests {
                 id: "c".to_string(),
                 title: "C".to_string(),
                 status: "open".to_string(),
-                created_at: DateTime::from_timestamp(1500, 0).unwrap().into(),
+                created_at: DateTime::from_timestamp(1500, 0).unwrap(),
                 assignee: None,
                 manual_blocked: false,
             },

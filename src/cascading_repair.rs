@@ -27,6 +27,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// (id, title, base_status, assignee, updated_at) row from an inactive-beads query
+type InactiveBeadRow = (String, String, String, Option<String>, String);
+
 /// Configuration for cascading repair strategies
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CascadingRepairConfig {
@@ -817,10 +820,7 @@ impl CascadingRepairService {
     }
 
     /// Find inactive beads (no activity in >48 hours)
-    fn find_inactive_beads(
-        &self,
-        cutoff_time: DateTime<Utc>,
-    ) -> Result<Vec<(String, String, String, Option<String>, String)>> {
+    fn find_inactive_beads(&self, cutoff_time: DateTime<Utc>) -> Result<Vec<InactiveBeadRow>> {
         let db_path = self.config.beads_db_path();
 
         let query = format!(
@@ -1004,7 +1004,7 @@ impl CascadingRepairService {
 
         let output = Command::new("sqlite3")
             .arg(&db_path)
-            .arg(&format!(
+            .arg(format!(
                 "SELECT name FROM labels WHERE issue_id = '{}'",
                 bead_id
             ))
@@ -1070,7 +1070,7 @@ impl CascadingRepairService {
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.config.events_path())
+            .open(self.config.events_path())
             .context("Failed to open events.jsonl for writing")?;
 
         use std::io::Write;

@@ -922,7 +922,7 @@ fn group_denials_by_period(
 
     for denial in denials {
         if let Ok(timestamp) = denial.timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
-            let hours_ago = (Utc::now() - timestamp).num_hours() as i64;
+            let hours_ago = (Utc::now() - timestamp).num_hours();
             if hours_ago >= 0 {
                 let period_index = (hours_ago / period_hours) as usize;
                 if period_index < num_periods {
@@ -964,7 +964,7 @@ fn calculate_trend(counts: &[usize]) -> String {
             change_percent as i32
         )
     } else {
-        format!("→ Stable (within normal variation)")
+        "→ Stable (within normal variation)".to_string()
     }
 }
 

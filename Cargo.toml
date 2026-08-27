@@ -3,6 +3,11 @@ name = "icg"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enables the continuous-monitoring run loops (Monitor/DatabaseIntegrity
+# `--once`-less mode). Off by default: not currently wired to any binary.
+monitoring = []
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

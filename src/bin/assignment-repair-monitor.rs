@@ -56,7 +56,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Validate workspace path
-    let workspace_path = if args.workspace_path == PathBuf::from(".") {
+    let workspace_path = if args.workspace_path == *"." {
         std::env::current_dir()?
     } else {
         args.workspace_path
@@ -137,7 +137,7 @@ fn main() -> Result<()> {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             // Set up Ctrl+C handler
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
             tokio::spawn(async move {
                 tokio::signal::ctrl_c()

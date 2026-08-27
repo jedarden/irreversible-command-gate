@@ -64,7 +64,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Query relaxation level
@@ -528,7 +528,7 @@ impl PluckQueryDebugger {
         for result in level_results {
             newly_visible_at_level
                 .entry(result.level)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .extend(result.newly_visible_beads.iter().cloned());
         }
 
@@ -686,10 +686,7 @@ impl PluckQueryDebugger {
             let blocker: String = row.get(0)?;
             Ok::<String, rusqlite::Error>(blocker)
         }) {
-            Ok(iter) => match iter.collect::<Result<Vec<String>, _>>() {
-                Ok(blockers) => blockers,
-                Err(_) => Vec::new(),
-            },
+            Ok(iter) => iter.collect::<Result<Vec<String>, _>>().unwrap_or_default(),
             Err(_) => Vec::new(),
         };
         x
@@ -756,7 +753,7 @@ impl PluckQueryDebugger {
                 for label in &analysis.labels {
                     label_counts
                         .entry(label.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(analysis.bead_id.clone());
                 }
             }
@@ -804,7 +801,7 @@ impl PluckQueryDebugger {
                 for blocker in &analysis.blocking_dependencies {
                     blocker_counts
                         .entry(blocker.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(analysis.bead_id.clone());
                 }
             }
@@ -1013,129 +1010,6 @@ impl PluckQueryDebugger {
         )
     }
 
-    /// Generate detailed diagnostic notes for the bead
-    fn generate_diagnostic_notes(&self, report: &PluckQueryDebugReport) -> String {
-        let mut notes = String::new();
-
-        notes.push_str("## Auto-Generated Diagnostic Report\n\n");
-        notes.push_str(&format!(
-            "**Generated at:** {}\n\n",
-            report.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
-        ));
-        notes.push_str(&format!("**Database:** {}\n\n", report.db_path));
-        notes.push_str(&format!(
-            "**Total open beads:** {}\n\n",
-            report.total_open_beads
-        ));
-        notes.push_str(&format!(
-            "**Ready frontier count:** {}\n\n",
-            report.ready_frontier_count
-        ));
-        notes.push_str(&format!(
-            "**Starvation detected:** {}\n\n",
-            report.starvation_detected
-        ));
-
-        // Query results by level
-        notes.push_str("## Query Results by Relaxation Level\n\n");
-        for result in &report.level_results {
-            notes.push_str(&format!(
-                "### Level {} - {}\n\n",
-                result.level as i32, result.level_description
-            ));
-            notes.push_str(&format!(
-                "- **Visible beads:** {}\n",
-                result.visible_beads.len()
-            ));
-            notes.push_str(&format!(
-                "- **Newly visible at this level:** {}\n",
-                result.newly_visible_beads.len()
-            ));
-            if !result.newly_visible_beads.is_empty() {
-                notes.push_str(&format!(
-                    "- **Bead IDs:** {:?}\n",
-                    result.newly_visible_beads
-                ));
-            }
-            notes.push_str("\n");
-        }
-
-        // Excluded beads analysis (top 10 to avoid overwhelming)
-        notes.push_str("## Sample of Excluded Beads (first 10)\n\n");
-        let excluded_analyses: Vec<_> = report
-            .bead_analyses
-            .iter()
-            .filter(|a| a.visible_at_level != Some(QueryLevel::Exact))
-            .take(10)
-            .collect();
-
-        for analysis in excluded_analyses {
-            notes.push_str(&format!(
-                "### [{}] {}\n\n",
-                analysis.bead_id, analysis.bead_title
-            ));
-            notes.push_str(&format!("- **Status:** {}\n", analysis.status));
-            if let Some(ref assignee) = analysis.assignee {
-                notes.push_str(&format!("- **Assignee:** {}\n", assignee));
-            }
-            if analysis.manual_blocked {
-                notes.push_str("- **Manually blocked:** Yes\n");
-            }
-            if !analysis.labels.is_empty() {
-                notes.push_str(&format!("- **Labels:** {:?}\n", analysis.labels));
-            }
-            if !analysis.blocking_dependencies.is_empty() {
-                notes.push_str(&format!(
-                    "- **Blocked by:** {:?}\n",
-                    analysis.blocking_dependencies
-                ));
-            }
-            if let Some(level) = analysis.visible_at_level {
-                notes.push_str(&format!(
-                    "- **Visible at:** Level {} ({})\n",
-                    level as i32,
-                    level.description()
-                ));
-            }
-            if let Some(ref filter) = analysis.excluded_by_filter {
-                notes.push_str(&format!("- **Excluded by:** {}\n", filter));
-            }
-            notes.push_str(&format!("- **Reason:** {}\n\n", analysis.exclusion_reason));
-        }
-
-        // Patterns and recommendations
-        if !report.exclusion_patterns.is_empty() {
-            notes.push_str("## Detected Patterns\n\n");
-            for (i, pattern) in report.exclusion_patterns.iter().enumerate() {
-                notes.push_str(&format!("{}. Pattern: {}\n", i + 1, pattern.pattern));
-                notes.push_str(&format!("   {}\n", pattern.description));
-                if !pattern.matching_beads.is_empty() {
-                    notes.push_str(&format!(
-                        "   **Affected beads:** {:?}\n",
-                        pattern.matching_beads
-                    ));
-                }
-                if let Some(ref fix) = pattern.suggested_fix {
-                    notes.push_str(&format!("   **Suggested fix:** {}\n", fix));
-                }
-                notes.push_str("\n");
-            }
-        }
-
-        if !report.recommended_fixes.is_empty() {
-            notes.push_str("## Recommended Fixes\n\n");
-            for (i, fix) in report.recommended_fixes.iter().enumerate() {
-                notes.push_str(&format!("{}. {}\n\n", i + 1, fix));
-            }
-        }
-
-        notes.push_str("---\n\n");
-        notes.push_str("*This bead was auto-generated by the Pluck query debugger.*\n");
-        notes.push_str("*Full diagnostic details available at: `.beads/diagnostics/pluck-query-debug-report.jsonl`*\n");
-
-        notes
-    }
-
     /// Generate action-oriented resolution notes for agents to execute
     fn generate_resolution_notes(&self, report: &PluckQueryDebugReport) -> String {
         let mut notes = String::new();
@@ -1234,7 +1108,7 @@ impl PluckQueryDebugger {
                     );
                 }
             }
-            notes.push_str("\n");
+            notes.push('\n');
         }
 
         // Detected Patterns
@@ -1252,7 +1126,7 @@ impl PluckQueryDebugger {
                 if let Some(ref fix) = pattern.suggested_fix {
                     notes.push_str(&format!("   **Suggested fix:** {}\n", fix));
                 }
-                notes.push_str("\n");
+                notes.push('\n');
             }
         }
 
@@ -1330,7 +1204,7 @@ impl PluckQueryDebugger {
                     ));
                 }
             }
-            notes.push_str("\n");
+            notes.push('\n');
         }
 
         if has_label_issues {
@@ -1347,7 +1221,7 @@ impl PluckQueryDebugger {
                     analysis.bead_id, analysis.labels
                 ));
             }
-            notes.push_str("\n");
+            notes.push('\n');
         }
 
         if has_dep_issues {
@@ -1364,7 +1238,7 @@ impl PluckQueryDebugger {
                     ));
                 }
             }
-            notes.push_str("\n");
+            notes.push('\n');
         }
 
         step_num += 1;

@@ -64,7 +64,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::interval;
 
@@ -337,7 +337,7 @@ impl DependencyCycleMonitor {
 
         // Open database connection
         let conn =
-            Connection::open(&self.config.beads_db_path()).context("Failed to open database")?;
+            Connection::open(self.config.beads_db_path()).context("Failed to open database")?;
 
         // Step 1: Load all beads
         let beads = self.load_beads(&conn)?;
@@ -449,7 +449,7 @@ impl DependencyCycleMonitor {
         for dep in dependencies {
             graph
                 .entry(dep.blocked_issue_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(dep.blocker_issue_id.clone());
         }
 
@@ -641,10 +641,10 @@ impl DependencyCycleMonitor {
                 bead_title: cycle
                     .cycle
                     .first()
-                    .and_then(|id| {
+                    .and_then(|_id| {
                         conn.query_row(
                             "SELECT title FROM issues WHERE id = ?1",
-                            &[&cycle.bead_to_modify],
+                            [&cycle.bead_to_modify],
                             |row| row.get(0),
                         )
                         .ok()
@@ -778,7 +778,7 @@ impl DependencyCycleMonitor {
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.config.events_path())
+            .open(self.config.events_path())
             .context("Failed to open events.jsonl for writing")?;
 
         writeln!(file, "{}", event).context("Failed to write repair event to events.jsonl")?;

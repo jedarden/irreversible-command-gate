@@ -705,7 +705,7 @@ impl FrontierConsistencyService {
 
         let output = Command::new("sqlite3")
             .arg(&db_path)
-            .arg(&format!(
+            .arg(format!(
                 "SELECT blocked_issue_id, blocker_issue_id, kind
                  FROM dependencies
                  WHERE blocked_issue_id = '{}' AND kind = 'blocks'",
@@ -749,8 +749,8 @@ impl FrontierConsistencyService {
             return "Manually blocked".to_string();
         }
 
-        if bead.assignee.is_some() {
-            return format!("Assigned to {}", bead.assignee.as_ref().unwrap());
+        if let Some(assignee) = &bead.assignee {
+            return format!("Assigned to {}", assignee);
         }
 
         if !blocking_dependencies.is_empty() {
@@ -966,7 +966,7 @@ impl FrontierConsistencyService {
 
         let output = Command::new("sqlite3")
             .arg(&db_path)
-            .arg(&format!(
+            .arg(format!(
                 "SELECT name FROM labels WHERE issue_id = '{}'",
                 bead_id
             ))

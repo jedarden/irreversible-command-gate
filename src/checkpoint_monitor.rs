@@ -58,12 +58,11 @@
 //! - Repairs are logged to events.jsonl for audit trail
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration as StdDuration;
 use tokio::time::interval;
@@ -344,9 +343,7 @@ impl CheckpointMonitor {
         let database_health = self.check_database_health()?;
 
         // Determine overall health status
-        let health_status = if database_health.corrupted {
-            "critical".to_string()
-        } else if checkpoint_sync.corrupted {
+        let health_status = if database_health.corrupted || checkpoint_sync.corrupted {
             "critical".to_string()
         } else if !checkpoint_sync.checkpoint_exists {
             "warning".to_string()
@@ -504,9 +501,7 @@ impl CheckpointMonitor {
             "invalid".to_string()
         } else if stale {
             "stale".to_string()
-        } else if drift_count > 0 {
-            "desynchronized".to_string()
-        } else if checkpoint_issue_count != Some(database_issue_count) {
+        } else if drift_count > 0 || checkpoint_issue_count != Some(database_issue_count) {
             "desynchronized".to_string()
         } else {
             "synchronized".to_string()
@@ -1160,7 +1155,6 @@ impl Default for CheckpointMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_default_config() {

@@ -372,26 +372,6 @@ impl StarvationDiagnostic {
         Ok(beads)
     }
 
-    /// Load dependencies for a specific bead
-    fn load_bead_dependencies(&self, bead_id: &str) -> Result<Vec<String>> {
-        let conn = Connection::open(&self.config.db_path).context("Failed to open database")?;
-
-        let mut stmt = conn.prepare(
-            "SELECT blocker_issue_id
-             FROM dependencies
-             WHERE blocked_issue_id = ?1 AND kind = 'blocks'",
-        )?;
-
-        let blockers = stmt
-            .query_and_then(params![bead_id], |row| {
-                let blocker: String = row.get(0)?;
-                Ok(blocker)
-            })?
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(blockers)
-    }
-
     /// Replay Pluck's filter logic with detailed logging
     fn replay_pluck_filter(&self, open_beads: &[BeadState]) -> Result<Vec<BeadExclusion>> {
         let mut excluded = Vec::new();
@@ -559,7 +539,7 @@ impl StarvationDiagnostic {
         // We check if any running process matches the worker name pattern
         // by querying the process table via ps(1)
 
-        let output = match Command::new("ps").args(&["aux", "--sort=-pid"]).output() {
+        let output = match Command::new("ps").args(["aux", "--sort=-pid"]).output() {
             Ok(output) => output,
             Err(e) => {
                 eprintln!("Warning: Failed to run ps to check worker status: {}", e);
@@ -993,7 +973,7 @@ impl StarvationDiagnostic {
         } else {
             notes.push_str("✅ Database integrity OK\n");
         }
-        notes.push_str("\n");
+        notes.push('\n');
 
         // Checkpoint status
         notes.push_str("### Checkpoint Status\n");
@@ -1014,7 +994,7 @@ impl StarvationDiagnostic {
                 cp_count, report.checkpoint_status.database_issue_count
             ));
         }
-        notes.push_str("\n");
+        notes.push('\n');
 
         // Stale assignees
         if !report.stale_assignees.is_empty() {
@@ -1028,7 +1008,7 @@ impl StarvationDiagnostic {
                     ));
                 }
             }
-            notes.push_str("\n");
+            notes.push('\n');
         }
 
         // Attempted repairs
@@ -1044,7 +1024,7 @@ impl StarvationDiagnostic {
                     repair.bead_id, repair.previous_assignee, repair.reason
                 ));
             }
-            notes.push_str("\n");
+            notes.push('\n');
         }
 
         // Clear action plan
@@ -1075,7 +1055,7 @@ impl StarvationDiagnostic {
             step_num += 1;
         } else if report.checkpoint_status.sync_status == "stale" {
             notes.push_str(&format!("{}. **Update stale checkpoint**\n", step_num));
-            notes.push_str(&format!("   - Sync checkpoint: `bead sync flush-only`\n"));
+            notes.push_str("   - Sync checkpoint: `bead sync flush-only`\n");
             notes.push_str(&format!(
                 "   - Checkpoint is stale by {} minutes\n\n",
                 report.checkpoint_status.stale_minutes.unwrap_or(0)
@@ -1101,7 +1081,7 @@ impl StarvationDiagnostic {
                     sa.bead_id, sa.assignee
                 ));
             }
-            notes.push_str("\n");
+            notes.push('\n');
             step_num += 1;
         }
 

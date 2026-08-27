@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 use tokio::time::interval;
@@ -421,7 +421,7 @@ impl AssignmentRepairMonitor {
     /// Check if a worker process is still alive
     fn check_worker_alive(&self, worker_name: &str) -> Result<WorkerStatus> {
         // Method 1: Try ps aux (most portable)
-        let ps_output = match Command::new("ps").args(&["aux", "--sort=-pid"]).output() {
+        let ps_output = match Command::new("ps").args(["aux", "--sort=-pid"]).output() {
             Ok(output) => String::from_utf8_lossy(&output.stdout).to_string(),
             Err(_) => {
                 // If ps fails, try /proc reading on Linux
@@ -642,7 +642,7 @@ impl AssignmentRepairMonitor {
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.config.events_path())
+            .open(self.config.events_path())
             .context("Failed to open events.jsonl for writing")?;
 
         writeln!(file, "{}", event).context("Failed to write repair event to events.jsonl")?;
