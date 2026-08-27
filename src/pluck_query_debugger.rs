@@ -542,7 +542,6 @@ impl PluckQueryDebugger {
                         &labels,
                         &blocking_dependencies,
                         level,
-                        &newly_visible_at_level,
                     )
                 }
             } else {
@@ -572,16 +571,7 @@ impl PluckQueryDebugger {
         labels: &[String],
         blocking_dependencies: &[String],
         visible_at_level: QueryLevel,
-        newly_visible_at_level: &HashMap<QueryLevel, HashSet<String>>,
     ) -> (Option<&'static str>, String) {
-        // Check if this bead was newly visible at its level
-        if let Some(newly_visible) = newly_visible_at_level.get(&visible_at_level) {
-            if !newly_visible.contains(&bead.id) {
-                // Not newly visible, so it was excluded by a filter at a higher level
-                return (None, "Excluded by unknown filter".to_string());
-            }
-        }
-
         match visible_at_level {
             QueryLevel::Exact => {
                 (None, "Visible in ready frontier".to_string())
@@ -619,8 +609,16 @@ impl PluckQueryDebugger {
                 }
             }
             QueryLevel::Raw => {
-                // Should not happen - all beads should be visible at Raw level
-                (Some("unknown"), "Excluded by unknown filter".to_string())
+                // Became visible at Raw level - this means the status filter was relaxed
+                // Levels 0-3 only query for base_status = 'open', but Raw includes 'in_progress'
+                if bead.base_status == "in_progress" {
+                    (Some("status filter"), "Excluded by status filter: bead status is 'in_progress' (only 'open' beads appear in ready frontier)".to_string())
+                } else if bead.assignee.is_some() {
+                    // Assigned open beads also become visible here if they have other blocking factors
+                    (Some("assignee filter"), format!("Excluded by assignee filter: assigned to '{}'", bead.assignee.as_ref().unwrap()))
+                } else {
+                    (Some("unknown"), "Excluded by unknown filter".to_string())
+                }
             }
         }
     }
