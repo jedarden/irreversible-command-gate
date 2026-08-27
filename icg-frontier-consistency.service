@@ -1,0 +1,36 @@
+[Unit]
+Description=ICG Frontier Consistency Service
+Documentation=https://github.com/jedarden/irreversible-command-gate
+After=network.target
+ConditionPathExists=/home/coding/irreversible-command-gate/.beads
+
+[Service]
+Type=simple
+User=coding
+Group=coding
+WorkingDirectory=/home/coding/irreversible-command-gate
+ExecStart=/home/coding/irreversible-command-gate/target/debug/frontier-consistency-check
+Restart=always
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/coding/irreversible-command-gate/.beads
+NoNewPrivileges=true
+
+# Resource limits
+MemoryLimit=256M
+CPUQuota=50%
+
+# Environment
+Environment="ICG_WORKSPACE_PATH=/home/coding/irreversible-command-gate"
+Environment="ICG_FRONTIER_CHECK_INTERVAL_SECONDS=300"
+Environment="ICG_AUTO_REPAIR_ENABLED=true"
+Environment="ICG_ALERT_ON_PERSISTENT=true"
+
+[Install]
+WantedBy=multi-user.target
