@@ -107,6 +107,8 @@ enum Commands {
         max_cases: usize,
     },
     /// Trust pointer management (Layer 4 minimal form)
+    ///
+    /// All trust subcommands support --channel for canary rollout patterns.
     #[command(subcommand)]
     Trust(TrustSubcommand),
     /// Atomically update the modular rule-pack directory from GitHub Releases
