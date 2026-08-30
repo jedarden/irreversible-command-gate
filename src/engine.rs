@@ -903,6 +903,46 @@ impl Engine {
         self.release_ref.as_deref()
     }
 
+    /// Detect and mark state changes for Tier 2 predicates.
+    ///
+    /// This handles commands that need to update session state for
+    /// cross-invocation enforcement:
+    /// - git pull: marks that pull has occurred (enables flush)
+    /// - bead/bf sync flush-only: marks that flush has occurred (enables repair)
+    /// - bead/bf doctor --repair: no marking (consumes the flush mark, doesn't produce one)
+    ///
+    /// Returns Ok(true) if the command was a state-changing operation and was marked.
+    pub fn mark_command_state_if_needed(&self, source: &CommandSource) -> Result<bool> {
+        let command = match source {
+            CommandSource::Hook(cmd) => cmd.clone(),
+            CommandSource::Argv(argv) => argv.join(" "),
+        };
+
+        let state_store = match &self.state_store {
+            Some(store) => store,
+            None => return Ok(false),
+        };
+
+        // Check for git pull (enables future flush operations)
+        let is_git_pull = command.contains("git pull") || command.contains("git fetch");
+        if is_git_pull && !command.contains("--help") {
+            state_store.mark_git_pull()?;
+            return Ok(true);
+        }
+
+        // Check for bead/bf sync flush-only (enables future repair operations)
+        let is_flush = command.contains("sync") && command.contains("flush-only");
+        if is_flush {
+            state_store.mark_flush()?;
+            return Ok(true);
+        }
+
+        // Note: bead/bf doctor --repair consumes the flush mark but doesn't produce one.
+        // The predicate enforces ordering; we don't need to track repair itself.
+
+        Ok(false)
+    }
+
     fn mark_fail_open(&mut self, reason: &str) {
         self.fail_open = true;
         report_failure(self.fail_closed, reason);

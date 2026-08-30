@@ -1260,6 +1260,15 @@ fn run_shadowed_tool(
     } else {
         engine.evaluate_command(&source)
     };
+
+    // Mark state for Tier 2 predicates if this is a state-changing command
+    // Only mark if the command was allowed (not denied)
+    if matches!(result, engine::CheckResult::Allowed) {
+        if let Err(error) = engine.mark_command_state_if_needed(&source) {
+            eprintln!("⚠️  Failed to mark command state: {error:#}");
+        }
+    }
+
     record_engine_guard_failure(lifecycle.as_deref_mut(), &engine);
     denial_log::record_operational_denial(&InputSource::Command(source.clone()), &result);
 
@@ -1703,6 +1712,15 @@ fn main() -> Result<()> {
                     } else {
                         engine.evaluate_command(&source)
                     };
+
+                    // Mark state for Tier 2 predicates if this is a state-changing command
+                    // Only mark if the command was allowed (not denied)
+                    if matches!(result, engine::CheckResult::Allowed) {
+                        if let Err(error) = engine.mark_command_state_if_needed(&source) {
+                            eprintln!("⚠️  Failed to mark command state: {error:#}");
+                        }
+                    }
+
                     record_engine_guard_failure(lifecycle.as_mut(), &engine);
                     record_hook_denial(
                         record_as_test.as_deref(),
