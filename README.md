@@ -10,7 +10,7 @@ environment (`~/.claude/hooks/org-rule-guard.py`) only covers a handful of
 org-specific rules — GitHub Actions files, `kind: Job`/`CronJob`, `:latest`
 image tags, committed credential values, and mutating `kubectl` verbs. It
 says nothing about HashiCorp Vault/OpenBao destructive operations, `git
-push --force`, `bf`/beads corruption risks, or the many other irreversible
+push --force`, bead-store corruption risks, or the many other irreversible
 actions an agent with real credentials could take. See
 `docs/notes/existing-enforcement-infrastructure.md` for the full coverage
 gap analysis this project starts from.
@@ -25,8 +25,7 @@ Stated plainly, because it's easy to assume more than is actually true:
   locations (`/usr/local/bin/icg`, `/etc/icg/packs`,
   `/etc/icg/trust-pointer.json`) so the guarded agent cannot rewrite them,
   but the release pipeline that vets what loads has not yet produced a
-  verified end-to-end release (`docs/plan/plan.md` Phase 0; tracked as
-  `irrevers-84b36e47`). See
+  verified end-to-end release (see `docs/plan/plan.md`, Phase 0). See
   `docs/notes/runtime-config-vs-hardcoded.md`.
 - **It does not reach OpenAI's cloud-hosted Codex** (ChatGPT web / async
   "Codex cloud tasks"). Only the local `codex` and Claude Code CLIs are
@@ -70,6 +69,10 @@ New to icg? Start here:
 - `docs/examples/` — real-world scenarios and workflows
 - `docs/onboarding-guide.md` — structured learning path with role-specific tracks
 - `docs/plan/plan.md` — complete application plan
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Fixed deny-regression suite
 
