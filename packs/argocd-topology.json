@@ -5,20 +5,20 @@
   "safe_patterns": [],
   "guarded_patterns": [
     {
-      "id": "workload-cluster-self-managing-root",
+      "id": "duplicate-ardenone-cluster-root",
       "type": "content_regex",
-      "regex": "(?s)kind:[ \\t]*Application.*?name:[ \\t]*applications-ardenone-cluster.*?destination:.*?server:[ \\t]*https://kubernetes\\.default\\.svc",
+      "regex": "(?m)^[ \\t]*path:[ \\t]*\\./k8s/ardenone-cluster[ \\t]*(?:#.*)?$",
       "tier": "tier1",
       "severity": "High",
-      "explanation": "The ardenone-cluster app-of-apps must run in the centralized ardenone-manager ArgoCD instance, not self-manage from the workload cluster.",
+      "explanation": "The manager-side manifest-appset-ardenone-cluster already owns this tree; a second root Application creates duplicate ownership.",
       "destructive": true,
       "redirect": {
         "channel": "deny",
-        "reason_template": "Do not create applications-ardenone-cluster with an in-cluster destination. Define the root in k8s/ardenone-manager and let its child Applications target https://k3s-server-a.ardenone.com:6443.",
+        "reason_template": "Do not create another Application over ./k8s/ardenone-cluster. The centralized manifest-appset-ardenone-cluster is the sole root and its generated children target https://k3s-server-a.ardenone.com:6443.",
         "rewrite_template": null
       },
       "example_file_path": "ardenone-cluster-application.yml",
-      "example_content": "apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: applications-ardenone-cluster\nspec:\n  destination:\n    server: https://kubernetes.default.svc\n"
+      "example_content": "apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: applications-ardenone-cluster\nspec:\n  source:\n    path: ./k8s/ardenone-cluster\n"
     }
   ]
 }
