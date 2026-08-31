@@ -187,6 +187,30 @@ DIAGNOSTIC_CONTEXT=$(jq -n \
         }
     }')
 
+# ==============================================================================
+# VALIDATION: Check for contradictory data before creating alert
+# ==============================================================================
+
+# Validate: If description claims "open beads exist", count must be > 0
+# This prevents false-positive alerts with contradictory data
+if [ "$TOTAL_OPEN" -eq 0 ]; then
+    log_error "VALIDATION FAILURE: Alert would claim 'open beads exist' but TOTAL_OPEN is 0"
+    log_error "This is a contradictory condition - suppressing alert creation"
+    log_error "Ready count: $READY_COUNT, Total open: $TOTAL_OPEN, Assigned but open: $ASSIGNED_BUT_OPEN"
+
+    # Log validation failure to diagnostic log if available
+    VALIDATION_LOG="/tmp/starvation-alert-validation-failures.log"
+    echo "[$TIMESTAMP] VALIDATION_FAILURE: Contradictory data - TOTAL_OPEN=0 but READY_COUNT=$READY_COUNT" >> "$VALIDATION_LOG"
+    echo "  Reason: Cannot create alert claiming 'open beads exist' when count is 0" >> "$VALIDATION_LOG"
+    echo "  Workspace: $(pwd)" >> "$VALIDATION_LOG"
+
+    log_error "Validation failure logged to $VALIDATION_LOG"
+    log_error "Alert creation suppressed - no bead created"
+
+    # Exit with error to indicate validation failure
+    exit 1
+fi
+
 # Determine if starvation is detected
 IS_STARVATION=false
 STARVATION_REASON=""
