@@ -1,0 +1,24 @@
+{
+  "id": "argocd-topology",
+  "tool_keywords": [],
+  "applies_to": ["*.yaml", "*.yml"],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "workload-cluster-self-managing-root",
+      "type": "content_regex",
+      "regex": "(?s)kind:[ \\t]*Application.*?name:[ \\t]*applications-ardenone-cluster.*?destination:.*?server:[ \\t]*https://kubernetes\\.default\\.svc",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "The ardenone-cluster app-of-apps must run in the centralized ardenone-manager ArgoCD instance, not self-manage from the workload cluster.",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Do not create applications-ardenone-cluster with an in-cluster destination. Define the root in k8s/ardenone-manager and let its child Applications target https://k3s-server-a.ardenone.com:6443.",
+        "rewrite_template": null
+      },
+      "example_file_path": "ardenone-cluster-application.yml",
+      "example_content": "apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: applications-ardenone-cluster\nspec:\n  destination:\n    server: https://kubernetes.default.svc\n"
+    }
+  ]
+}
