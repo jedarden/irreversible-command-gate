@@ -1,1 +1,4 @@
 /target
+
+# NEEDLE execution traces are local diagnostics.
+**/.beads/traces/
