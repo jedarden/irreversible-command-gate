@@ -23,7 +23,8 @@ spec:
     path: ./k8s/ardenone-cluster
   destination:
     server: https://kubernetes.default.svc
-"#.into(),
+"#
+        .into(),
     });
 
     assert!(matches!(

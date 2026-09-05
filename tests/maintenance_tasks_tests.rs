@@ -502,8 +502,8 @@ fn maintenance_scenario_trust_channel_roundtrip() {
         "Channel-specific trust pointer file should exist"
     );
 
-    let trust_content = fs::read_to_string(&trust_path)
-        .expect("Should be able to read trust pointer file");
+    let trust_content =
+        fs::read_to_string(&trust_path).expect("Should be able to read trust pointer file");
     assert!(
         trust_content.contains("v0.2.0-canary"),
         "Trust pointer file should contain the canary reference"
@@ -557,10 +557,10 @@ fn maintenance_scenario_trust_channel_roundtrip() {
     );
 
     // Verify they contain different values
-    let canary_content = fs::read_to_string(&trust_path)
-        .expect("Should be able to read canary trust pointer");
-    let stable_content = fs::read_to_string(&stable_path)
-        .expect("Should be able to read stable trust pointer");
+    let canary_content =
+        fs::read_to_string(&trust_path).expect("Should be able to read canary trust pointer");
+    let stable_content =
+        fs::read_to_string(&stable_path).expect("Should be able to read stable trust pointer");
 
     assert!(
         canary_content.contains("v0.2.0-canary"),
