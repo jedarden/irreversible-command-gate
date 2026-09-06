@@ -132,7 +132,7 @@ icg coverage --list
 # ✓ pack argocd-topology (1 patterns)
 # ✓ pack beads (3 patterns)
 # ✓ pack docker (3 patterns)
-# ✓ pack git (3 patterns)
+# ✓ pack git (4 patterns)
 # ✓ pack image-tag (2 patterns)
 # ✓ pack misc (2 patterns)
 # ✓ pack openbao (3 patterns)
@@ -207,14 +207,24 @@ printf 'image: ronaldraygun/armor:latest\n' | icg check --file -
 icg check --command "..." --debug
 ```
 
-The three outcomes:
+The four outcomes, one per redirect channel a rule can declare:
 
 - `ALLOW: no configured rule matched` — nothing to say about this input.
+- `WARNING: <why>` with `Pack` and `Pattern` lines — the command runs, but
+  the agent is handed the caution alongside it (redirect channel
+  `additional_context`). `icg hook` returns `permissionDecision: "allow"`
+  with the text in `additionalContext`. This is the channel for rules that
+  cannot be decided reliably enough to block, such as
+  `openbao-kv-get-to-stdout`.
 - `REWRITE: <why> … Suggested input: <replacement>` — the guard produced a
-  safe alternative (redirect channel `UpdatedInput`).
+  safe alternative (redirect channel `updated_input`).
 - `DENIED by icg` with `Reason`, `Pack`, `Pattern`, `Severity`,
   `Explanation`, and `Redirect` lines — blocked, with the operator
-  explanation and what to do instead.
+  explanation and what to do instead (redirect channel `deny`).
+
+Only `deny` stops the command. A rule pack chooses its channel per pattern,
+so raising or lowering a rule's assertiveness is a pack edit, not a code
+change.
 
 ### Understanding a decision
 
@@ -247,6 +257,25 @@ icg coverage --list
 icg coverage --list --pack /etc/icg/packs
 ```
 
+For a machine reader — an agent deciding whether a command will be denied
+before it tries, a bot rendering the policy, a doc generator — ask for JSON
+instead of scraping the text:
+
+```bash
+icg coverage --list --format json
+
+# Which rules block outright, as opposed to warning or rewriting?
+icg coverage --list --format json \
+  | jq -r '.packs[] | .guarded_patterns[] | select(.channel=="Deny") | "\(.severity)\t\(.id)"'
+```
+
+The document is stamped `"format": "coverage/v1"` and carries every pack
+(id, path, `tool_keywords`, `applies_to`, safe-pattern ids) and every rule
+(id, `enabled`, tier, severity, redirect `channel`, `destructive`, check
+kind, explanation, redirect text), plus an `unreadable` list naming any pack
+file that failed to load. An unreadable pack is a silent coverage hole in
+the text listing; here it is a field you can assert on.
+
 `check`, `explain`, and `coverage` take `--pack <path>` (defaulting to the
 installed pack plus the repository's `packs/` directory when present). The
 `hook` subcommand's equivalent flag is `--rule-pack` — see
@@ -258,18 +287,25 @@ installed pack plus the repository's `packs/` directory when present). The
 
 Ten packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
 
-| Pack | Patterns | What it blocks |
-| --- | --- | --- |
-| `openbao` | 3 | Irreversible verbs (`kv destroy`, `metadata delete`, policy/mount deletion, rekey) — `openbao-destructive-verb` (Critical); secret literals passed as arguments — `openbao-inline-secret-literal` (Critical); `kv get` dumped to stdout — `openbao-kv-get-to-stdout` (Medium) |
-| `git` | 3 | Force-push flags (rewritten to a plain push) — `git-force-push` (Critical); committing without explicit pathspecs — `git-commit-without-pathspec` (High); pushing when the remote head is stale — `git-stale-remote-head-push` (High) |
-| `secrets` | 6 | Credential literals in commands and file content: GitHub tokens and PATs, AWS access keys, Slack tokens, Anthropic API keys, PEM private-key blocks (all Critical) |
-| `image-tag` | 2 | `:latest` and bare-SHA image references in file content (High) |
-| `storage-class` | 1 | `ssd`/`ssd-large` storage classes in manifests — use `sata`/`sata-large` (High) |
-| `docker` | 3 | `docker system prune --all`, `docker volume rm`, `docker image rm --force` (Critical) |
-| `tmux` | 1 | Sending input to the operator's bare NATO tmux sessions — `bare-nato-session` (Medium) |
-| `beads` | 3 | Hand-editing the shared `.beads` store (`beads-shared-checkout-write`, Critical); recovery misordering (`beads-repair-requires-flush`, `beads-flush-requires-pull`, High) |
-| `misc` | 2 | `needle cleanup` against a live fleet (`needle-cleanup`, Critical); deprecated bead CLIs `bf`/`br` (`deprecated-bead-cli`, Medium) |
-| `argocd-topology` | 1 | A second root Application over `./k8s/ardenone-cluster`, duplicating the centralized `manifest-appset-ardenone-cluster` — `duplicate-ardenone-cluster-root` (High) |
+| Pack | Patterns | Scope | What it blocks |
+| --- | --- | --- | --- |
+| `openbao` | 3 | General | Irreversible verbs (`kv destroy`, `metadata delete`, policy/mount deletion, rekey) — `openbao-destructive-verb` (Critical); secret literals passed as arguments — `openbao-inline-secret-literal` (Critical); `kv get` dumped to stdout — `openbao-kv-get-to-stdout` (Medium) |
+| `git` | 4 | General | Bare `git credential fill`, which prints the resolved password to stdout — `git-credential-fill-bare-stdout` (Critical); force-push flags, rewritten to a plain push — `git-force-push` (Critical); committing without explicit pathspecs — `git-commit-without-pathspec` (High); pushing when the remote head is stale — `git-stale-remote-head-push` (High) |
+| `secrets` | 6 | General | Credential literals in commands and file content: `github-token`, `github-fine-grained-pat`, `aws-access-key-id`, `slack-token`, `anthropic-api-key`, `pem-private-key-header` (all Critical) |
+| `docker` | 3 | General | `docker system prune --all` — `docker-system-prune-all`; `docker volume rm` — `docker-volume-rm`; `docker image rm --force` — `docker-image-rm-force` (all Critical) |
+| `image-tag` | 2 | Fleet-flavoured | `:latest` in a manifest — `image-tag-latest` (High); a bare git SHA where a semver tag belongs — `image-tag-bare-sha` (High). The rule generalises; the redirect names this fleet's `containers/<name>/VERSION` convention |
+| `storage-class` | 1 | Fleet-specific | `ssd`/`ssd-large` storage classes in manifests — `storage-class-ssd` (High). Rackspace Spot's defaults; use `sata`/`sata-large` |
+| `beads` | 3 | Fleet-specific | Hand-editing the shared `.beads` store — `beads-shared-checkout-write` (Critical); recovery misordering — `beads-repair-requires-flush`, `beads-flush-requires-pull` (High) |
+| `misc` | 2 | Fleet-specific | `needle cleanup` against a live fleet — `needle-cleanup` (Critical); deprecated bead CLIs `bf`/`br` — `deprecated-bead-cli` (Medium) |
+| `tmux` | 1 | Fleet-specific | Sending input to the operator's bare NATO tmux sessions — `bare-nato-session` (Medium) |
+| `argocd-topology` | 1 | Fleet-specific | A second root Application over `./k8s/ardenone-cluster`, duplicating the centralized `manifest-appset-ardenone-cluster` — `duplicate-ardenone-cluster-root` (High) |
+
+**Reading the Scope column.** *General* rules describe a footgun that exists
+wherever the tool does — they are the ones worth lifting into another
+environment unchanged. *Fleet-specific* rules encode a convention of the
+environment icg was built for; they are useful as worked examples of pack
+authoring, but their deny text names conventions a visitor does not have.
+Nothing about the engine is fleet-specific: `icg new-pack` scaffolds your own.
 
 **Not covered by icg** (see [What icg does NOT cover](#what-icg-does-not-cover)):
 kubectl mutations, `.github/workflows/*` creation, and `kind: Job`/`CronJob`

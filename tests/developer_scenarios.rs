@@ -431,3 +431,93 @@ fn developer_rule_pack_fixtures_validate_and_readme_commands_are_executable() {
         );
     }
 }
+
+/// Scenario 8's documented walkthrough, run against the pack it actually names.
+///
+/// The prose used to walk a `kubectl` pack the project has decided never to
+/// ship, so a reader following it hit `no configured rule matched` at step one.
+/// It now walks the shipped `openbao` pack; this test keeps every claim it
+/// makes true.
+#[test]
+fn scenario_8_documented_walkthrough_runs_against_the_shipped_openbao_pack() {
+    let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/openbao.json");
+    let pack_arg = pack.to_string_lossy().into_owned();
+
+    // Step 1: the reported command warns -- it is not a denial.
+    let reported = icg(&[
+        "check",
+        "--pack",
+        &pack_arg,
+        "--command",
+        "bao kv get -field=password secret/app/db",
+    ]);
+    let reported_text = output_text(&reported);
+    assert!(
+        reported_text.contains("WARNING:"),
+        "the reported read should warn, not deny: {reported_text}"
+    );
+    assert!(
+        reported_text.contains("openbao-kv-get-to-stdout"),
+        "{reported_text}"
+    );
+
+    // Step 2: --debug names the safe pattern that did not fire, on stderr.
+    let debugged = icg(&[
+        "check",
+        "--pack",
+        &pack_arg,
+        "--command",
+        "bao kv get -field=password secret/app/db",
+        "--debug",
+    ]);
+    let trace = String::from_utf8_lossy(&debugged.stderr).into_owned();
+    for marker in [
+        "DEBUG: Pattern matching trace",
+        "Pack dispatched: openbao",
+        "safe-bao-kv-get-redirected: NO MATCH",
+        "openbao-kv-get-to-stdout: MATCH",
+        "Final verdict: WARNING",
+    ] {
+        assert!(
+            trace.contains(marker),
+            "debug trace missing {marker:?}:\n{trace}"
+        );
+    }
+    assert!(
+        String::from_utf8_lossy(&debugged.stdout).contains("WARNING:"),
+        "the decision stays on stdout while the trace goes to stderr"
+    );
+
+    // Step 3: the standing explanation is retrievable by pattern id.
+    let explained = icg(&[
+        "explain",
+        "--pack",
+        &pack_arg,
+        "--pattern",
+        "openbao-kv-get-to-stdout",
+        "--show-redirect",
+    ]);
+    let explained_text = output_text(&explained);
+    assert!(
+        explained_text.contains("Redirect channel: AdditionalContext"),
+        "{explained_text}"
+    );
+
+    // Step 4: both forms the redirect recommends really do pass.
+    for sanctioned in [
+        "bao kv get -field=password secret/app/db > ~/.config/app/creds",
+        "TOKEN=$(bao kv get -field=token secret/app/x) curl -H \"Authorization: Bearer $TOKEN\" https://api.example",
+    ] {
+        let allowed = icg(&["check", "--pack", &pack_arg, "--command", sanctioned]);
+        let allowed_text = output_text(&allowed);
+        assert!(
+            allowed_text.contains("ALLOW"),
+            "the redirect recommends {sanctioned:?}, so it must pass: {allowed_text}"
+        );
+    }
+
+    // Step 5's gate: an unchanged pack is not a coverage regression.
+    let diffed = icg(&["coverage-diff", &pack_arg, &pack_arg]);
+    let diff_text = output_text(&diffed);
+    assert!(diff_text.contains("status: no_regressions"), "{diff_text}");
+}

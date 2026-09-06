@@ -29,7 +29,7 @@ fn examples_coverage_audit_maps_all_documented_scenarios() {
             ],
             test_file: "tests/operator_scenarios.rs",
             test_name: "first_time_installation_validates_documented_commands_and_outputs",
-            expected_marker: "vault-kv-destroy",
+            expected_marker: "openbao-destructive-verb",
         },
         ScenarioAudit {
             heading: "### Scenario 2: Daily Operations",
@@ -91,8 +91,8 @@ fn examples_coverage_audit_maps_all_documented_scenarios() {
                 "tests/fixtures/developer-scenarios/debugging-false-positives-fixed.json",
             ],
             test_file: "tests/developer_scenarios.rs",
-            test_name: "scenario_8_debug_trace_reproduce_fix_and_verify_false_positive",
-            expected_marker: "malformed packs fail",
+            test_name: "scenario_8_documented_walkthrough_runs_against_the_shipped_openbao_pack",
+            expected_marker: "safe-bao-kv-get-redirected",
         },
         ScenarioAudit {
             heading: "### Scenario 9: Adding Custom Predicates",

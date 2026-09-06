@@ -289,3 +289,150 @@ fn quick_start_is_a_single_coherent_guide() {
         );
     }
 }
+
+/// Every guarded pattern that ships must appear by id in quick-start's
+/// coverage table, and the table's per-pack count must match the pack file.
+///
+/// The weaker `quick_start_pack_inventory_matches_the_shipped_packs` check
+/// only asserts pack *ids*, which is how `git-credential-fill-bare-stdout`
+/// shipped (2026-08-27) as a Critical rule that no operator-facing doc
+/// mentioned, while the table still claimed the git pack had three patterns.
+#[test]
+fn quick_start_coverage_table_matches_every_shipped_pattern() {
+    let doc = quick_start();
+    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+
+    let mut entries: Vec<_> = fs::read_dir(&packs_dir)
+        .unwrap_or_else(|error| panic!("should read {}: {error}", packs_dir.display()))
+        .map(|entry| entry.expect("directory entry").path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    entries.sort();
+    assert!(!entries.is_empty(), "packs/ directory should not be empty");
+
+    for path in entries {
+        let pack: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap())
+            .unwrap_or_else(|error| panic!("{} should be valid JSON: {error}", path.display()));
+        let pack_id = pack["id"].as_str().expect("pack should carry an id");
+        let patterns = pack["guarded_patterns"]
+            .as_array()
+            .expect("pack should carry guarded_patterns");
+
+        for pattern in patterns {
+            let pattern_id = pattern["id"].as_str().expect("pattern should carry an id");
+            assert!(
+                doc.contains(pattern_id),
+                "quick-start.md's coverage table omits the shipped pattern \
+                 `{pattern_id}` from pack `{pack_id}` -- a rule nobody can \
+                 read about is a rule operators will report as a false positive"
+            );
+        }
+
+        // The table's count column and the `icg coverage --list` transcript
+        // both state a per-pack number; neither may drift from the pack file.
+        let count = patterns.len();
+        assert!(
+            doc.contains(&format!("| `{pack_id}` | {count} |")),
+            "quick-start.md's coverage table should say pack `{pack_id}` has \
+             {count} patterns"
+        );
+        assert!(
+            doc.contains(&format!("pack {pack_id} ({count} patterns)")),
+            "quick-start.md's `icg coverage --list` transcript should show \
+             `pack {pack_id} ({count} patterns)`"
+        );
+    }
+}
+
+/// Operator-facing docs must not resurrect the fictional inventory the
+/// 2026-08-25 audit removed from quick-start.md.
+///
+/// The audit fixed one file. `training-manual.md`, `examples/README.md` and
+/// `onboarding-guide.md` kept citing a `vault` pack (the shipped pack is
+/// `openbao`), a `vault-kv-destroy` pattern id `icg explain` rejects, and a
+/// `~/.config/claude-code/settings.json` hook shape no harness reads --
+/// which is what a newcomer following the onboarding path actually typed.
+#[test]
+fn operator_docs_do_not_cite_a_fictional_surface() {
+    let docs = [
+        "docs/quick-start.md",
+        "docs/onboarding-guide.md",
+        "docs/operators/training-manual.md",
+        "docs/examples/README.md",
+    ];
+
+    // (needle, why it is wrong)
+    let banned = [
+        ("packs/vault.json", "the shipped OpenBao pack is `openbao`"),
+        (
+            "vault-kv-destroy",
+            "the shipped pattern id is `openbao-destructive-verb`",
+        ),
+        (
+            "~/.config/claude-code",
+            "no harness reads this path; hooks live in ~/.claude/settings.json",
+        ),
+        (
+            "~/.config/codex-cli",
+            "the Codex CLI reads ~/.codex/hooks.json",
+        ),
+        (
+            "releases/download/v0.1.0",
+            "no GitHub release has been cut; every install path must build from source",
+        ),
+    ];
+
+    for doc in docs {
+        let text = repo_relative(doc);
+        for (needle, why) in banned {
+            assert!(!text.contains(needle), "{doc} cites {needle:?} -- {why}");
+        }
+    }
+}
+
+/// Any pattern id an operator doc tells the reader to pass to `icg explain`
+/// must actually exist in a shipped pack.
+#[test]
+fn documented_pattern_ids_exist_in_a_shipped_pack() {
+    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let mut shipped: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&packs_dir).expect("packs/ should be readable") {
+        let path = entry.expect("directory entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let pack: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).expect("pack parses");
+        for pattern in pack["guarded_patterns"].as_array().unwrap() {
+            shipped.push(pattern["id"].as_str().unwrap().to_owned());
+        }
+    }
+
+    for doc in [
+        "docs/quick-start.md",
+        "docs/onboarding-guide.md",
+        "docs/operators/training-manual.md",
+        "docs/examples/README.md",
+    ] {
+        let text = repo_relative(doc);
+        for line in text.lines() {
+            let Some(rest) = line.split("icg explain --pattern ").nth(1) else {
+                continue;
+            };
+            let raw = rest.split_whitespace().next().unwrap_or_default();
+            // `<id>`, `<pattern-id>`, `$PATTERN` and friends are placeholders.
+            if raw.starts_with('<') || raw.starts_with('$') || raw.starts_with('{') {
+                continue;
+            }
+            let cited = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+            if cited.is_empty() {
+                continue;
+            }
+            assert!(
+                shipped.iter().any(|id| id == cited),
+                "{doc} tells the reader to run `icg explain --pattern {cited}`, \
+                 but no shipped pack defines that pattern"
+            );
+        }
+    }
+}

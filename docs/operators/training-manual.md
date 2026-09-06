@@ -117,37 +117,42 @@ rather than setting `ICG_FAIL_CLOSED=false` or editing policy JSON by hand.
 
 ### Rule Pack Structure
 
-A **rule pack** is a JSON file defining protection patterns for a specific tool:
+A **rule pack** is a JSON file defining protection patterns for a specific
+tool. This is the shipped `openbao` pack, abridged — compare it against
+`packs/openbao.json` in the checkout:
 
 ```json
 {
-  "id": "vault",
-  "tool_keywords": ["vault"],
+  "id": "openbao",
+  "tool_keywords": ["bao", "vault"],
   "safe_patterns": [
     {
-      "id": "safe-read",
+      "id": "safe-bao-kv-metadata-get",
       "type": "command_regex",
-      "regex": "^vault kv get"
+      "regex": "(?i)\\b(bao|vault)\\s+kv\\s+metadata\\s+get\\b"
     }
   ],
   "guarded_patterns": [
     {
-      "id": "vault-kv-destroy",
+      "id": "openbao-destructive-verb",
       "type": "command_regex",
-      "regex": "vault kv destroy",
+      "regex": "(?i)\\b(bao|vault)\\s+(kv\\s+destroy|kv\\s+metadata\\s+delete|...)",
       "tier": "tier1",
       "severity": "Critical",
-      "explanation": "Permanently destroys secret data",
+      "explanation": "Permanently destroys secret data, an auth mount, a policy, or the unseal shares.",
       "destructive": true,
       "redirect": {
         "channel": "deny",
-        "reason_template": "vault kv destroy is permanently destructive",
+        "reason_template": "This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. ...",
         "rewrite_template": null
       }
     }
   ]
 }
 ```
+
+Both CLI names are matched by one pack: `tool_keywords` lists `bao` and
+`vault`, so `vault kv destroy` and `bao kv destroy` hit the same rule.
 
 ### Pack Modes
 
@@ -229,25 +234,32 @@ Before installing icg, ensure you have:
 
 ### Installation Methods
 
-#### Method 1: Download Release Binary (Recommended)
+#### Method 1: Build from Source (currently the only path)
+
+No GitHub release has been cut yet, so the release-binary path below is not
+yet usable. Build from source:
 
 ```bash
-# Download the latest release
-wget https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.0/icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+# No GitHub release has been cut yet; build from source.
+git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+cd irreversible-command-gate
+cargo build --release
 
-# Extract
-tar -xzf icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
-# Install to system directory
-sudo cp icg /usr/local/bin/
-sudo chmod +x /usr/local/bin/icg
-
-# Verify installation
+# Verify
 icg --version
-# Expected output: icg v0.1.0
+# icg 0.1.1
 ```
 
-#### Method 2: Build from Source
+> Once the release pipeline has produced a verified release, prefer the
+> published tarball over a local build. Until then this is the only
+> supported install path — see the
+> [Quick Start Guide](../quick-start.md).
+
+#### Method 2: Release binary (once one exists)
+
+
 
 ```bash
 # Install Rust toolchain
@@ -276,8 +288,8 @@ icg --version
 sudo mkdir -p /etc/icg/packs
 
 # Download default rule packs
-sudo curl -o /etc/icg/packs/vault.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/vault.json
+sudo curl -o /etc/icg/packs/openbao.json \
+  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/openbao.json
 
 sudo curl -o /etc/icg/packs/git.json \
   https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/git.json
@@ -303,46 +315,61 @@ icg health --check-packs
 #### Claude Code Hook
 
 ```bash
-# Create Claude Code config directory
-mkdir -p ~/.config/claude-code
-
-# Configure hook
-cat > ~/.config/claude-code/settings.json <<'EOF'
+# Merge into ~/.claude/settings.json -- do not overwrite unrelated settings.
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "claude-code"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 
 # Verify hook
 icg health --check-hooks
 ```
+
+> The canonical hook contract is in
+> [deployment-guide.md](deployment-guide.md). `icg hook` reads one
+> PreToolUse JSON document from stdin and writes one decision envelope --
+> `icg check --stdin` is the human-facing tester, not the hook entry point.
 
 #### Codex CLI Hook
 
 ```bash
-# Create Codex CLI config directory
-mkdir -p ~/.config/codex-cli
-
-# Configure hook
-cat > ~/.config/codex-cli/settings.json <<'EOF'
+# Codex CLI reads ~/.codex/hooks.json (or a repo's .codex/hooks.json).
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "codex-cli"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 
 # Verify hook
 icg health --check-hooks
 ```
+
+> Use the file and schema documented by the installed Codex CLI version --
+> that hook surface is young and still moving; see
+> [multi-harness-integration.md](../notes/multi-harness-integration.md).
 
 ### Verification Testing
 
@@ -354,8 +381,8 @@ echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}
 # Expected output:
 # {
 #   "verdict": "deny",
-#   "packId": "vault",
-#   "patternId": "vault-kv-destroy",
+#   "packId": "openbao",
+#   "patternId": "openbao-destructive-verb",
 #   "severity": "Critical",
 #   "reason": "vault kv destroy is permanently destructive and cannot be undone",
 #   "rewrite": null,
@@ -378,7 +405,7 @@ icg health --verbose
 # Expected output:
 # ✓ icg binary: /usr/local/bin/icg v0.1.0
 # ✓ Rule packs: 5 packs loaded
-#   - vault (8 patterns)
+#   - openbao (3 patterns)
 #   - git (12 patterns)
 #   - image-tag (6 patterns)
 #   - storage-class (4 patterns)
@@ -929,32 +956,32 @@ When stuck:
 Protect both Claude Code and Codex CLI:
 
 ```bash
-# Configure both harnesses
-cat > ~/.config/claude-code/settings.json <<'EOF'
+# Merge into ~/.claude/settings.json -- do not overwrite unrelated settings.
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "claude-code"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 
-cat > ~/.config/codex-cli/settings.json <<'EOF'
-{
-  "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "codex-cli"]
-    }
-  }
-}
-EOF
-
-# Verify both
+# Verify hook
 icg health --check-hooks
 ```
+
+> The canonical hook contract is in
+> [deployment-guide.md](deployment-guide.md). `icg hook` reads one
+> PreToolUse JSON document from stdin and writes one decision envelope --
+> `icg check --stdin` is the human-facing tester, not the hook entry point.
 
 ### Repository Overrides
 
@@ -1044,7 +1071,7 @@ icg health
 **Objective**: Understand how patterns work
 
 **Steps**:
-1. List all patterns in the vault pack
+1. List all patterns in the openbao pack
 2. Test safe commands (vault kv get)
 3. Test dangerous commands (vault kv destroy)
 4. Examine the denial messages
@@ -1052,7 +1079,7 @@ icg health
 
 **Validation**:
 ```bash
-icg explain --pattern vault-kv-destroy
+icg explain --pattern openbao-destructive-verb
 # Should show pattern details and alternatives
 ```
 

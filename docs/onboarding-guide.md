@@ -30,15 +30,22 @@ Welcome to the irreversible command gate (icg)! This guide provides a structured
 If you haven't installed icg yet, follow the Quick Start Guide:
 
 ```bash
-# Download and install
-wget https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.0/icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-sudo cp icg /usr/local/bin/
-sudo chmod +x /usr/local/bin/icg
+# No GitHub release has been cut yet; build from source.
+git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+cd irreversible-command-gate
+cargo build --release
+
+sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
 # Verify
 icg --version
+# icg 0.1.1
 ```
+
+> Once the release pipeline has produced a verified release, prefer the
+> published tarball over a local build. Until then this is the only
+> supported install path — see the
+> [Quick Start Guide](quick-start.md).
 
 Full installation instructions: **[Quick Start Guide](quick-start.md)**
 
@@ -386,7 +393,7 @@ icg status --denials --since 1h
 ### Task: Understand Why a Command Was Blocked
 
 ```bash
-icg explain --pattern vault-kv-destroy
+icg explain --pattern openbao-destructive-verb
 ```
 
 ### Task: Update Rule Packs
@@ -417,7 +424,7 @@ icg check --command "my-tool dangerous" --pack /etc/icg/packs/my-tool.json
 ### Task: Generate Regression Suite
 
 ```bash
-icg regression-suite /etc/icg/packs/vault.json --output vault-regression.json
+icg regression-suite /etc/icg/packs/openbao.json --output openbao-regression.json
 ```
 
 ---

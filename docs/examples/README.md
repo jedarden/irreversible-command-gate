@@ -32,20 +32,22 @@ This document provides realistic, step-by-step scenarios demonstrating how icg w
 #### Step 1: Download and Install
 
 ```bash
-# Download the release binary
-wget https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.0/icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+# No GitHub release has been cut yet; build from source.
+git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+cd irreversible-command-gate
+cargo build --release
 
-# Extract
-tar -xzf icg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
-# Install to system directory
-sudo cp icg /usr/local/bin/
-sudo chmod +x /usr/local/bin/icg
-
-# Verify installation
+# Verify
 icg --version
-# Output: icg v0.1.0
+# icg 0.1.1
 ```
+
+> Once the release pipeline has produced a verified release, prefer the
+> published tarball over a local build. Until then this is the only
+> supported install path — see the
+> [Quick Start Guide](../quick-start.md).
 
 #### Step 2: Install Rule Packs
 
@@ -54,8 +56,8 @@ icg --version
 sudo mkdir -p /etc/icg/packs
 
 # Download default rule packs
-sudo curl -o /etc/icg/packs/vault.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/vault.json
+sudo curl -o /etc/icg/packs/openbao.json \
+  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/openbao.json
 
 sudo curl -o /etc/icg/packs/git.json \
   https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/git.json
@@ -71,23 +73,32 @@ icg health --check-packs
 #### Step 3: Configure Claude Code Hook
 
 ```bash
-# Edit Claude Code settings
-mkdir -p ~/.config/claude-code
-cat > ~/.config/claude-code/settings.json <<'EOF'
+# Merge into ~/.claude/settings.json -- do not overwrite unrelated settings.
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "claude-code"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 
-# Verify hook configuration
+# Verify hook
 icg health --check-hooks
-# Output: ✓ Claude Code hook configured
 ```
+
+> The canonical hook contract is in
+> [deployment-guide.md](../operators/deployment-guide.md). `icg hook` reads one
+> PreToolUse JSON document from stdin and writes one decision envelope --
+> `icg check --stdin` is the human-facing tester, not the hook entry point.
 
 #### Step 4: Test Installation
 
@@ -100,7 +111,7 @@ echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}
 # DENIED by icg
 # Reason: vault kv destroy is permanently destructive and cannot be undone
 # Pack: vault
-# Pattern: vault-kv-destroy
+# Pattern: openbao-destructive-verb
 # Severity: Critical
 # Explanation: vault kv destroy is permanently destructive and cannot be undone
 # Redirect: Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.
@@ -147,7 +158,7 @@ icg status --denials --since 1h
 # ════════════════════════════════════════════════════════════════
 # Time                    Pack        Pattern              Severity
 # ────────────────────────────────────────────────────────────────
-# 2026-08-16 10:23:45     vault       vault-kv-destroy    Critical
+# 2026-08-16 10:23:45     vault       openbao-destructive-verb    Critical
 # 2026-08-16 10:15:32     git        git-force-push       Critical
 # 2026-08-16 09:58:17     image-tag  latest-tag           High
 ```
@@ -165,7 +176,7 @@ icg status --denials --pattern-summary --since 7d
 # ───────────────────────────────────────────────────────────────────
 # git-force-push            1       33%          → Stable
 # latest-tag                1       33%          → Stable
-# vault-kv-destroy          1       33%          → Stable
+# openbao-destructive-verb          1       33%          → Stable
 ```
 
 #### Step 3: Investigate Anomalies
@@ -173,13 +184,13 @@ icg status --denials --pattern-summary --since 7d
 ```bash
 # Export details for a specific denial
 icg status --denials --since 1h --format json > denials.json
-cat denials.json | jq '.[] | select(.patternId == "vault-kv-destroy")'
+cat denials.json | jq '.[] | select(.patternId == "openbao-destructive-verb")'
 
 # Output:
 # {
 #   "timestamp": "2026-08-16T10:23:45Z",
 #   "packId": "vault",
-#   "patternId": "vault-kv-destroy",
+#   "patternId": "openbao-destructive-verb",
 #   "severity": "Critical",
 #   "command": "vault kv destroy secret/app/api-key",
 #   "reason": "vault kv destroy is permanently destructive and cannot be undone",
@@ -197,7 +208,7 @@ cat docs/operators/deny-messages.md | grep -A 20 "vault-destructive"
 # If this is a false positive, file an issue
 icg export-denial den-abc123 > false-positive-report.txt
 gh issue create \
-  --title "False positive: vault-kv-destroy" \
+  --title "False positive: openbao-destructive-verb" \
   --body "Attached denial report. Command was legitimate." \
   --repo jedarden/irreversible-command-gate
 ```
@@ -215,7 +226,7 @@ gh issue create \
 DENIED by icg
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Rule Pack:    vault
-Pattern ID:   vault-kv-destroy
+Pattern ID:   openbao-destructive-verb
 Severity:     Critical
 Explanation:  This operation would permanently destroy secret data and cannot be undone.
 Redirect:     Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.
@@ -227,10 +238,10 @@ Command:      vault kv destroy secret/app/api-key
 
 ```bash
 # Look up the pattern documentation
-icg explain --pattern vault-kv-destroy
+icg explain --pattern openbao-destructive-verb
 
 # Output:
-# Pattern: vault-kv-destroy
+# Pattern: openbao-destructive-verb
 # Severity: Critical
 # Matches: vault kv destroy, vault kv destroy -versions=<n>
 # Why: Permanently destroys secret data versions
@@ -278,7 +289,7 @@ icg status --health
 # Output:
 # ✓ icg is healthy and running
 # Recent denials: 3 in last 5m
-# Last denial: vault-kv-destroy (Critical)
+# Last denial: openbao-destructive-verb (Critical)
 ```
 
 #### Step 2: Document the Emergency
@@ -327,7 +338,7 @@ icg status --health
 ```bash
 # File an incident report
 gh issue create \
-  --title "Incident: Emergency bypass of vault-policy-delete" \
+  --title "Incident: Emergency bypass of openbao-destructive-verb" \
   --body "Attached incident record. Need to review why legitimate operation was blocked." \
   --label incident \
   --repo jedarden/irreversible-command-gate
@@ -636,102 +647,122 @@ ssh test-server "icg health --check-packs"
 
 ### Scenario 8: Debugging False Positives
 
-**Context**: Users report that a legitimate command is being blocked incorrectly.
+**Context**: A developer reports that icg is complaining about a secret read
+they believe is already safe. Every transcript below is real output from
+`icg` run inside a checkout (`--pack` defaults to `packs/`).
 
-#### Step 1: Reproduce the Issue
-
-```bash
-# Get the exact command from the user
-COMMAND="kubectl delete pod $(kubectl get pods -o json | jq -r '.items[0].name')"
-
-# Test locally
-echo '{"toolName":"Bash","toolInput":{"command":"'$COMMAND'"'}}' | \
-  icg check --stdin
-
-# Output:
-# DENIED: kubectl delete pvc is permanently destructive.
-```
-
-#### Step 2: Analyze the Match
+#### Step 1: Reproduce the report
 
 ```bash
-# Check which pattern matched
-icg check --command "$COMMAND" --debug
+icg check --command "bao kv get -field=password secret/app/db"
 
-# Output:
-# DEBUG: Pattern matching trace
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Packed dispatched: kubectl (matched keyword "kubectl")
-#
-# Safe patterns checked: 0 matches
-#
-# Guarded patterns checked:
-#   kubectl-delete-pvc: NO MATCH
-#   kubectl-delete-deployment: NO MATCH
-#   kubectl-delete-pod: MATCH (regex: "kubectl delete")
-#
-# Final verdict: DENY
-# Pattern: kubectl-delete-pod
-# Reason: Deleting pods can cause service disruption
+# WARNING: This read prints a secret value to stdout, where it enters the transcript.
+# Prefer redirecting to a mode-600 destination (`bao kv get -field=<k> <path> > ~/.config/<app>/creds`),
+# or consuming it inline for one command via an environment assignment. To check that a
+# path exists without revealing the value, use `bao kv metadata get`.
+# Pack: openbao
+# Pattern: openbao-kv-get-to-stdout
 ```
 
-#### Step 3: Identify the Problem
+First thing to establish: this is a `WARNING`, not a denial. The command
+was never blocked — `icg hook` returned `permissionDecision: "allow"` with
+the caution in `additionalContext`. "icg blocked me" reports are often
+this channel being read as a block.
+
+#### Step 2: See which rule matched, and which safe patterns were tried
+
+`--debug` writes the full evaluation trace to **stderr**, with the decision
+still on stdout:
 
 ```bash
-# View the pattern
-icg explain --pattern kubectl-delete-pod
-
-# Output:
-# Pattern: kubectl-delete-pod
-# Regex: kubectl delete
-# Issue: Too broad! Matches "kubectl delete pod" AND "kubectl delete deployment"
-#
-# The pattern "kubectl delete" is too permissive.
-# It matches:
-#   - kubectl delete pod (legitimate)
-#   - kubectl delete deployment (legitimate)
-#   - kubectl delete pvc (dangerous)
+icg check --command "bao kv get -field=password secret/app/db" --debug
 ```
 
-#### Step 4: Fix the Pattern
+```text
+Pack dispatched: openbao (input: bao kv get -field=password secret/app/db)
+Safe patterns checked:
+  safe-bao-status: NO MATCH (check: command regex "(?i)^(bao|vault)\s+status\b")
+  ...
+  safe-bao-kv-get-redirected: NO MATCH (check: command regex "(?i)\b(bao|vault)\s+kv\s+get\b[^\n]*>")
+Guarded patterns checked:
+  openbao-inline-secret-literal: NO MATCH (...)
+  openbao-destructive-verb: NO MATCH (...)
+  openbao-kv-get-to-stdout: MATCH (check: command regex "(?i)\b(bao|vault)\s+kv\s+get\b")
+Final verdict: WARNING (openbao/openbao-kv-get-to-stdout)
+```
+
+The trace names the safe pattern that *would* have suppressed this —
+`safe-bao-kv-get-redirected` — and shows it did not fire. That is the
+answer to "why me": the read has no destination.
+
+#### Step 3: Read the rule's standing explanation
 
 ```bash
-# Edit the pack to be more specific
-cat > /tmp/kubectl-fix.json <<'EOF'
-{
-  "id": "kubectl-delete-pod",
-  "type": "command_regex",
-  "regex": "kubectl delete pod",
-  "tier": "tier1",
-  "severity": "Medium",
-  "explanation": "Deleting pods causes service disruption but pods can be recreated",
-  "destructive": false,
-  "redirect": {
-    "channel": "deny",
-    "reason_template": "kubectl delete pod disrupts service. Use 'kubectl rollout restart' instead.",
-    "rewrite_template": null
-  }
-}
-EOF
+icg explain --pattern openbao-kv-get-to-stdout --show-redirect
+
+# Pattern: openbao-kv-get-to-stdout
+# Pack: openbao
+# Enabled: true
+# Tier: Tier1
+# Severity: Medium
+# Why: Reading a secret to stdout puts its value in the agent transcript and any
+#      log capturing it. Reads should land in a destination, not the terminal.
+# Redirect channel: AdditionalContext
+# Alternative: This read prints a secret value to stdout ... Prefer redirecting to a
+#      mode-600 destination, or consuming it inline for one command via an environment
+#      assignment. To check that a path exists without revealing the value, use
+#      `bao kv metadata get`.
 ```
 
-#### Step 5: Verify the Fix
+Add `--show-regex` to see the matcher itself.
+
+#### Step 4: Decide whether it is actually a false positive
+
+Test the forms the redirect recommends before touching the pack:
 
 ```bash
-# Test the new pattern
-icg check --command "kubectl delete pod myapp-abc123" \
-  --pack /tmp/kubectl-fix.json
+# Redirected to a file -- allowed by safe-bao-kv-get-redirected
+icg check --command 'bao kv get -field=password secret/app/db > ~/.config/app/creds'
+# ALLOW: no configured rule matched
 
-# Output:
-# DENIED: kubectl delete pod disrupts service. Use 'kubectl rollout restart' instead.
-
-# Test that deployment deletion is still caught
-icg check --command "kubectl delete deployment myapp" \
-  --pack /tmp/kubectl-fix.json
-
-# Output:
-# ALLOW: No patterns matched (kubectl-delete-pod doesn't match "delete deployment")
+# Consumed inline for one command -- allowed
+icg check --command 'TOKEN=$(bao kv get -field=token secret/app/x) curl -H "Authorization: Bearer $TOKEN" https://api.example'
+# ALLOW: no configured rule matched
 ```
+
+Both sanctioned forms pass. The original command was not a false positive:
+it really does print a secret to the terminal, and the warning is the rule
+doing its job. Most "false positive" reports resolve here.
+
+#### Step 5: If it *is* a false positive, widen a safe pattern — not the guarded one
+
+A genuine false positive means a safe form is missing from `safe_patterns`.
+Widening the guarded regex instead is how coverage silently disappears.
+Add the safe pattern to a copy of the pack, and prove both directions:
+
+```bash
+cp packs/openbao.json /tmp/openbao-candidate.json
+# ...add the new entry to "safe_patterns" in /tmp/openbao-candidate.json...
+
+# The reported command is now clean
+icg check --pack /tmp/openbao-candidate.json --command "<the reported command>"
+
+# ...and the rule still fires on the case it exists for
+icg check --pack /tmp/openbao-candidate.json --command "bao kv get secret/app/db"
+# WARNING: This read prints a secret value to stdout ...
+```
+
+Then run the release gate before proposing the change — `coverage-diff`
+reports a safe-pattern addition that swallows an existing deny case as a
+regression:
+
+```bash
+icg regression-suite packs/openbao.json --output /tmp/openbao-suite.json
+icg coverage-diff packs/openbao.json /tmp/openbao-candidate.json
+```
+
+See [rule-pack-best-practices.md](../developers/rule-pack-best-practices.md)
+for the full authoring contract.
 
 ---
 
@@ -932,39 +963,33 @@ EOF
 
 #### Step 4: Configure Coexistence
 
-```bash
-# Edit Claude Code settings for both hooks
-cat > ~/.config/claude-code/settings.json <<'EOF'
+Both guards run as ordinary `PreToolUse` command hooks. Claude Code runs
+every hook whose matcher fits, so listing both in one matcher block keeps
+them side by side during the overlap window:
+
+```json
 {
   "hooks": {
     "PreToolUse": [
       {
-        "command": "~/.claude/hooks/org-rule-guard.py",
-        "args": []
-      },
-      {
-        "command": "/usr/local/bin/icg",
-        "args": ["check", "--stdin", "--harness", "claude-code"]
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "/home/coding/.claude/hooks/org-rule-guard.py", "timeout": 10 },
+          { "type": "command", "command": "/usr/local/bin/icg hook", "timeout": 10 }
+        ]
       }
     ]
   }
 }
-EOF
-
-# Test coexistence
-echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}' | \
-  ~/.claude/hooks/org-rule-guard.py
-
-# Output:
-# BLOCKED: vault kv destroy (org-rule-guard.py doesn't catch this)
-# ALLOW: (org-rule-guard.py doesn't protect vault)
-
-echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}' | \
-  icg check --stdin
-
-# Output:
-# DENIED: vault kv destroy is permanently destructive (icg catches this)
 ```
+
+Expect double denials for any rule both guards cover — that is the
+intended, visible signal during coexistence, and the cue to remove the
+rule from `org-rule-guard.py`. See
+[migration-from-org-rule-guard.md](../operators/migration-from-org-rule-guard.md)
+for the ordered cutover, and
+[deployment-guide.md](../operators/deployment-guide.md) for the canonical
+hook contract.
 
 #### Step 5: Verify and Monitor
 
@@ -992,50 +1017,61 @@ cat coexistence-data.json | jq '[.[] | .packId] | group_by | map({pack: .[0], co
 #### Step 1: Test Claude Code Integration
 
 ```bash
-# Configure Claude Code hook
-mkdir -p ~/.config/claude-code
-cat > ~/.config/claude-code/settings.json <<'EOF'
+# Merge into ~/.claude/settings.json -- do not overwrite unrelated settings.
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "claude-code"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 
-# Test with Claude Code
-echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}' | \
-  icg check --stdin --harness claude-code
-
-# Output:
-# DENIED: vault kv destroy is permanently destructive
+# Verify hook
+icg health --check-hooks
 ```
+
+> The canonical hook contract is in
+> [deployment-guide.md](../operators/deployment-guide.md). `icg hook` reads one
+> PreToolUse JSON document from stdin and writes one decision envelope --
+> `icg check --stdin` is the human-facing tester, not the hook entry point.
 
 #### Step 2: Test Codex CLI Integration
 
 ```bash
-# Configure Codex CLI hook
-mkdir -p ~/.config/codex-cli
-cat > ~/.config/codex-cli/settings.json <<'EOF'
+# Codex CLI reads ~/.codex/hooks.json (or a repo's .codex/hooks.json).
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/usr/local/bin/icg",
-      "args": ["check", "--stdin", "--harness", "codex-cli"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/icg hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
-EOF
 
-# Test with Codex CLI
-echo '{"toolName":"Bash","toolInput":{"command":"git push --force origin main"}}' | \
-  icg check --stdin --harness codex-cli
-
-# Output:
-# DENIED: git push --force would rewrite public history
+# Verify hook
+icg health --check-hooks
 ```
+
+> Use the file and schema documented by the installed Codex CLI version --
+> that hook surface is young and still moving; see
+> [multi-harness-integration.md](../notes/multi-harness-integration.md).
 
 #### Step 3: Verify Both Harnesses
 
@@ -1178,7 +1214,7 @@ icg override list
 # Repository              Pattern               Expires
 # ────────────────────────────────────────────────────────────────
 # legacy-app             image-tag-bare-sha    2026-12-31
-# test-env               vault-policy-delete   2026-09-30
+# test-env               openbao-destructive-verb   2026-09-30
 
 # Review quarterly
 echo "Override review scheduled: $(date -d '+3 months')" >> calendar.txt
@@ -1196,14 +1232,14 @@ test owns it.
 
 | Scenario | Fixture(s) | Scenario test | Expected outcome |
 |---|---|---|---|
-| 1. First-time Installation | [`installation.json`](../../tests/fixtures/operator-scenarios/installation.json), [`installation-packs/`](../../tests/fixtures/operator-scenarios/installation-packs/) | `first_time_installation_validates_documented_commands_and_outputs` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | Version and health checks pass; the Vault destroy request is denied with `vault-kv-destroy`; the safe get request is allowed; missing hook configuration fails. |
+| 1. First-time Installation | [`installation.json`](../../tests/fixtures/operator-scenarios/installation.json), [`installation-packs/`](../../tests/fixtures/operator-scenarios/installation-packs/) | `first_time_installation_validates_documented_commands_and_outputs` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | Version and health checks pass; the Vault destroy request is denied with `openbao-destructive-verb`; the safe get request is allowed; missing hook configuration fails. |
 | 2. Daily Operations | [`daily-operations.json`](../../tests/fixtures/operator-scenarios/daily-operations.json) | `daily_operations_queries_fixture_for_tables_json_and_reports` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | The 1-hour table, 7-day summary, JSON history, and `den-abc123` report match the fixture; an unknown denial ID fails. |
 | 3. Handling Denials | [`handling-denials.json`](../../tests/fixtures/operator-scenarios/handling-denials.json), [`handling-denials-pack.json`](../../tests/fixtures/operator-scenarios/handling-denials-pack.json) | `handling_denials_checks_format_redirect_and_safe_alternatives` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | The Vault destroy denial exposes severity, explanation, and redirect; `explain` finds the pattern; both safe alternatives allow; an unknown pattern fails. |
 | 4. Emergency Response | [`emergency-response.json`](../../tests/fixtures/operator-scenarios/emergency-response.json), [`daily-operations.json`](../../tests/fixtures/operator-scenarios/daily-operations.json) | `emergency_response_records_state_bypasses_once_and_restores_protection` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | The incident record is persisted; `ICG_DISABLED=1` allows once with a warning; protection denies again after removal; health and denial export succeed. |
 | 5. Maintenance Tasks | [`maintenance.json`](../../tests/fixtures/operator-scenarios/maintenance.json), [`installation-packs/`](../../tests/fixtures/operator-scenarios/installation-packs/) | `maintenance_commands_validate_health_trends_updates_and_backup` in [`operator_scenarios.rs`](../../tests/operator_scenarios.rs) | Verbose health, trend, update-check, backup creation, and backup verification succeed; a corrupt archive is rejected. |
 | 6. Creating a New Rule Pack | [`creating-rule-pack-new.json`](../../tests/fixtures/developer-scenarios/creating-rule-pack-new.json) | `scenario_6_new_pack_scaffold_and_local_validation` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | The scaffold is loadable; a safe `kubectl get` allows; PVC deletion denies; a duplicate scaffold refuses to overwrite. |
 | 7. Testing Pattern Changes | [`testing-pattern-changes-baseline.json`](../../tests/fixtures/developer-scenarios/testing-pattern-changes-baseline.json), [`testing-pattern-changes-updated.json`](../../tests/fixtures/developer-scenarios/testing-pattern-changes-updated.json), [`regression-suite-baseline.json`](../../tests/fixtures/developer-scenarios/regression-suite-baseline.json), [`regression-suite-updated.json`](../../tests/fixtures/developer-scenarios/regression-suite-updated.json) | `scenario_7_regression_generation_verification_and_coverage_diff` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | Regression suites verify; the narrowed diff is rejected without justification and accepted with one; missing cases and changed inputs fail verification. |
-| 8. Debugging False Positives | [`debugging-false-positives-overly-broad.json`](../../tests/fixtures/developer-scenarios/debugging-false-positives-overly-broad.json), [`debugging-false-positives-fixed.json`](../../tests/fixtures/developer-scenarios/debugging-false-positives-fixed.json) | `scenario_8_debug_trace_reproduce_fix_and_verify_false_positive` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | The broad rule denies all delete forms; the fixed rules allow pod/deployment deletion but still deny PVC deletion; debug and explain traces identify the guarded pattern; malformed packs fail. |
+| 8. Debugging False Positives | the shipped [`packs/openbao.json`](../../packs/openbao.json), plus [`debugging-false-positives-overly-broad.json`](../../tests/fixtures/developer-scenarios/debugging-false-positives-overly-broad.json) and [`debugging-false-positives-fixed.json`](../../tests/fixtures/developer-scenarios/debugging-false-positives-fixed.json) | `scenario_8_documented_walkthrough_runs_against_the_shipped_openbao_pack` and `scenario_8_debug_trace_reproduce_fix_and_verify_false_positive` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs) | The documented walkthrough reproduces on the real pack: the reported read warns rather than denies, both redirect-recommended forms allow, and the `--debug` trace names `safe-bao-kv-get-redirected` as the safe pattern that did not fire. On synthetic fixtures the same loop shows a broad rule denying every delete form and the narrowed rules still denying PVC deletion; malformed packs fail. |
 | 9. Adding Custom Predicates | [`adding-custom-predicates.json`](../../tests/fixtures/developer-scenarios/adding-custom-predicates.json) | `scenario_9_custom_predicates_evaluate_shared_checkout_scope` in [`developer_scenarios.rs`](../../tests/developer_scenarios.rs), with predicate cases in [`custom_predicates_tests.rs`](../../tests/custom_predicates_tests.rs) | A `.beads/` write in the shared checkout denies, an unrelated write allows, and both decisions work through the stdin CLI path. |
 | 10. Migrating from org-rule-guard.py | [`scenario-10-migration.json`](../../tests/fixtures/integration-scenarios/scenario-10-migration.json) | `scenario_10_compares_org_guard_overlap_and_coverage_gaps` in [`integration_scenarios.rs`](../../tests/integration_scenarios.rs) | Overlapping latest-image decisions agree; org-only probes remain allowed by icg; the icg-only OpenBao destructive probe denies; the live org hook is compared when present. |
 | 11. Setting up Multi-Harness Support | [`scenario-11-multi-harness.json`](../../tests/fixtures/integration-scenarios/scenario-11-multi-harness.json) | `scenario_11_parses_and_runs_both_harness_wire_formats` in [`integration_scenarios.rs`](../../tests/integration_scenarios.rs) | CamelCase and snake_case payloads parse to the same decisions; `check --stdin` and native `hook` return the shared deny envelope with the expected pack and pattern. |

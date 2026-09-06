@@ -186,7 +186,7 @@ git log --all --oneline | grep "force" | \
 
 // ✅ Good: Descriptive ID and specific explanation
 {
-  "id": "vault-kv-destroy-permanent",
+  "id": "openbao-destructive-verb",
   "explanation": "vault kv destroy permanently destroys secret data versions and cannot be undone. This is different from vault kv delete, which only removes metadata."
 }
 ```
@@ -203,7 +203,7 @@ Use descriptive, hierarchical IDs:
 <prefix>-<tool>-<operation>-<modifier>
 
 Examples:
-vault-kv-destroy-permanent
+openbao-destructive-verb
 git-push-force-rewrite-history
 kubectl-delete-pvc-data-loss
 image-tag-latest-unpinned
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_safe_patterns_allow() {
-        let pack = load_pack("packs/vault.json").unwrap();
+        let pack = load_pack("packs/openbao.json").unwrap();
 
         // Safe operations should be allowed
         assert!(pack.allows("vault kv get secret/test"));
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_guarded_patterns_block() {
-        let pack = load_pack("packs/vault.json").unwrap();
+        let pack = load_pack("packs/openbao.json").unwrap();
 
         // Dangerous operations should be blocked
         assert!(pack.blocks("vault kv destroy secret/test"));
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn test_command_chaining() {
-        let pack = load_pack("packs/vault.json").unwrap();
+        let pack = load_pack("packs/openbao.json").unwrap();
 
         // Should block even when chained
         assert!(pack.blocks("vault status && vault kv destroy secret/test"));
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_case_sensitivity() {
-        let pack = load_pack("packs/vault.json").unwrap();
+        let pack = load_pack("packs/openbao.json").unwrap();
 
         // Commands are case-sensitive
         assert!(pack.blocks("vault kv destroy secret/test"));
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_whitespace_variations() {
-        let pack = load_pack("packs/vault.json").unwrap();
+        let pack = load_pack("packs/openbao.json").unwrap();
 
         // Should handle various whitespace patterns
         assert!(pack.blocks("vault  kv  destroy  secret/test"));
@@ -478,13 +478,13 @@ Generate and maintain regression suites:
 ```bash
 # Generate regression suite for current pack
 icg regression-suite \
-  packs/vault.json \
-  --output tests/fixtures/vault-regression.json
+  packs/openbao.json \
+  --output tests/fixtures/openbao-regression.json
 
 # Verify no coverage narrowing
 icg verify-coverage \
-  --current tests/fixtures/vault-regression.json \
-  --previous tests/fixtures/vault-regression-baseline.json
+  --current tests/fixtures/openbao-regression.json \
+  --previous tests/fixtures/openbao-regression-baseline.json
 
 # Expected output:
 # ✓ No coverage narrowing detected
@@ -500,7 +500,7 @@ Test against real command histories:
 git log --all --pretty=format:"%H" | \
   while read commit; do
     git show "$commit" | grep -E "^(vault|kubectl|git)" | \
-      icg check --stdin --pack /etc/icg/packs/vault.json
+      icg check --stdin --pack /etc/icg/packs/openbao.json
   done > /tmp/real-command-tests.txt
 
 # Check for false positives
@@ -549,12 +549,12 @@ Maintain a CHANGELOG.md:
 - Pattern: vault-operator-token-safe-read
 
 ### Changed
-- Improved vault-kv-destroy regex to avoid false positives
+- Improved openbao-destructive-verb regex to avoid false positives
 - Updated explanations for clarity
 
 ### Fixed
 - False positive in vault-kv-get when path contains "destroy"
-- Fixed regex escaping in vault-policy-delete
+- Fixed regex escaping in openbao-destructive-verb
 
 ## [1.1.0] - 2026-07-15
 
@@ -598,8 +598,8 @@ Before releasing an updated pack:
 6. **Release**:
    ```bash
    # Tag and push
-   git tag -a vault-pack-v1.2.0 -m "Release vault pack v1.2.0"
-   git push origin vault-pack-v1.2.0
+   git tag -a openbao-pack-v1.2.0 -m "Release vault pack v1.2.0"
+   git push origin openbao-pack-v1.2.0
    ```
 
 ### Backward Compatibility
@@ -929,7 +929,7 @@ Before submitting a rule pack for review:
 
 ```json
 {
-  "id": "vault-kv-destroy-permanent",
+  "id": "openbao-destructive-verb",
   "type": "command_regex",
   "regex": "(?:^|&&|\\|\\||;)\\s*vault\\s+kv\\s+destroy",
   "tier": "tier1",
