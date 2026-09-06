@@ -127,8 +127,9 @@ into your existing `hooks` object — do not overwrite unrelated settings:
 ### Step 3: Smoke-Test the Installation
 
 ```bash
-# 1. All nine packs should be listed
+# 1. All ten packs should be listed
 icg coverage --list
+# ✓ pack argocd-topology (1 patterns)
 # ✓ pack beads (3 patterns)
 # ✓ pack docker (3 patterns)
 # ✓ pack git (3 patterns)
@@ -255,7 +256,7 @@ installed pack plus the repository's `packs/` directory when present). The
 
 ## What Gets Protected
 
-Nine packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
+Ten packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
 
 | Pack | Patterns | What it blocks |
 | --- | --- | --- |
@@ -268,6 +269,7 @@ Nine packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
 | `tmux` | 1 | Sending input to the operator's bare NATO tmux sessions — `bare-nato-session` (Medium) |
 | `beads` | 3 | Hand-editing the shared `.beads` store (`beads-shared-checkout-write`, Critical); recovery misordering (`beads-repair-requires-flush`, `beads-flush-requires-pull`, High) |
 | `misc` | 2 | `needle cleanup` against a live fleet (`needle-cleanup`, Critical); deprecated bead CLIs `bf`/`br` (`deprecated-bead-cli`, Medium) |
+| `argocd-topology` | 1 | A second root Application over `./k8s/ardenone-cluster`, duplicating the centralized `manifest-appset-ardenone-cluster` — `duplicate-ardenone-cluster-root` (High) |
 
 **Not covered by icg** (see [What icg does NOT cover](#what-icg-does-not-cover)):
 kubectl mutations, `.github/workflows/*` creation, and `kind: Job`/`CronJob`
