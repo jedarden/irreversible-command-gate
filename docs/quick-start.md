@@ -57,7 +57,7 @@ sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
 # Verify installation
 icg --version
-# icg 0.1.0
+# icg 0.1.1
 ```
 
 Once releases exist, prefer downloading the release binary. For the full
@@ -512,7 +512,7 @@ More depth: `docs/operators/troubleshooting.md`.
 ## Quick Reference
 
 ```bash
-icg --version                     # icg 0.1.0
+icg --version                     # icg 0.1.1
 icg coverage --list               # list loaded rule packs
 icg check --command "<cmd>"       # test a command string
 icg check --stdin                 # test a PreToolUse JSON document
