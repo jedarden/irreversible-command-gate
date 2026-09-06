@@ -12,6 +12,25 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+/// Every document an operator or pack author is pointed at from the README,
+/// the docs index, or the onboarding path.
+///
+/// The 2026-08-25 audit reconciled only `quick-start.md` and wrote its guards
+/// to match, so the same fictions survived untouched in the docs a newcomer
+/// actually reads first. The guards take the whole set now.
+const OPERATOR_FACING_DOCS: [&str; 10] = [
+    "docs/quick-start.md",
+    "docs/onboarding-guide.md",
+    "docs/examples/README.md",
+    "docs/operators/README.md",
+    "docs/operators/training-manual.md",
+    "docs/operators/deny-messages.md",
+    "docs/operators/deployment-guide.md",
+    "docs/operators/troubleshooting.md",
+    "docs/operators/migration-from-org-rule-guard.md",
+    "docs/developers/README.md",
+];
+
 fn repo_relative(relative: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
     fs::read_to_string(&path)
@@ -354,12 +373,7 @@ fn quick_start_coverage_table_matches_every_shipped_pattern() {
 /// which is what a newcomer following the onboarding path actually typed.
 #[test]
 fn operator_docs_do_not_cite_a_fictional_surface() {
-    let docs = [
-        "docs/quick-start.md",
-        "docs/onboarding-guide.md",
-        "docs/operators/training-manual.md",
-        "docs/examples/README.md",
-    ];
+    let docs = OPERATOR_FACING_DOCS;
 
     // (needle, why it is wrong)
     let banned = [
@@ -378,7 +392,19 @@ fn operator_docs_do_not_cite_a_fictional_surface() {
         ),
         (
             "releases/download/v0.1.0",
-            "no GitHub release has been cut; every install path must build from source",
+            "v0.1.0 is an orphaned tag; the first real release is v0.1.1",
+        ),
+        (
+            "irreversible-command-gate/v0.1.0/packs/",
+            "there is no v0.1.0 tag to fetch packs from",
+        ),
+        (
+            "\"verdict\": \"deny\"",
+            "the hook emits a PreToolUse envelope, not an icg-specific verdict object",
+        ),
+        (
+            "ICG_PACK_PATH",
+            "the environment variables are ICG_PACK_DIR and ICG_RULE_PACK",
         ),
     ];
 
@@ -408,12 +434,7 @@ fn documented_pattern_ids_exist_in_a_shipped_pack() {
         }
     }
 
-    for doc in [
-        "docs/quick-start.md",
-        "docs/onboarding-guide.md",
-        "docs/operators/training-manual.md",
-        "docs/examples/README.md",
-    ] {
+    for doc in OPERATOR_FACING_DOCS {
         let text = repo_relative(doc);
         for line in text.lines() {
             let Some(rest) = line.split("icg explain --pattern ").nth(1) else {
@@ -432,6 +453,88 @@ fn documented_pattern_ids_exist_in_a_shipped_pack() {
                 shipped.iter().any(|id| id == cited),
                 "{doc} tells the reader to run `icg explain --pattern {cited}`, \
                  but no shipped pack defines that pattern"
+            );
+        }
+    }
+}
+
+/// Install instructions must name the release this tree would cut.
+///
+/// Docs said "no GitHub release has been cut yet" for weeks after the tag
+/// existed, and before that pointed at a `v0.1.0` that was orphaned. Pin the
+/// version they cite to Cargo.toml so the two move together.
+#[test]
+fn install_docs_cite_the_current_release_version() {
+    let cargo = repo_relative("Cargo.toml");
+    let version = cargo
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.split('"').next())
+        .expect("Cargo.toml should declare a version");
+    let tag = format!("v{version}");
+
+    for doc in [
+        "README.md",
+        "docs/quick-start.md",
+        "docs/onboarding-guide.md",
+        "docs/examples/README.md",
+        "docs/operators/training-manual.md",
+    ] {
+        let text = repo_relative(doc);
+        assert!(
+            text.contains("releases/download/"),
+            "{doc} should tell the reader where to get the release binary"
+        );
+        assert!(
+            text.contains(&format!("releases/download/{tag}")),
+            "{doc} cites a release other than the current {tag}"
+        );
+        for stale in [
+            "No GitHub release has been cut",
+            "no release has been cut",
+            "No end-to-end release has been cut",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{doc} still claims no release exists, but {tag} is tagged"
+            );
+        }
+    }
+}
+
+/// Rule packs are release data installed to /etc/icg on arbitrary hosts.
+/// Their text may not point at a file in one operator's home directory.
+#[test]
+fn packs_do_not_reference_paths_outside_this_repository() {
+    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    for entry in fs::read_dir(&packs_dir).expect("packs/ readable") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+
+        for offender in ["~/CLAUDE.md", "~/scratch/", "/home/coding"] {
+            assert!(
+                !text.contains(offender),
+                "{name} points at {offender}, which does not exist for anyone \
+                 who installs this pack from a release"
+            );
+        }
+
+        // `~/.config/<app>/creds` is a generic destination the redirect tells
+        // the caller to create, not a reference to an existing document --
+        // so tildes are allowed only in that placeholder shape.
+        for capture in text.split("~/").skip(1) {
+            let referenced: String = capture
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '`' && *c != '"')
+                .collect();
+            assert!(
+                referenced.starts_with(".config/"),
+                "{name} references the home-directory path ~/{referenced}; \
+                 pack text may only name a generic ~/.config destination"
             );
         }
     }
