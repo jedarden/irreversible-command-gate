@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 600" width="1040" height="600" role="img"
+     aria-labelledby="ti de">
+  <title id="ti">How icg evaluates one command</title>
+  <desc id="de">An animated walkthrough of a single evaluation. The command "bao kv destroy
+  secret/app/db" is dispatched to rule packs by tool keyword; only the openbao pack claims it.
+  Inside that pack the seven safe patterns are tried first and none match, so evaluation
+  continues to the guarded patterns. The first guarded pattern does not match, the second —
+  openbao-destructive-verb — does, and its deny channel produces the verdict. A safe-pattern
+  match would have ended evaluation immediately with an allow.</desc>
+
+  <style>
+    :root { color-scheme: light dark; }
+    .bg   { fill: #fbfbfa; }
+    .card { fill: #ffffff; stroke: #d8d5cf; }
+    .well { fill: #f4f2ee; stroke: #e2ded7; }
+    .t    { fill: #1f1e1c; font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .m    { fill: #1f1e1c; font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+    .dim  { fill: #6b675f; }
+    .rule { stroke: #c9c5bd; }
+    .ok   { fill: #1a7f4b; }
+    .no   { fill: #9a958d; }
+    .hit  { fill: #a4272b; }
+    .hitbg{ fill: #fceceb; stroke: #eaa9a6; }
+    .okbg { fill: #e8f5ee; stroke: #9fd4b6; }
+    .sel  { fill: #eef3fb; stroke: #9bb4d8; }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #16161a; }
+      .card { fill: #1e1e24; stroke: #34343d; }
+      .well { fill: #24242c; stroke: #34343d; }
+      .t, .m{ fill: #e8e6e3; }
+      .dim  { fill: #9a958d; }
+      .rule { stroke: #3a3a44; }
+      .ok   { fill: #6ed49b; }
+      .no   { fill: #7c7a86; }
+      .hit  { fill: #f08a86; }
+      .hitbg{ fill: #2d1615; stroke: #7a3330; }
+      .okbg { fill: #14291f; stroke: #2f6b48; }
+      .sel  { fill: #16202e; stroke: #3c5a80; }
+    }
+
+    /* One synchronised 16s loop. Every element carries opacity="1" inline,
+       so a renderer without CSS animation shows the finished diagram rather
+       than a blank frame. */
+    @keyframes b1 { 0%,4% {opacity:0} 5.5%,96% {opacity:1} 100% {opacity:0} }
+    .b1 { animation: b1 16s linear infinite; }
+    @keyframes b2 { 0%,9% {opacity:0} 10.5%,96% {opacity:1} 100% {opacity:0} }
+    .b2 { animation: b2 16s linear infinite; }
+    @keyframes b3 { 0%,13% {opacity:0} 14.5%,96% {opacity:1} 100% {opacity:0} }
+    .b3 { animation: b3 16s linear infinite; }
+    @keyframes b4 { 0%,18% {opacity:0} 19.5%,96% {opacity:1} 100% {opacity:0} }
+    .b4 { animation: b4 16s linear infinite; }
+    @keyframes b5 { 0%,21% {opacity:0} 22.5%,96% {opacity:1} 100% {opacity:0} }
+    .b5 { animation: b5 16s linear infinite; }
+    @keyframes b6 { 0%,24% {opacity:0} 25.5%,96% {opacity:1} 100% {opacity:0} }
+    .b6 { animation: b6 16s linear infinite; }
+    @keyframes b7 { 0%,27% {opacity:0} 28.5%,96% {opacity:1} 100% {opacity:0} }
+    .b7 { animation: b7 16s linear infinite; }
+    @keyframes b8 { 0%,30% {opacity:0} 31.5%,96% {opacity:1} 100% {opacity:0} }
+    .b8 { animation: b8 16s linear infinite; }
+    @keyframes b9 { 0%,33% {opacity:0} 34.5%,96% {opacity:1} 100% {opacity:0} }
+    .b9 { animation: b9 16s linear infinite; }
+    @keyframes b10 { 0%,36% {opacity:0} 37.5%,96% {opacity:1} 100% {opacity:0} }
+    .b10 { animation: b10 16s linear infinite; }
+    @keyframes b11 { 0%,41% {opacity:0} 42.5%,96% {opacity:1} 100% {opacity:0} }
+    .b11 { animation: b11 16s linear infinite; }
+    @keyframes b12 { 0%,46% {opacity:0} 47.5%,96% {opacity:1} 100% {opacity:0} }
+    .b12 { animation: b12 16s linear infinite; }
+    @keyframes b13 { 0%,56% {opacity:0} 57.5%,96% {opacity:1} 100% {opacity:0} }
+    .b13 { animation: b13 16s linear infinite; }
+    @keyframes b14 { 0%,64% {opacity:0} 65.5%,96% {opacity:1} 100% {opacity:0} }
+    .b14 { animation: b14 16s linear infinite; }
+    @keyframes b15 { 0%,72% {opacity:0} 73.5%,96% {opacity:1} 100% {opacity:0} }
+    .b15 { animation: b15 16s linear infinite; }
+
+    /* Packs that lose the dispatch fade back to grey. */
+    .drops { animation: drop 16s linear infinite; }
+    @keyframes drop { 0%,11%{opacity:1} 15%,96%{opacity:.22} 100%{opacity:1} }
+
+    /* The matching rule pulses once when it lands. */
+    .pulse { animation: pulse 16s linear infinite; }
+    @keyframes pulse { 0%,45%{opacity:0} 47%{opacity:1} 50%{opacity:.45} 53%,96%{opacity:1} 100%{opacity:0} }
+  </style>
+
+  <rect class="bg" width="1040" height="600"/>
+
+  <!-- the command under evaluation -->
+  <text class="dim t" x="24" y="30" font-size="12">ONE TOOL CALL, EVALUATED</text>
+  <rect class="well step b1" x="24" y="42" width="440" height="44" rx="6" opacity="1"/>
+  <text class="m step b1" x="40" y="70" font-size="13.5" opacity="1">bao kv destroy secret/app/db</text>
+
+  <!-- step 1: dispatch -->
+  <text class="dim t step b2" x="24" y="118" font-size="12" opacity="1">1 — DISPATCH BY TOOL KEYWORD</text>
+  <g class="step b2" font-size="11.5" opacity="1">
+    <g class="drops">
+      <rect class="well" x="24"  y="130" width="96" height="26" rx="4"/><text class="m dim" x="34" y="148">git</text>
+      <rect class="well" x="128" y="130" width="96" height="26" rx="4"/><text class="m dim" x="138" y="148">docker</text>
+      <rect class="well" x="232" y="130" width="96" height="26" rx="4"/><text class="m dim" x="242" y="148">secrets</text>
+      <rect class="well" x="336" y="130" width="96" height="26" rx="4"/><text class="m dim" x="346" y="148">beads</text>
+      <rect class="well" x="440" y="130" width="96" height="26" rx="4"/><text class="m dim" x="450" y="148">tmux · …</text>
+    </g>
+    <rect class="sel" x="560" y="130" width="120" height="26" rx="4"/>
+    <text class="m" x="570" y="148">openbao</text>
+    <text class="dim t" x="694" y="148">tool_keywords: bao, vault</text>
+  </g>
+
+  <!-- step 2: safe patterns first -->
+  <text class="dim t step b3" x="24" y="196" font-size="12" opacity="1">2 — SAFE PATTERNS FIRST · a match here ends it with ALLOW</text>
+  <rect class="card step b3" x="24" y="208" width="470" height="196" rx="8" opacity="1"/>
+  <g font-size="11.5">
+    <g class="step b4" opacity="1"><text class="m dim" x="40" y="232">safe-bao-status</text>              <text class="no m" x="392" y="232">no match</text></g>
+    <g class="step b5" opacity="1"><text class="m dim" x="40" y="256">safe-bao-token-lookup</text>        <text class="no m" x="392" y="256">no match</text></g>
+    <g class="step b6" opacity="1"><text class="m dim" x="40" y="280">safe-bao-token-revoke-self</text>   <text class="no m" x="392" y="280">no match</text></g>
+    <g class="step b7" opacity="1"><text class="m dim" x="40" y="304">safe-bao-policy-read</text>         <text class="no m" x="392" y="304">no match</text></g>
+    <g class="step b8" opacity="1"><text class="m dim" x="40" y="328">safe-bao-kv-metadata-get</text>     <text class="no m" x="392" y="328">no match</text></g>
+    <g class="step b9" opacity="1"><text class="m dim" x="40" y="352">safe-bao-kv-list</text>             <text class="no m" x="392" y="352">no match</text></g>
+    <g class="step b10" opacity="1"><text class="m dim" x="40" y="376">safe-bao-kv-get-redirected</text>  <text class="no m" x="392" y="376">no match</text></g>
+  </g>
+  <text class="dim t step b11" x="24" y="424" font-size="11.5" opacity="1">None matched — evaluation continues.</text>
+
+  <!-- step 3: guarded patterns -->
+  <text class="dim t step b12" x="530" y="196" font-size="12" opacity="1">3 — GUARDED PATTERNS · first match wins</text>
+  <rect class="card step b12" x="530" y="208" width="486" height="196" rx="8" opacity="1"/>
+  <g font-size="11.5">
+    <g class="step b12" opacity="1">
+      <text class="m dim" x="546" y="236">openbao-inline-secret-literal</text>
+      <text class="no m" x="900" y="236">no match</text>
+    </g>
+    <g class="pulse">
+      <rect class="hitbg" x="540" y="252" width="466" height="30" rx="5"/>
+      <text class="m" x="546" y="272">openbao-destructive-verb</text>
+      <text class="hit m" x="908" y="272" font-weight="700">MATCH</text>
+    </g>
+    <g class="step b13" opacity="1">
+      <text class="m dim" x="546" y="308" opacity="0.45">openbao-kv-get-to-stdout</text>
+      <text class="dim m" x="866" y="308" font-size="11">not reached</text>
+    </g>
+    <text class="dim t step b13" x="546" y="344" font-size="11.5" opacity="1">tier: Tier1 · severity: Critical</text>
+    <text class="dim t step b13" x="546" y="364" font-size="11.5" opacity="1">redirect channel: deny</text>
+    <text class="dim t step b13" x="546" y="384" font-size="11.5" opacity="1">destructive: true</text>
+  </g>
+
+  <!-- step 4: verdict -->
+  <text class="dim t step b14" x="24" y="466" font-size="12" opacity="1">4 — THE RULE'S CHANNEL IS THE VERDICT</text>
+  <rect class="hitbg step b14" x="24" y="478" width="992" height="58" rx="8" opacity="1"/>
+  <text class="hit step b14" x="42" y="504" font-size="14" font-weight="700" opacity="1">DENY</text>
+  <text class="m step b14" x="110" y="504" font-size="11.5" opacity="1">permissionDecision: "deny"  ·  [pack=openbao, pattern=openbao-destructive-verb]</text>
+  <text class="dim t step b14" x="42" y="524" font-size="11.5" opacity="1">The command never ran. The reason carries the sanctioned alternative: 'kv delete' soft-deletes and is recoverable.</text>
+
+  <line class="rule step b15" x1="24" y1="556" x2="1016" y2="556" stroke-width="1" opacity="1"/>
+  <text class="dim t step b15" x="24" y="578" font-size="11.5" opacity="1">Had a safe pattern matched at step 2, the guarded patterns would never have been reached — that is what keeps ordinary read-only work quiet.</text>
+  <text class="dim t step b15" x="24" y="594" font-size="11" opacity="1">Reproduce this trace: icg check --command "bao kv destroy secret/app/db" --debug</text>
+</svg>

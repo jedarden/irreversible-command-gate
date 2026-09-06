@@ -62,7 +62,12 @@ Short, ordered procedures for a moment when something is on fire.
 
 ## Assets
 
-[assets/](assets/) holds the README's demo GIF and flow diagram, plus
+[assets/](assets/) holds three figures — the demo GIF (the CLI surface), the
+flow diagram (where the guard sits), and
+[`icg-evaluation.svg`](assets/icg-evaluation.svg), an animated walkthrough of
+a single evaluation showing safe-pattern short-circuiting and first-match-wins
+ordering. It degrades to a complete static diagram where CSS animation is
+unavailable. Also here are
 [`assets/demo.sh`](assets/demo.sh) and [`assets/demo.tape`](assets/demo.tape)
 — the reproducible source for the recording. Nothing in the GIF is staged;
 regenerate it with `vhs docs/assets/demo.tape`.

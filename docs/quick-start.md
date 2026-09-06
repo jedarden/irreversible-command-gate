@@ -246,6 +246,14 @@ Only `deny` stops the command. A rule pack chooses its channel per pattern,
 so raising or lowering a rule's assertiveness is a pack edit, not a code
 change.
 
+**How a decision is reached.** Packs are dispatched by `tool_keywords`, then
+within the matching pack the `safe_patterns` are tried first — a match there
+ends evaluation immediately with an allow, and the guarded patterns are never
+reached. Otherwise the `guarded_patterns` are tried in order and the first
+match wins; that rule's redirect channel is the verdict.
+[`docs/assets/icg-evaluation.svg`](assets/icg-evaluation.svg) animates one
+full pass, and `--debug` prints the same trace for any input you like.
+
 ### Understanding a decision
 
 Every pattern has a standing explanation:

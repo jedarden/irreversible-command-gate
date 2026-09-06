@@ -26,6 +26,20 @@ finish the turn knowing the sanctioned path, not just that it was blocked.
        width="1000">
 </p>
 
+<p align="center">
+  <img src="docs/assets/icg-evaluation.svg"
+       alt="Animated walkthrough of one evaluation: the command is dispatched to rule packs by tool keyword and only the openbao pack claims it; its seven safe patterns are tried first and none match; evaluation continues to the guarded patterns, where the second one matches and its deny channel becomes the verdict."
+       width="1000">
+</p>
+
+<sub>The same evaluation, step by step. Reproduce the trace with
+<code>icg check --command "bao kv destroy secret/app/db" --debug</code>.</sub>
+
+Two things decide everything: **safe patterns are tried first and
+short-circuit**, and among guarded patterns **the first match wins**. That
+ordering is what keeps ordinary read-only work quiet — a rule only ever fires
+on input no safe pattern claimed.
+
 Four verdicts, one per redirect channel a rule can declare — and **only
 `deny` stops the command**:
 
