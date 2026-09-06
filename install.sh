@@ -307,6 +307,22 @@ case "$ALLOW_PROBE" in
        A guard that blocks ordinary work will be turned off." ;;
 esac
 
+# The self-test above ran as root and wrote into $CACHE_DIR -- denials.jsonl,
+# health-state.json and its lock all end up root-owned inside an
+# agent-owned directory, and the agent then cannot append to them. The
+# directory's mode is not enough; the files inside it need the same owner,
+# or the practice trial records nothing (observed on lab, 2026-09-06).
+if [ "$AGENT_USER" != "root" ] && [ -d "$CACHE_DIR" ]; then
+  run chown -R "$AGENT_USER:$AGENT_GROUP" "$CACHE_DIR"
+  if runuser -u "$AGENT_USER" -- test -w "$CACHE_DIR/denials.jsonl" 2>/dev/null \
+     || [ ! -e "$CACHE_DIR/denials.jsonl" ]; then
+    ok "$AGENT_USER owns everything under $CACHE_DIR"
+  else
+    warn "$AGENT_USER still cannot write $CACHE_DIR/denials.jsonl -- denial"
+    warn "history will not record. Fix with: chown -R $AGENT_USER $CACHE_DIR"
+  fi
+fi
+
 # --------------------------------------------------------------------------
 # hook registration
 # --------------------------------------------------------------------------
