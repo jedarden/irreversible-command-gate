@@ -98,6 +98,14 @@ pub struct CoverageArgs {
     /// Rule-pack file(s) or directories to list.
     #[arg(long = "pack", alias = "rule-pack")]
     pub packs: Vec<PathBuf>,
+
+    /// Output format: `text` (default) or `json`.
+    ///
+    /// `json` emits the complete loaded policy -- every pack, every rule id,
+    /// severity, channel and explanation -- so an agent, a bot, or a doc
+    /// generator can read what is enforced without scraping the text form.
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Debug, Args)]
@@ -513,10 +521,113 @@ fn explain_denial(id: &str, requested_log: Option<&Path>) -> Result<()> {
     bail!("denial '{}' was not found", id)
 }
 
+/// One rule as reported by `icg coverage --format json`.
+#[derive(Debug, Serialize)]
+struct CoverageRule {
+    id: String,
+    enabled: bool,
+    tier: String,
+    severity: String,
+    channel: String,
+    destructive: bool,
+    check: &'static str,
+    explanation: String,
+    redirect: String,
+}
+
+/// One pack as reported by `icg coverage --format json`.
+#[derive(Debug, Serialize)]
+struct CoveragePack {
+    id: String,
+    path: String,
+    tool_keywords: Vec<String>,
+    applies_to: Vec<String>,
+    safe_patterns: Vec<String>,
+    guarded_patterns: Vec<CoverageRule>,
+}
+
+#[derive(Debug, Serialize)]
+struct CoverageReport {
+    format: &'static str,
+    packs: Vec<CoveragePack>,
+    unreadable: Vec<CoverageLoadError>,
+    pack_count: usize,
+    guarded_pattern_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CoverageLoadError {
+    path: String,
+    error: String,
+}
+
+fn coverage_report(paths: &[PathBuf]) -> CoverageReport {
+    let mut packs = Vec::new();
+    let mut unreadable = Vec::new();
+
+    for path in paths {
+        match crate::rule_pack::load_pack(path) {
+            Ok(pack) => packs.push(CoveragePack {
+                id: pack.id.clone(),
+                path: path.display().to_string(),
+                tool_keywords: pack.tool_keywords.clone(),
+                applies_to: pack.applies_to.clone(),
+                safe_patterns: pack.safe_patterns.iter().map(|p| p.id.clone()).collect(),
+                guarded_patterns: pack
+                    .guarded_patterns
+                    .iter()
+                    .map(|rule| CoverageRule {
+                        id: rule.id.clone(),
+                        enabled: rule.enabled,
+                        tier: format!("{:?}", rule.tier),
+                        severity: format!("{:?}", rule.severity),
+                        channel: format!("{:?}", rule.redirect.channel),
+                        destructive: rule.destructive,
+                        check: match rule.check {
+                            Check::CommandRegex { .. } => "command_regex",
+                            Check::ContentRegex { .. } => "content_regex",
+                            Check::Predicate { .. } => "predicate",
+                        },
+                        explanation: rule.explanation.clone(),
+                        redirect: rule.redirect.reason_template.clone(),
+                    })
+                    .collect(),
+            }),
+            Err(error) => unreadable.push(CoverageLoadError {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
+    let guarded_pattern_count = packs.iter().map(|p| p.guarded_patterns.len()).sum();
+    CoverageReport {
+        format: "coverage/v1",
+        pack_count: packs.len(),
+        guarded_pattern_count,
+        packs,
+        unreadable,
+    }
+}
+
 pub fn run_coverage(args: CoverageArgs) -> Result<()> {
     // `coverage` is intentionally useful without a flag as well; --list is
     // retained as the documented spelling and future modes can be added later.
     let paths = resolve_pack_paths(&args.packs)?;
+
+    match args.format.as_str() {
+        "json" => {
+            let report = coverage_report(&paths);
+            if report.packs.is_empty() {
+                bail!("no readable rule packs were found")
+            }
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            return Ok(());
+        }
+        "text" => {}
+        other => bail!("unsupported --format {other:?}; use \"text\" or \"json\""),
+    }
+
     let mut found = false;
     for path in paths {
         match crate::rule_pack::load_pack(&path) {
