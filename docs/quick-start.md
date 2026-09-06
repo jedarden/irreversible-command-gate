@@ -38,7 +38,31 @@ process. Keep the harness's own approval and sandbox controls enabled.
 
 ## Installation (2 minutes)
 
-### Option 1: Release binary (recommended)
+### Option 0: `install.sh` (recommended)
+
+Does everything below, then verifies it. Use this unless you have a reason
+not to.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jedarden/irreversible-command-gate/main/install.sh \
+  | sudo bash -s -- --hook
+```
+
+It installs the binary and packs root-owned, creates the telemetry cache,
+optionally registers the PreToolUse hook (`--hook`, merging into an existing
+settings file and keeping a backup), verifies the installed packs against the
+release manifest, and then runs a live self-test through the hook: one
+known-destructive command that must come back denied, and one ordinary
+command that must come back allowed. If either probe is wrong the install
+fails loudly instead of leaving you with a guard that is present but not
+enforcing.
+
+Useful flags: `--dry-run`, `--version <tag>`, `--from-checkout`,
+`--wrapper-dir <dir>` (see the deployment guide's *Scoping the wrapper to the
+agent*), `--pack-source <dir>` for an offline pack set, `--uninstall`.
+`--help` lists them all.
+
+### Option 1: Release binary, by hand
 
 ```bash
 # Release binary and packs (v0.1.2, linux x86_64)
@@ -59,7 +83,7 @@ The release also carries `pack-manifest.json` (byte-level checksums for
 `icg pack-manifest --verify`) and `rule-pack.json` (the merged single-file
 pack, for the legacy `/etc/icg/rule-pack.json` layout).
 
-### Option 2: Build from source
+### Option 2: Build from source, by hand
 
 ```bash
 git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git

@@ -85,8 +85,23 @@ output, not its status. `icg hook` is the machine entry point: one
 PreToolUse JSON document in, one decision envelope out.
 
 To actually guard an agent, install the binary and packs root-owned and
-register the hook — five minutes, in the
-**[Quick Start Guide](docs/quick-start.md)**.
+register the hook. `install.sh` does all of it and **proves the result
+enforces before reporting success**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jedarden/irreversible-command-gate/main/install.sh \
+  | sudo bash -s -- --hook
+```
+
+That last part matters more than it sounds. `icg hook` fails open by design:
+with no readable pack directory it answers `{"permissionDecision":"allow"}`
+and exits 0, silently. A half-finished install therefore looks exactly like a
+working one. The installer sends a known-destructive command through the hook
+and refuses to report success unless it comes back denied — so you cannot end
+up believing you are guarded by nothing.
+
+`--dry-run` shows what it would do; `--uninstall` reverses it. The manual
+steps are in the **[Quick Start Guide](docs/quick-start.md)**.
 
 ## What ships today
 
