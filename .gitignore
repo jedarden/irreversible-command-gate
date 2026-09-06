@@ -1,4 +1,13 @@
 /target
 
-# NEEDLE execution traces are local diagnostics.
+# NEEDLE execution traces and dispatch state are local diagnostics.
 **/.beads/traces/
+.needle-predispatch-sha
+
+# Bead maintenance services write these at runtime; they are machine-local.
+.beads/diagnostics/
+.beads/events.jsonl
+.beads/*.pid
+
+# Convenience symlink some scripts create into a local build tree.
+scripts/bead-integrity-check-bin

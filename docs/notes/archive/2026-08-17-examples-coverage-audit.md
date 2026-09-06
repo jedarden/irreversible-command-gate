@@ -1,3 +1,11 @@
+> **Archived, 2026-08-17.** This is a point-in-time audit of
+> `docs/examples/README.md` against the CLI as it stood on that date. It is
+> kept for the record and is **not current**: the pack it calls `vault` ships
+> as `openbao`, `--debug` and `icg status --denials` were implemented
+> afterwards, and the scenarios it grades have since been rewritten. For the
+> live picture run `icg coverage --list` and see
+> [quick-start.md](../../quick-start.md).
+
 # Examples Coverage Analysis
 
 ## Summary of 12 Documented Scenarios
