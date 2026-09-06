@@ -29,6 +29,7 @@ PACK_SOURCE=""
 FROM_CHECKOUT=0
 WRITE_HOOK=0
 SETTINGS=""
+AGENT_USER=""
 UNINSTALL=0
 DRY_RUN=0
 KEEP_TMP=0
@@ -54,6 +55,10 @@ Options:
   --prefix <dir>        Directory for the binary        (default: /usr/local/bin)
   --config-dir <dir>    Directory for the packs         (default: /etc/icg)
   --cache-dir <dir>     Directory for telemetry         (default: /var/cache/icg)
+  --agent-user <user>   The identity the guarded agent runs as. The telemetry
+                        cache is made writable by it, so denial history is
+                        actually recorded. Defaults to the invoking user
+                        (SUDO_USER). Pass "root" to keep the cache root-only.
   --pack-source <dir>   Install packs from here instead of the release tarball
                         or the checkout. For an offline or hand-carried pack
                         set; the manifest check is skipped, the self-test is
@@ -78,6 +83,7 @@ while [ $# -gt 0 ]; do
     --config-dir)   CONFIG_DIR="${2:?--config-dir needs a directory}"; shift 2 ;;
     --cache-dir)    CACHE_DIR="${2:?--cache-dir needs a directory}"; shift 2 ;;
     --pack-source)  PACK_SOURCE="${2:?--pack-source needs a directory}"; shift 2 ;;
+    --agent-user)   AGENT_USER="${2:?--agent-user needs a username}"; shift 2 ;;
     --wrapper-dir)  WRAPPER_DIR="${2:?--wrapper-dir needs a directory}"; shift 2 ;;
     --hook)         WRITE_HOOK=1; shift ;;
     --settings)     SETTINGS="${2:?--settings needs a path}"; WRITE_HOOK=1; shift 2 ;;
@@ -207,11 +213,24 @@ else
   printf '%s   would install:%s %s/*.json -> %s\n' "$D" "$N" "$SRC_PACKS" "$PACK_DIR"
 fi
 
-# The hook initializes its telemetry store before evaluating, so the agent
-# identity must be able to write here. Root-only would make every check emit
-# warnings; world-writable would be worse. 0750 plus a group is the middle.
-info "Creating $CACHE_DIR for telemetry and denial history"
-run install -d -o root -g root -m 0750 "$CACHE_DIR"
+# The hook initializes its telemetry store BEFORE evaluating, and it runs as
+# the agent, not as root. A root-only cache therefore means every check emits
+# a permission warning and -- the part that matters -- no denial history is
+# ever written. Practice mode would run for a week and produce nothing.
+#
+# So the directory is owned by the agent identity, while the policy it
+# enforces (the binary and $CONFIG_DIR) stays root-owned and out of its
+# reach. Those are different trust questions: the agent must not be able to
+# rewrite the rules, but it must be able to record that it tripped one.
+if [ -z "$AGENT_USER" ]; then
+  AGENT_USER="${SUDO_USER:-$(id -un)}"
+fi
+if ! id -u "$AGENT_USER" >/dev/null 2>&1; then
+  die "--agent-user $AGENT_USER does not exist on this host"
+fi
+AGENT_GROUP="$(id -gn "$AGENT_USER" 2>/dev/null || echo "$AGENT_USER")"
+info "Creating $CACHE_DIR, writable by $AGENT_USER"
+run install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 "$CACHE_DIR"
 
 if [ -n "$WRAPPER_DIR" ]; then
   info "Installing PATH-wrapper symlinks to $WRAPPER_DIR"
@@ -244,6 +263,19 @@ if [ -n "$SRC_MANIFEST" ] && [ -f "$SRC_MANIFEST" ]; then
   ok "packs are byte-identical to the release manifest"
 else
   warn "no pack manifest to verify against (installing from a checkout)"
+fi
+
+# Denial history is the whole output of a practice-mode trial, so prove the
+# agent can actually write it rather than trusting the chown.
+if [ "$AGENT_USER" != "root" ]; then
+  if runuser -u "$AGENT_USER" -- test -w "$CACHE_DIR" 2>/dev/null \
+     || su -s /bin/sh -c "test -w '$CACHE_DIR'" "$AGENT_USER" 2>/dev/null; then
+    ok "$AGENT_USER can write $CACHE_DIR (denial history will be recorded)"
+  else
+    warn "$AGENT_USER cannot write $CACHE_DIR -- denials will not be recorded."
+    warn "Practice mode would produce no data. Fix with:"
+    warn "  chown -R $AGENT_USER $CACHE_DIR"
+  fi
 fi
 
 # Live self-test through the hook, which is the path the harness uses. A
@@ -340,6 +372,9 @@ cat <<EOF
   cache    $CACHE_DIR
 $( [ -n "$WRAPPER_DIR" ] && echo "  wrappers $WRAPPER_DIR" )
   Confirm the harness sees it:   icg health --check-hooks
+  Run non-enforcing first:       add --practice to the hook command, or set
+                                 ICG_PRACTICE=1 in the agent's environment;
+                                 then read: icg status --denials --pattern-summary
   See what is enforced:          icg coverage --list
   Try a denial yourself:         icg check --command "git push --force origin main"
 
