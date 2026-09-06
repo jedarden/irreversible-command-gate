@@ -4,7 +4,7 @@
     "packs": "✓ All rule packs valid",
     "hooks": "✓ Claude Code hook configured",
     "verbose": [
-      "✓ icg binary: /usr/local/bin/icg v0.1.0",
+      "✓ icg binary: /usr/local/bin/icg v0.1.1",
       "✓ Rule packs: 3 packs loaded",
       "✓ Claude Code hook: Configured",
       "✓ State store: /var/lib/icg/state.db",
