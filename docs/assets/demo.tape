@@ -8,7 +8,7 @@ Output docs/assets/icg-demo.gif
 Set Shell bash
 Set FontSize 15
 Set Width 1000
-Set Height 620
+Set Height 800
 Set Padding 22
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 0ms
@@ -19,4 +19,4 @@ Hide
 Type "clear" Enter
 Show
 Type "bash docs/assets/demo.sh" Enter
-Sleep 26s
+Sleep 32s

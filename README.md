@@ -11,12 +11,13 @@ finish the turn knowing the sanctioned path, not just that it was blocked.
 
 <p align="center">
   <img src="docs/assets/icg-demo.gif"
-       alt="Terminal recording: icg allows git status, rewrites a force-push into a plain push, warns on a secret read to stdout, and denies a docker prune and a bare git credential fill."
+       alt="Terminal recording of real icg check output: git status is allowed, a force-push is rewritten to a plain push, a secret read to stdout warns, and an OpenBao destroy, a bare git credential fill, and a :latest image tag in file content are each denied with the alternative."
        width="900">
 </p>
 
-<sub>Real `icg check` output — reproduce it with
-[`docs/assets/demo.sh`](docs/assets/demo.sh).</sub>
+<sub>Real `icg check` output — all four verdicts, and both input modes
+(a shell command, and file content as `Write`/`Edit`/`apply_patch` would
+supply it). Reproduce it with [`docs/assets/demo.sh`](docs/assets/demo.sh).</sub>
 
 ## How it works
 
