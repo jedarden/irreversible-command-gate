@@ -30,6 +30,7 @@ FROM_CHECKOUT=0
 WRITE_HOOK=0
 SETTINGS=""
 AGENT_USER=""
+PRACTICE=0
 UNINSTALL=0
 DRY_RUN=0
 KEEP_TMP=0
@@ -66,6 +67,10 @@ Options:
   --wrapper-dir <dir>   Also install PATH-wrapper symlinks here. Scope this to
                         the agent's PATH; see the deployment guide's "Scoping
                         the wrapper to the agent". Omit to skip the wrapper.
+  --practice            Register the hook in PRACTICE mode: it reports what it
+                        would have denied and blocks nothing. The right way to
+                        introduce the guard to a live fleet -- collect a week of
+                        `icg status --denials` first, then re-run without it.
   --hook                Register the PreToolUse hook in a Claude Code settings file
   --settings <path>     Which settings file  (default: the invoking user's
                         ~/.claude/settings.json)
@@ -84,6 +89,7 @@ while [ $# -gt 0 ]; do
     --cache-dir)    CACHE_DIR="${2:?--cache-dir needs a directory}"; shift 2 ;;
     --pack-source)  PACK_SOURCE="${2:?--pack-source needs a directory}"; shift 2 ;;
     --agent-user)   AGENT_USER="${2:?--agent-user needs a username}"; shift 2 ;;
+    --practice)     PRACTICE=1; shift ;;
     --wrapper-dir)  WRAPPER_DIR="${2:?--wrapper-dir needs a directory}"; shift 2 ;;
     --hook)         WRITE_HOOK=1; shift ;;
     --settings)     SETTINGS="${2:?--settings needs a path}"; WRITE_HOOK=1; shift 2 ;;
@@ -304,7 +310,12 @@ esac
 # --------------------------------------------------------------------------
 # hook registration
 # --------------------------------------------------------------------------
-HOOK_JSON='{"matcher":"Bash|Write|Edit","hooks":[{"type":"command","command":"'"$BIN"' hook","timeout":10}]}'
+if [ "$PRACTICE" = 1 ]; then
+  HOOK_COMMAND="$BIN hook --practice"
+else
+  HOOK_COMMAND="$BIN hook"
+fi
+HOOK_JSON='{"matcher":"Bash|Write|Edit","hooks":[{"type":"command","command":"'"$HOOK_COMMAND"'","timeout":10}]}'
 
 if [ "$WRITE_HOOK" = 1 ]; then
   if [ -z "$SETTINGS" ]; then
@@ -314,9 +325,9 @@ if [ "$WRITE_HOOK" = 1 ]; then
   fi
   command -v python3 >/dev/null || die "--hook needs python3 to edit $SETTINGS safely"
   info "Registering the PreToolUse hook in $SETTINGS"
-  python3 - "$SETTINGS" "$BIN" <<'PY'
+  python3 - "$SETTINGS" "$HOOK_COMMAND" <<'PY'
 import json, os, sys, pathlib
-settings_path, binary = pathlib.Path(sys.argv[1]), sys.argv[2]
+settings_path, hook_command = pathlib.Path(sys.argv[1]), sys.argv[2]
 settings_path.parent.mkdir(parents=True, exist_ok=True)
 data = {}
 if settings_path.exists() and settings_path.stat().st_size:
@@ -324,7 +335,7 @@ if settings_path.exists() and settings_path.stat().st_size:
         data = json.loads(settings_path.read_text())
     except json.JSONDecodeError:
         sys.exit(f"{settings_path} is not valid JSON; refusing to overwrite it")
-entry = {"type": "command", "command": f"{binary} hook", "timeout": 10}
+entry = {"type": "command", "command": hook_command, "timeout": 10}
 hooks = data.setdefault("hooks", {})
 pre = hooks.setdefault("PreToolUse", [])
 for block in pre:
@@ -346,7 +357,13 @@ PY
   if [ -n "${SUDO_USER:-}" ]; then
     chown "$SUDO_USER" "$SETTINGS" "$SETTINGS.icg-backup" 2>/dev/null || true
   fi
-  ok "hook registered -- restart the harness for it to take effect"
+  if [ "$PRACTICE" = 1 ]; then
+    ok "hook registered in PRACTICE mode -- it will block NOTHING"
+    warn "This is not enforcement. Collect data, then re-run without --practice:"
+    warn "  icg status --denials --pattern-summary --since 7d"
+  else
+    ok "hook registered ENFORCING -- restart the harness for it to take effect"
+  fi
 else
   info "Hook not registered (pass --hook to do it, or add this yourself)"
   cat <<EOF

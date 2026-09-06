@@ -122,3 +122,28 @@ fn install_script_installs_root_owned() {
         "nothing the installer creates may be world-writable"
     );
 }
+
+/// `--practice` must register a hook that actually cannot block.
+///
+/// Introducing a guard to a live fleet non-enforcing is the whole reason the
+/// flag exists; a `--practice` install that registered the enforcing command
+/// would block 48 agents on lab the moment they restarted.
+#[test]
+fn practice_mode_registers_a_non_enforcing_hook() {
+    let s = script();
+    assert!(
+        s.contains(r#"HOOK_COMMAND="$BIN hook --practice""#),
+        "--practice must register `icg hook --practice`, not the enforcing form"
+    );
+    assert!(
+        s.contains("it will block NOTHING"),
+        "the installer should say plainly that a practice install enforces nothing"
+    );
+    // The self-test deliberately probes the ENFORCING path: a practice
+    // deployment still needs proof the guard is capable of denying.
+    assert!(
+        s.contains(r#"| ICG_RULE_PACK="$PACK_DIR" "$BIN" hook 2>/dev/null"#),
+        "the self-test must probe `icg hook` without --practice, so a practice \
+         install still proves the guard can deny"
+    );
+}
