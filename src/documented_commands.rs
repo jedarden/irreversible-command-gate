@@ -919,10 +919,11 @@ fn group_denials_by_period(
     period_hours: i64,
 ) -> Vec<usize> {
     let mut counts = vec![0; num_periods];
+    let now = operator_now().unwrap_or_else(|_| Utc::now());
 
     for denial in denials {
         if let Ok(timestamp) = denial.timestamp.parse::<chrono::DateTime<chrono::Utc>>() {
-            let hours_ago = (Utc::now() - timestamp).num_hours();
+            let hours_ago = (now - timestamp).num_hours();
             if hours_ago >= 0 {
                 let period_index = (hours_ago / period_hours) as usize;
                 if period_index < num_periods {
