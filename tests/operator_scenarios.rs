@@ -88,7 +88,7 @@ fn first_time_installation_validates_documented_commands_and_outputs() {
 
     let version = run(&["--version"]);
     assert!(version.status.success(), "{}", stderr(&version));
-    assert_eq!(stdout(&version).trim(), "icg 0.1.2");
+    assert_eq!(stdout(&version).trim(), "icg 0.1.3");
 
     let pack_check = run_with_env(&["health", "--check-packs"], &[("ICG_PACK_DIR", &packs)]);
     assert!(pack_check.status.success(), "{}", stderr(&pack_check));

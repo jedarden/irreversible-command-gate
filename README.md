@@ -65,7 +65,7 @@ Grab the release binary — or build from source, which needs nothing but a
 Rust toolchain:
 
 ```bash
-curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.2/icg
+curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.3/icg
 chmod +x icg
 
 # or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
@@ -160,8 +160,10 @@ release-integrity machinery, and 526 passing tests across 52 files are in
 the tree and working. The whole crate is 25,800 lines of Rust with 17
 dependencies and no C toolchain requirement.
 
-**`v0.1.2` is the current release** (2026-09-06), following `v0.1.1` the same
-day. Each carries the binary, the pack tarball, a byte-level pack manifest,
+**`v0.1.3` is the current release** (2026-09-06). It fixes a guard bypass:
+an apostrophe in a heredoc body caused the lexer to lose the rest of the
+command, silently skipping every command-mode pack — six of ten, including
+all the Critical destructive rules. Upgrade from v0.1.1 or v0.1.2. Each carries the binary, the pack tarball, a byte-level pack manifest,
 and the merged `rule-pack.json`. Two releases now exist, so `icg update`'s
 trust-pointer flow finally has a real predecessor to advance from — but that
 transition has not yet been exercised end to end. Treat `icg update` as
