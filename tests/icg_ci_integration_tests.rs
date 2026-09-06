@@ -691,6 +691,7 @@ fn ci_workflow_gates_actual_pack_bytes_not_fixtures() {
                 &RegressionSuite {
                     version: suite.version,
                     cases,
+                    skipped: Vec::new(),
                 },
             );
         }

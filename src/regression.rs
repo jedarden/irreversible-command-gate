@@ -57,8 +57,25 @@ pub struct RegressionTestCase {
 pub struct RegressionSuite {
     /// Format version for generated suite artifacts.
     pub version: u32,
-    /// One case for every enabled guarded pattern in the source pack.
+    /// One case for every enabled guarded pattern a deny suite can represent.
     pub cases: Vec<RegressionTestCase>,
+    /// Enabled guarded patterns a fixed deny suite cannot represent, each with
+    /// the reason. These are exclusions by construction, not coverage gaps:
+    /// a rewrite rule never denies, and a predicate cannot be validated by the
+    /// regex-only check this generator performs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<SkippedPattern>,
+}
+
+/// One guarded pattern omitted from a generated deny suite, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedPattern {
+    /// Pack the pattern belongs to.
+    pub pack_id: String,
+    /// The omitted guarded pattern.
+    pub pattern_id: String,
+    /// Why a fixed deny case cannot represent it.
+    pub reason: String,
 }
 
 /// Result of attempting to add one traffic-derived regression case.
@@ -134,6 +151,7 @@ pub fn generate_regression_suite_from_manifest<P: AsRef<Path>>(path: P) -> Resul
 pub fn generate_release_regression_suite<P: AsRef<Path>>(path: P) -> Result<RegressionSuite> {
     let paths = release_manifest_paths(path.as_ref())?;
     let mut cases = Vec::new();
+    let mut skipped = Vec::new();
 
     for path in paths {
         let (mut pack, examples) = load_manifest_and_examples(&path)?;
@@ -146,6 +164,7 @@ pub fn generate_release_regression_suite<P: AsRef<Path>>(path: P) -> Result<Regr
         let suite = generate_regression_suite_with_inputs(&pack, &examples)
             .with_context(|| format!("failed to generate release suite for {}", path.display()))?;
         cases.extend(suite.cases);
+        skipped.extend(suite.skipped);
     }
 
     if cases.is_empty() {
@@ -158,6 +177,7 @@ pub fn generate_release_regression_suite<P: AsRef<Path>>(path: P) -> Result<Regr
     Ok(RegressionSuite {
         version: SUITE_VERSION,
         cases,
+        skipped,
     })
 }
 
@@ -167,13 +187,17 @@ pub fn generate_regression_suite_from_manifests<P: AsRef<Path>>(
     paths: &[P],
 ) -> Result<RegressionSuite> {
     let mut cases = Vec::new();
+    let mut skipped = Vec::new();
     for path in paths {
-        cases.extend(generate_regression_suite_from_manifest(path)?.cases);
+        let suite = generate_regression_suite_from_manifest(path)?;
+        cases.extend(suite.cases);
+        skipped.extend(suite.skipped);
     }
 
     Ok(RegressionSuite {
         version: SUITE_VERSION,
         cases,
+        skipped,
     })
 }
 
@@ -793,6 +817,7 @@ fn generate_regression_suite_with_inputs(
         return Ok(RegressionSuite {
             version: SUITE_VERSION,
             cases: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
@@ -803,6 +828,7 @@ fn generate_regression_suite_with_inputs(
         .filter(|pattern| pattern.enabled)
         .count();
     let mut cases = Vec::with_capacity(enabled_pattern_count);
+    let mut skipped = Vec::new();
 
     for pattern in &pack.guarded_patterns {
         if !ids.insert(pattern.id.as_str()) {
@@ -813,6 +839,20 @@ fn generate_regression_suite_with_inputs(
             );
         }
         if !pattern.enabled {
+            continue;
+        }
+
+        // Some rules cannot appear in a *deny* suite at all. Failing the whole
+        // pack on them made `icg regression-suite packs/<id>.json` -- the form
+        // the README documents -- unusable on six of the ten shipped packs,
+        // while `--release-gate` quietly filtered the same rules out. Report
+        // them instead, so the exclusion is visible rather than fatal.
+        if let Some(reason) = out_of_scope_for_a_deny_suite(pack, pattern) {
+            skipped.push(SkippedPattern {
+                pack_id: pack.id.clone(),
+                pattern_id: pattern.id.clone(),
+                reason,
+            });
             continue;
         }
 
@@ -859,7 +899,42 @@ fn generate_regression_suite_with_inputs(
     Ok(RegressionSuite {
         version: SUITE_VERSION,
         cases,
+        skipped,
     })
+}
+
+/// Why a fixed deny suite cannot carry a case for this pattern, if it cannot.
+///
+/// Only structural impossibilities belong here. A deny rule whose example
+/// command simply cannot be derived is *not* out of scope -- that one is
+/// fixable with an `example_command`, and skipping it would hide the coverage
+/// hole the suite exists to catch.
+fn out_of_scope_for_a_deny_suite(pack: &Pack, pattern: &GuardedPattern) -> Option<String> {
+    if pattern.redirect.channel != Channel::Deny {
+        return Some(format!(
+            "redirect channel is {:?}, which never denies; covered by the engine \
+             tests for that channel instead",
+            pattern.redirect.channel
+        ));
+    }
+    if matches!(pattern.check, Check::Predicate { .. }) {
+        return Some(
+            "predicate checks are evaluated against live state (a filesystem, a \
+             remote), which the suite's regex-only validation cannot reproduce; \
+             covered by the pack's own tests instead"
+                .to_string(),
+        );
+    }
+    if pack.tool_keywords.is_empty() && !matches!(pattern.check, Check::ContentRegex { .. }) {
+        return Some(format!(
+            "pack '{}' matches unconditionally rather than by tool keyword, so no \
+             representative command can be derived, and a hand-authored example \
+             would have to embed a credential-shaped literal in released policy \
+             data; covered by the pack's own tests instead",
+            pack.id
+        ));
+    }
+    None
 }
 
 fn example_inputs_from_manifest(
@@ -1344,13 +1419,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_non_deny_guarded_pattern() {
+    fn reports_a_non_deny_guarded_pattern_as_a_reasoned_skip() {
+        // A rewrite or warning rule can never produce a deny case. This used
+        // to abort the whole pack, which made `icg regression-suite
+        // packs/<id>.json` unusable on most shipped packs and hid the rules
+        // that were genuinely missing an example. It is now reported.
         let mut pattern = guarded("warning", "git worktree add");
         pattern.redirect.channel = Channel::AdditionalContext;
-        let error = generate_regression_suite(&pack(vec![pattern])).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("fixed regression cases require a deny redirect"));
+        let suite = generate_regression_suite(&pack(vec![pattern])).unwrap();
+
+        assert!(suite.cases.is_empty());
+        assert_eq!(suite.skipped.len(), 1);
+        assert_eq!(suite.skipped[0].pattern_id, "warning");
+        assert!(
+            suite.skipped[0].reason.contains("AdditionalContext"),
+            "the skip should name the channel that makes a deny case impossible: {}",
+            suite.skipped[0].reason
+        );
+    }
+
+    #[test]
+    fn a_deny_regex_rule_without_a_derivable_example_still_fails() {
+        // The permissive path must stay narrow: this is the case the suite
+        // exists to catch, and skipping it would hide a real coverage hole.
+        let rule_pack = pack(vec![guarded("unmatchable", r"^\bgit\b(?:foo)")]);
+        let error = generate_regression_suite(&rule_pack).unwrap_err();
+        assert!(
+            error.to_string().contains("does not match its regex"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

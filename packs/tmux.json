@@ -1,6 +1,8 @@
 {
   "id": "tmux",
-  "tool_keywords": ["tmux"],
+  "tool_keywords": [
+    "tmux"
+  ],
   "applies_to": [],
   "safe_patterns": [],
   "guarded_patterns": [
@@ -16,7 +18,8 @@
         "channel": "deny",
         "reason_template": "Targeting a bare NATO tmux session is blocked because it may interfere with an operator's personal session. Use a named worker session or a tmux session ID instead.",
         "rewrite_template": null
-      }
+      },
+      "example_command": "tmux send-keys -t alpha \"echo hi\" Enter"
     }
   ]
 }

@@ -46,19 +46,24 @@ Median cost of a check on a warm cache: **~10 ms**.
 
 ## Try it in a minute
 
-No release has been cut yet, so build from source. There are no system
-dependencies beyond a Rust toolchain:
+Grab the release binary — or build from source, which needs nothing but a
+Rust toolchain:
 
 ```bash
-git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
-cd irreversible-command-gate
-cargo build --release
+curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1/icg
+chmod +x icg
 
-./target/release/icg coverage --list
-./target/release/icg check --command "bao kv destroy secret/app/db"
-./target/release/icg check --command "git push --force origin main"
-./target/release/icg check --command "git status"
+# or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+#      cd irreversible-command-gate && cargo build --release && cd target/release
+
+./icg coverage --list
+./icg check --command "bao kv destroy secret/app/db"
+./icg check --command "git push --force origin main"
+./icg check --command "git status"
 ```
+
+Run it from a checkout and it picks up `packs/` automatically; run the bare
+binary and pass `--pack <dir>` or install the packs (below).
 
 `icg check` is the human-facing tester and always exits `0` — parse its
 output, not its status. `icg hook` is the machine entry point: one
@@ -111,11 +116,16 @@ scaffolds a pack and its regression test together.
 
 ## Project status
 
-Honest version: the engine, the packs, both front-ends (hook and PATH
-wrapper), the release-integrity machinery, and 562 tests — 257 unit, 305 integration across 51 files
-are in the tree and working. **No end-to-end release has been cut yet**, so
-build-from-source is the only install path and the trust-pointer /
-auto-update flow is unproven in production. Tracked in
+The engine, the packs, both front-ends (hook and PATH wrapper), the
+release-integrity machinery, and 526 passing tests across 52 files are in
+the tree and working. The whole crate is 25,800 lines of Rust with 17
+dependencies and no C toolchain requirement.
+
+**`v0.1.1` is the first end-to-end release** (2026-09-06): binary, pack
+tarball, byte-level pack manifest, and the merged `rule-pack.json`. The
+trust-pointer and auto-update flow now has a real release to point at but
+has not yet been exercised across two of them, so treat `icg update` as
+unproven until a second release lands. Tracked in
 [`docs/plan/plan.md`](docs/plan/plan.md), Phase 0.
 
 ## Documentation
@@ -151,10 +161,13 @@ icg regression-suite packs --release-gate --output regression-suite.json
 icg coverage-diff <previous-pack> <current-pack>
 ```
 
-Per-pack generation (`icg regression-suite packs/<id>.json`) needs a
-derivable or explicit `example_command` for every guarded pattern; packs
-built on predicates or content regexes are covered by the `--release-gate`
-corpus and their own tests instead.
+Per-pack generation (`icg regression-suite packs/<id>.json`) works on every
+shipped pack. Rules a *deny* suite cannot represent — a rewrite or warning
+channel, a predicate needing live state, the `secrets` pack's unconditional
+matching — are reported in the suite's `skipped` array with the reason,
+rather than aborting the pack. A deny rule with a regex check is never
+skipped: if its command cannot be derived from the regex, give it an
+`example_command` in the pack.
 
 ## License
 

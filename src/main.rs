@@ -268,42 +268,6 @@ enum Commands {
         #[arg(long)]
         uninstall: bool,
     },
-    /// Dependency cycle detection and repair monitoring
-    DependencyCycleMonitor {
-        /// Interval between checks in seconds (default: 3600)
-        #[arg(long, default_value = "3600")]
-        interval_secs: u64,
-        /// Path to workspace directory (default: current directory)
-        #[arg(long)]
-        workspace_path: Option<PathBuf>,
-        /// Run once and exit (default: continuous monitoring)
-        #[arg(long)]
-        once: bool,
-        /// Dry-run mode: detect only, no repairs
-        #[arg(long)]
-        dry_run: bool,
-        /// Maximum cycle length to auto-repair (default: 10)
-        #[arg(long, default_value = "10")]
-        max_cycle_length: usize,
-        /// Convert blocking edges to non-blocking references instead of removing
-        #[arg(long)]
-        convert_to_non_blocking: bool,
-    },
-    /// Bead database integrity verification with rehearsal-based repair
-    DatabaseIntegrity {
-        /// Interval between checks in seconds (default: 600)
-        #[arg(long, default_value = "600")]
-        interval_secs: u64,
-        /// Path to workspace directory (default: current directory)
-        #[arg(long)]
-        workspace_path: Option<PathBuf>,
-        /// Run once and exit (default: continuous monitoring)
-        #[arg(long)]
-        once: bool,
-        /// Disable auto-repair (report only mode)
-        #[arg(long)]
-        no_repair: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1580,6 +1544,21 @@ fn main() -> Result<()> {
                 }
                 None => println!("{}", suite.to_json()?),
             }
+            // Skips are exclusions by construction, not silent gaps -- name
+            // them on stderr so a reviewer sees which rules the deny suite
+            // cannot represent without having to read the JSON.
+            if !suite.skipped.is_empty() {
+                eprintln!(
+                    "\n{} enabled rule(s) have no fixed deny case:",
+                    suite.skipped.len()
+                );
+                for skipped in &suite.skipped {
+                    eprintln!(
+                        "  {}/{}: {}",
+                        skipped.pack_id, skipped.pattern_id, skipped.reason
+                    );
+                }
+            }
             Ok(())
         }
         Commands::RegressionPrune {
@@ -1876,122 +1855,6 @@ fn main() -> Result<()> {
             force,
             uninstall,
         } => documented_commands::run_install(dir, packs, force, uninstall),
-        Commands::DependencyCycleMonitor {
-            interval_secs,
-            workspace_path,
-            once,
-            dry_run,
-            max_cycle_length,
-            convert_to_non_blocking,
-        } => {
-            use icg::dependency_cycle_monitor::DependencyCycleMonitor;
-
-            let workspace =
-                workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let mut config =
-                icg::dependency_cycle_monitor::DependencyCycleConfig::from_environment();
-            config.workspace_path = workspace;
-            config.check_interval = std::time::Duration::from_secs(interval_secs.max(60));
-            config.dry_run = dry_run;
-            config.max_cycle_length = max_cycle_length;
-            config.convert_to_non_blocking = convert_to_non_blocking;
-
-            let mut monitor = DependencyCycleMonitor::with_config(config)?;
-
-            if once {
-                // Run once and exit
-                let report = monitor.run_check()?;
-                monitor.print_summary(&report);
-                std::process::exit(
-                    if report.circular_dependencies_found > 0
-                        || report.orphaned_dependencies_found > 0
-                    {
-                        2 // Exit with error code if issues were found
-                    } else {
-                        0 // Exit successfully if no issues
-                    },
-                );
-            } else {
-                // Run continuous monitoring
-                #[cfg(feature = "monitoring")]
-                {
-                    monitor.run().await
-                }
-                #[cfg(not(feature = "monitoring"))]
-                {
-                    eprintln!("Error: Continuous monitoring requires the 'monitoring' feature. Use --once to run a single check.");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Commands::DatabaseIntegrity {
-            interval_secs,
-            workspace_path,
-            once,
-            no_repair,
-        } => {
-            use icg::bead_database_integrity_service::DatabaseIntegrityService;
-
-            let workspace =
-                workspace_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let mut config = icg::bead_database_integrity_service::DatabaseIntegrityServiceConfig::from_environment();
-            config.workspace_path = workspace;
-            config.check_interval = std::time::Duration::from_secs(interval_secs.max(60));
-            config.auto_repair_enabled = !no_repair;
-
-            let mut service = DatabaseIntegrityService::new(config);
-
-            if once {
-                // Run once and exit
-                let report = service.run_once()?;
-                println!("# Database Integrity Check Report");
-                println!(
-                    "**Status:** {}",
-                    if report.rehearsal.success {
-                        "✅ Healthy"
-                    } else {
-                        "❌ Issues detected"
-                    }
-                );
-                println!("**Duration:** {:.2}s", report.duration_seconds);
-                println!("**Issues found:** {}", report.rehearsal.issues_found);
-                println!(
-                    "**Data loss detected:** {}",
-                    report.rehearsal.data_loss_detected
-                );
-                if let Some(ref repair) = report.repair {
-                    println!("**Repair attempted:** Yes");
-                    println!("**Repair successful:** {}", repair.success);
-                    println!("**Issues repaired:** {}", repair.issues_repaired);
-                } else {
-                    println!("**Repair attempted:** No");
-                }
-                if report.alert_triggered {
-                    println!("**Alert triggered:** Yes");
-                    if let Some(ref reason) = report.alert_reason {
-                        println!("**Alert reason:** {}", reason);
-                    }
-                } else {
-                    println!("**Alert triggered:** No");
-                }
-                std::process::exit(if report.rehearsal.success && !report.alert_triggered {
-                    0 // Exit successfully if no issues
-                } else {
-                    1 // Exit with error code if issues or alerts
-                });
-            } else {
-                // Run continuous monitoring
-                #[cfg(feature = "monitoring")]
-                {
-                    service.run().await
-                }
-                #[cfg(not(feature = "monitoring"))]
-                {
-                    eprintln!("Error: Continuous monitoring requires the 'monitoring' feature. Use --once to run a single check.");
-                    std::process::exit(1);
-                }
-            }
-        }
         Commands::Trust(subcommand) => match subcommand {
             TrustSubcommand::Show { path, channel } => {
                 let store_path = configured_trust_pointer_path(path, channel.as_deref())?;
