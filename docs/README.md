@@ -66,16 +66,3 @@ Short, ordered procedures for a moment when something is on fire.
 [`assets/demo.sh`](assets/demo.sh) and [`assets/demo.tape`](assets/demo.tape)
 — the reproducible source for the recording. Nothing in the GIF is staged;
 regenerate it with `vhs docs/assets/demo.tape`.
-
-## Not about the command gate
-
-These document the bead-store maintenance services that also live in this
-repository. They are unrelated to command interception; see the
-"Unrelated subsystem" note in [AGENTS.md](../AGENTS.md).
-
-- [bead-starvation-automation.md](bead-starvation-automation.md)
-- [bead-starvation-repair-system.md](bead-starvation-repair-system.md)
-- [bead-dependency-validator.md](bead-dependency-validator.md)
-- [cascading-repair-strategies.md](cascading-repair-strategies.md)
-- [checkpoint-verification.md](checkpoint-verification.md)
-- [monitoring-deployment-guide.md](monitoring-deployment-guide.md)

@@ -25,33 +25,3 @@ pub mod telemetry;
 pub mod trust_pointer;
 pub mod update;
 pub mod value_derivation;
-
-// Bead dependency validator (standalone tool for bead-rs dependency issues)
-pub mod bead_dependency_validator;
-
-// Bead integrity verification service (continuous monitoring)
-pub mod bead_integrity_monitor;
-
-// Starvation diagnostic system (automated root cause analysis)
-pub mod starvation_diagnostic;
-
-// Checkpoint health monitoring and auto-repair system
-pub mod checkpoint_monitor;
-
-// Automated assignment state repair service
-pub mod assignment_repair;
-
-// Automated dependency cycle detection and repair service
-pub mod dependency_cycle_monitor;
-
-// Automated bead database integrity verification service (rehearsal-based repair)
-pub mod bead_database_integrity_service;
-
-// Automated bead frontier consistency checker and repair service
-pub mod frontier_consistency_service;
-
-// Cascading repair strategies for starvation recovery
-pub mod cascading_repair;
-
-// Pluck query debugging system (SQL-level progressive filter relaxation)
-pub mod pluck_query_debugger;

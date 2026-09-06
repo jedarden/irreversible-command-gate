@@ -4,10 +4,7 @@
 **/.beads/traces/
 .needle-predispatch-sha
 
-# Bead maintenance services write these at runtime; they are machine-local.
+# Bead tooling elsewhere on the host writes these into this workspace.
 .beads/diagnostics/
 .beads/events.jsonl
 .beads/*.pid
-
-# Convenience symlink some scripts create into a local build tree.
-scripts/bead-integrity-check-bin

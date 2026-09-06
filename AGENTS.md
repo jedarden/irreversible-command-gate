@@ -17,7 +17,7 @@ not writing Rust.
 cargo build --release                       # no system deps; rustls, not OpenSSL
 ./target/release/icg coverage --list        # confirm the 10 packs load
 ./target/release/icg check --command "git push --force origin main"
-cargo test                                  # 562 tests: 257 unit + 305 integration
+cargo test                                  # 526 tests, 0 failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
 ```
 
@@ -75,22 +75,24 @@ Then, in order:
 5. Add the rule id and count to quick-start's coverage table.
 6. `cargo test` and `icg regression-suite packs --release-gate`.
 
-## Unrelated subsystem living in this tree
+## What is deliberately not here
 
-A second, unrelated body of code ships from this repository: bead-store
-starvation detection and repair (`src/{starvation_diagnostic,
-assignment_repair, frontier_consistency_service, pluck_query_debugger,
-checkpoint_monitor, cascading_repair, bead_*}.rs`, the four extra binaries in
-`src/bin/`, `scripts/bead-*`, `containers/{assignment-repair-monitor,
-bead-starvation-repair}`, `declarative-config/`, and the `docs/bead-*` and
-`docs/{cascading-repair-strategies,checkpoint-verification,
-monitoring-deployment-guide}.md` files).
+Bead-store health tooling used to ship from this repository — starvation
+detection, checkpoint drift, assignee repair, dependency-cycle repair: ten
+modules, seven binaries, and a `rusqlite` bundled-SQLite build, all written
+here on 2026-08-26 because that was the checkout an agent happened to be
+standing in. It was removed on 2026-09-06.
 
-It has nothing to do with command interception. Do not let a change to it
-touch the gate's engine, packs, or hook contract, and do not assume a
-convention from one half applies to the other. Extracting it into its own
-repository is an open recommendation, not a decision — leave it alone unless
-asked.
+`bead doctor` already does all of it, and correctly: `--starvation-check`,
+`--starvation-recovery [--force]`, `--visibility-check`, `--rehearse`,
+`--repair`, plus `bead list --ready --verbose` for the exclusion reasons.
+The removed code hand-wrote its own SQL against `beads.db` and knew nothing
+about `resource_locks`, `leases`, or `claim_epoch` — so it could report a
+lock-held bead as starved, and could clear a live worker's claim.
+
+If a bead-store problem needs tooling, it goes to `bead-rs` as a bead. Not
+here. Recover the removed code from history if you need to read it:
+`git show 6c13171 -- src/starvation_diagnostic.rs`.
 
 ## Repository conventions
 
