@@ -225,10 +225,15 @@ vault status  # Should be evaluated by icg
 Run the coexistence smoke test to verify both hooks give consistent verdicts:
 
 ```bash
-# Built-in smoke test (if available)
-icg smoke-test-vs-org-rule-guard
+# There is no built-in coexistence smoke test -- `icg` has no
+# `smoke-test-vs-org-rule-guard` subcommand. Compare the two hooks by
+# feeding each the same PreToolUse payload and reading both verdicts.
+PAYLOAD='{"tool_name":"Write","tool_input":{"file_path":"test.yaml","content":"image: foo:latest\n"}}'
 
-# Or manual verification
+echo "$PAYLOAD" | ~/.claude/hooks/org-rule-guard.py ; echo "org-rule-guard exit=$?"
+echo "$PAYLOAD" | /usr/local/bin/icg hook          ; echo "icg exit=$?"
+
+# Or, case by case
 # Test case 1: :latest tag (should be denied by BOTH)
 echo '{"name":"Write","input":{"path":"test.yaml","content":"image: foo:latest\n"}}' | \
   ~/.claude/hooks/org-rule-guard.py
@@ -256,8 +261,10 @@ icg health --verbose
 # Verify hook configuration
 cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
 
-# Verify rule pack is loaded
-icg config --rule-pack
+# Verify the rule packs load. There is no `icg config`; the pack path comes
+# from --rule-pack / ICG_RULE_PACK, defaulting to /etc/icg/packs.
+icg coverage --list
+icg health --check-packs
 
 # Verify trust pointer
 cat /etc/icg/trust-pointer.json | jq .
@@ -275,8 +282,8 @@ cat /etc/icg/trust-pointer.json | jq .
 # Each should produce TWO denial messages (one from each hook)
 # This is expected and harmless
 
-# Verify consistent verdicts
-icg smoke-test-vs-org-rule-guard
+# Verify consistent verdicts by replaying one payload through both hooks
+# (see the smoke test above)
 ```
 
 ### Functional Verification
@@ -302,8 +309,13 @@ echo "ghp_test_token" >> test.txt  # Should be denied
 Test that rollback works if needed:
 
 ```bash
-# Test icg rollback
-icg update --rollback
+# Test rollback. There is no `icg update --rollback`; the previous pack
+# directory is retained at /etc/icg/packs.previous, and the trust pointer
+# is what selects a release.
+icg trust show
+sudo mv /etc/icg/packs /etc/icg/packs.failed \
+  && sudo mv /etc/icg/packs.previous /etc/icg/packs
+icg coverage --list
 
 # Re-apply update
 icg update
@@ -470,11 +482,13 @@ See `troubleshooting.md` for more details.
 
 **Solution**:
 ```bash
-# Identify which rule is diverging
-icg status --denials --verbose
+# Identify which rule is diverging. There is no --verbose here; the JSON
+# form carries the pack and pattern for every record.
+icg status --denials --since 1d --format json
 
-# Run smoke test
-icg smoke-test-vs-org-rule-guard
+# Replay the disputed payload through both hooks and compare
+echo "$PAYLOAD" | ~/.claude/hooks/org-rule-guard.py
+echo "$PAYLOAD" | /usr/local/bin/icg hook
 
 # If divergence is on :latest rule, this is expected during migration
 # Both hooks deny but with different messages - this is OK

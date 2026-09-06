@@ -195,7 +195,7 @@ This is the recommended sequence for learning icg. Follow this path whether you'
    - Repository overrides
 
 **Practice**:
-- Scaffold a new pack: `icg new-pack --id my-tool --mode command`
+- Scaffold a new pack: `icg new-pack my-tool --pack-type command --output-dir packs/`
 - Write tests for your patterns
 - Generate a regression suite
 
@@ -412,7 +412,7 @@ icg health --verbose
 ### Task: Create a New Rule Pack
 
 ```bash
-icg new-pack --id my-tool --mode command
+icg new-pack my-tool --pack-type command --output-dir packs/
 ```
 
 ### Task: Test a Rule Pack

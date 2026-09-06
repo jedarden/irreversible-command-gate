@@ -481,14 +481,21 @@ icg regression-suite \
   packs/openbao.json \
   --output tests/fixtures/openbao-regression.json
 
-# Verify no coverage narrowing
-icg verify-coverage \
-  --current tests/fixtures/openbao-regression.json \
-  --previous tests/fixtures/openbao-regression-baseline.json
+# Verify no coverage narrowing. The command is `coverage-diff`, and it takes
+# the two PACK manifests positionally -- previous first -- not the generated
+# regression suites.
+icg coverage-diff packs/openbao.json /tmp/openbao-candidate.json
 
 # Expected output:
-# ✓ No coverage narrowing detected
-# ✓ All destructive patterns still protected
+# format: coverage-diff/v1
+# status: no_regressions
+# justification: not required (no coverage regressions detected)
+#
+# ## Removed guarded_patterns / Disabled guarded_patterns
+# ## Widened safe_patterns / Narrowed guarded_patterns (destructive: true)
+# None.
+#
+# A regression requires `--justification "..."` to pass.
 ```
 
 ### False Positive Testing
@@ -578,9 +585,7 @@ Before releasing an updated pack:
 
 3. **Verify no coverage narrowing**:
    ```bash
-   icg verify-coverage \
-     --current regression-new.json \
-     --previous regression-old.json
+   icg coverage-diff <previous-pack.json> <current-pack.json>
    ```
 
 4. **Manual testing**:

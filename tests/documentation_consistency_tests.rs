@@ -8,8 +8,9 @@
 //! These tests pin the reconciled state so each class of drift fails a
 //! build instead of silently recurring.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Every document an operator or pack author is pointed at from the README,
@@ -538,4 +539,388 @@ fn packs_do_not_reference_paths_outside_this_repository() {
             );
         }
     }
+}
+
+/// Every `icg <subcommand>` a doc shows in a runnable position must exist.
+///
+/// The audits so far checked pack ids, pattern ids, hook shapes and release
+/// URLs. They did not check the CLI itself, so six invented commands survived
+/// in the deeper sections a reader reaches after the install pages --
+/// `icg alert create`, `icg audit`, `icg benchmark`, `icg export`,
+/// `icg validate-pack`, `icg verify-coverage`, `icg config`. Each is
+/// presented as something to type.
+#[test]
+fn documented_subcommands_all_exist() {
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .arg("--help")
+        .output()
+        .expect("icg --help should run");
+    let help = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let mut real: BTreeSet<String> = BTreeSet::new();
+    let mut in_commands = false;
+    for line in help.lines() {
+        if line.starts_with("Commands:") {
+            in_commands = true;
+            continue;
+        }
+        if line.starts_with("Options:") {
+            break;
+        }
+        if !in_commands {
+            continue;
+        }
+        if let Some(word) = line.split_whitespace().next() {
+            if word.chars().all(|c| c.is_ascii_lowercase() || c == '-') && !word.is_empty() {
+                real.insert(word.to_owned());
+            }
+        }
+    }
+    assert!(
+        real.contains("check") && real.contains("hook"),
+        "failed to parse the subcommand list out of `icg --help`"
+    );
+    // `wrapper` is real but `#[command(hide = true)]`, so it never appears in
+    // --help. Docs are right to name it.
+    real.insert("wrapper".to_owned());
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders: Vec<String> = Vec::new();
+
+    for doc in markdown_files(&root.join("docs"))
+        .into_iter()
+        .chain([root.join("README.md"), root.join("AGENTS.md")])
+    {
+        let Ok(text) = fs::read_to_string(&doc) else {
+            continue;
+        };
+        let relative = doc.strip_prefix(root).unwrap_or(&doc).display().to_string();
+
+        // The ideas ledger names commands that were *proposed* and in most
+        // cases killed; archived audits describe a tree that no longer
+        // exists. Neither tells a reader to run anything.
+        if relative.contains("ideas-ledger") || relative.contains("notes/archive/") {
+            continue;
+        }
+
+        let mut fenced = false;
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            // Only a fenced line, or an inline `icg …` span, is a runnable
+            // position. Prose like "icg intercepts the call" is not.
+            // A line that names a command in order to say it does not exist
+            // is a correction, not an instruction. "There is no `icg alert`"
+            // must be allowed to say so.
+            if disclaims_a_command(line) {
+                continue;
+            }
+            let candidates = if fenced {
+                subcommands_after_icg(line)
+            } else {
+                inline_code_subcommands_after_icg(line)
+            };
+            for candidate in candidates {
+                if !real.contains(&candidate) {
+                    offenders.push(format!("{relative}:{}: icg {candidate}", number + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "docs show {} `icg <subcommand>` invocation(s) that do not exist:\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+fn markdown_files(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(markdown_files(&path));
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// Subcommand words following an `icg` in *command position*.
+///
+/// Command position means the line's first token, or the first token after a
+/// shell separator. Prose mentioning icg mid-sentence -- including a `#`
+/// comment inside a fence, or markdown heredoc'd into a file -- is not a
+/// runnable invocation and must not be flagged.
+fn subcommands_after_icg(line: &str) -> Vec<String> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') || trimmed.starts_with("//") {
+        return Vec::new();
+    }
+
+    let mut found = Vec::new();
+    let bytes = line.as_bytes();
+    let mut search = 0usize;
+    while let Some(offset) = line[search..].find("icg ") {
+        let at = search + offset;
+        // Everything before `icg` on this line, with any path prefix removed.
+        let before = line[..at].trim_end_matches(|c: char| c != ' ' && c != '\t');
+        let prefix = before.trim();
+        let in_command_position = prefix.is_empty()
+            || prefix.ends_with('$')
+            || prefix.ends_with('|')
+            || prefix.ends_with("&&")
+            || prefix.ends_with("||")
+            || prefix.ends_with(';')
+            || prefix.ends_with("sudo")
+            || prefix.ends_with("run");
+        // `icg` must also start a word.
+        let starts_word =
+            at == 0 || matches!(bytes[at - 1], b' ' | b'$' | b'|' | b'(' | b'/' | b'\t');
+        search = at + 4;
+        if !starts_word || !in_command_position {
+            continue;
+        }
+        // Skip a path prefix like ./target/release/icg -- still a real call.
+        if let Some(word) = line[search..].split_whitespace().next() {
+            if word.starts_with('-') || word.starts_with('<') || word.starts_with('$') {
+                continue;
+            }
+            let cleaned: String = word
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            if !cleaned.is_empty() {
+                found.push(cleaned);
+            }
+        }
+    }
+    found
+}
+
+/// The same, but only inside inline code spans, so prose cannot trip it.
+fn inline_code_subcommands_after_icg(line: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for span in line.split('`').skip(1).step_by(2) {
+        found.extend(subcommands_after_icg(span));
+    }
+    found
+}
+
+/// Does this line name a command in order to deny that it exists?
+fn disclaims_a_command(line: &str) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    [
+        "there is no",
+        "does not exist",
+        "never existed",
+        "no such command",
+        "is not a subcommand",
+        "not a real subcommand",
+    ]
+    .iter()
+    .any(|phrase| lowered.contains(phrase))
+}
+
+/// Every long flag a doc passes to an `icg` subcommand must exist on it.
+///
+/// `documented_subcommands_all_exist` catches an invented *command*; it does
+/// not catch an invented *flag* on a real one, which is how
+/// `icg status --severity`, `--by-severity`, `--summary`, `--rate`,
+/// `--compare-weeks`, `--report`, `--tag`, `--by-session`,
+/// `icg new-pack --id/--mode`, `icg update --dry-run/--rollback` and
+/// `icg export-denial --id/--output` all survived. Each reads as a working
+/// invocation and exits 2.
+#[test]
+fn documented_flags_exist_on_their_subcommand() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders: Vec<String> = Vec::new();
+
+    for doc in markdown_files(&root.join("docs"))
+        .into_iter()
+        .chain([root.join("README.md"), root.join("AGENTS.md")])
+    {
+        let Ok(text) = fs::read_to_string(&doc) else {
+            continue;
+        };
+        let relative = doc.strip_prefix(root).unwrap_or(&doc).display().to_string();
+        if relative.contains("ideas-ledger") || relative.contains("notes/archive/") {
+            continue;
+        }
+
+        let mut fenced = false;
+        for (number, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            if !fenced || disclaims_a_command(line) {
+                continue;
+            }
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+            let Some(rest) = invocation_after_icg(line) else {
+                continue;
+            };
+            let Some((path, flags)) = split_invocation(&rest) else {
+                continue;
+            };
+            let Some(accepted) = flags_for_subcommand(&path) else {
+                continue; // not a real subcommand: the other test owns that
+            };
+            for flag in flags {
+                if !accepted.contains(&flag) {
+                    offenders.push(format!(
+                        "{relative}:{}: icg {} {flag}",
+                        number + 1,
+                        path.join(" ")
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "docs pass {} flag(s) that the subcommand does not accept:\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// The text following an `icg` in command position, if any.
+fn invocation_after_icg(line: &str) -> Option<String> {
+    // Stop at a shell pipe or redirect: what follows belongs to another program.
+    let head = line
+        .split(" | ")
+        .next()
+        .unwrap_or(line)
+        .split('>')
+        .next()
+        .unwrap_or(line);
+    let bytes = head.as_bytes();
+    let mut search = 0usize;
+    while let Some(offset) = head[search..].find("icg ") {
+        let at = search + offset;
+        let before = head[..at].trim_end_matches(|c: char| c != ' ' && c != '\t');
+        let prefix = before.trim();
+        let command_position = prefix.is_empty()
+            || prefix.ends_with('$')
+            || prefix.ends_with('|')
+            || prefix.ends_with("&&")
+            || prefix.ends_with(';')
+            || prefix.ends_with("sudo");
+        let starts_word =
+            at == 0 || matches!(bytes[at - 1], b' ' | b'$' | b'|' | b'(' | b'/' | b'\t');
+        search = at + 4;
+        if command_position && starts_word {
+            return Some(head[search..].to_string());
+        }
+    }
+    None
+}
+
+/// Split `check --command "git push --force"` into (["check"], ["--command"]).
+///
+/// Flags inside a quoted argument belong to the guarded command, not to icg --
+/// `icg check --command "git push --force origin main"` is the single most
+/// common line in these docs and must not be read as `icg check --force`.
+fn split_invocation(rest: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let mut path = Vec::new();
+    let mut flags = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut current = String::new();
+    let mut words: Vec<String> = Vec::new();
+
+    for character in rest.chars() {
+        match quote {
+            Some(q) if character == q => quote = None,
+            Some(_) => {}
+            None if character == '"' || character == '\'' => quote = Some(character),
+            None if character.is_whitespace() => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+                continue;
+            }
+            None => {}
+        }
+        if quote.is_none() && (character == '"' || character == '\'') {
+            continue;
+        }
+        if quote.is_some() && (character == '"' || character == '\'') {
+            continue;
+        }
+        current.push(character);
+    }
+    if !current.is_empty() && quote.is_none() {
+        words.push(current);
+    }
+
+    let mut seen_flag = false;
+    for word in words {
+        if word.starts_with("--") {
+            seen_flag = true;
+            let name = word.split('=').next().unwrap_or(&word);
+            // `--command|--stdin|--file` is alternation notation, not a call.
+            if name.contains('|') || name.ends_with(')') {
+                return None;
+            }
+            flags.push(name.to_string());
+        } else if !seen_flag
+            && word.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+            && !word.is_empty()
+        {
+            path.push(word);
+        }
+    }
+    (!path.is_empty()).then_some((path, flags))
+}
+
+/// Long flags `icg <path…> --help` accepts, or None if the path is not real.
+fn flags_for_subcommand(path: &[String]) -> Option<BTreeSet<String>> {
+    // Try the deepest path first, then fall back to the top-level subcommand:
+    // `backup create` has its own flags, but `status` has no nested commands.
+    for depth in (1..=path.len().min(2)).rev() {
+        let mut args: Vec<&str> = path[..depth].iter().map(String::as_str).collect();
+        args.push("--help");
+        let output = Command::new(env!("CARGO_BIN_EXE_icg")).args(&args).output();
+        let Ok(output) = output else { continue };
+        if !output.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut flags = BTreeSet::new();
+        for line in text.lines() {
+            for token in line.split_whitespace() {
+                if let Some(flag) = token.strip_suffix(',') {
+                    if flag.starts_with("--") {
+                        flags.insert(flag.to_string());
+                    }
+                }
+                if token.starts_with("--") {
+                    let name = token
+                        .split(['=', '<', '[', ','])
+                        .next()
+                        .unwrap_or(token)
+                        .to_string();
+                    if name.len() > 2 {
+                        flags.insert(name);
+                    }
+                }
+            }
+        }
+        return Some(flags);
+    }
+    None
 }

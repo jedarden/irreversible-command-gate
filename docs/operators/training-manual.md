@@ -425,7 +425,7 @@ icg health
 icg status --denials --since 12h
 
 # Review any critical denials
-icg status --denials --severity Critical --since 12h
+icg status --denials --since 12h --format json | jq 'select(.severity == "Critical")'
 ```
 
 ### Monitoring Denials
@@ -455,7 +455,7 @@ icg status --denials --trend --since 7d
 icg status --denials --pattern-summary --since 7d | head -20
 
 # Denials by severity
-icg status --denials --by-severity --since 7d
+icg status --denials --since 7d --format json | jq -r .severity | sort | uniq -c
 ```
 
 ### Handling User Questions
@@ -488,7 +488,7 @@ Check for and apply updates:
 icg update --check-only
 
 # If updates are available, review the changes
-icg update --dry-run
+icg update --check-only
 
 # Apply updates (during maintenance window)
 icg update
@@ -501,13 +501,18 @@ icg health --check-packs
 
 ```bash
 # Daily summary
-icg status --denials --since 1d --summary
+icg status --denials --since 1d --pattern-summary
 
-# Check for any anomalies
-icg status --denials --since 1d --severity Critical
+# Check for any anomalies. There is no --severity filter; the JSON
+# carries the field, so filter it where you can see it.
+icg status --denials --since 1d --format json \
+  | jq 'select(.severity == "Critical")'
 
 # Export daily data
-icg export --denials --since 1d --output denials-$(date +%Y%m%d).json
+icg status --denials --since 1d --format json > "denials-$(date +%Y%m%d).json"
+
+# Export ONE denial in full, for an incident or false-positive review
+icg export-denial <telemetry-id> > denial.json
 ```
 
 ---
@@ -529,36 +534,39 @@ icg export --denials --since 1d --output denials-$(date +%Y%m%d).json
 watch -n 60 'icg status --denials --since 5m'
 
 # Hourly denial rate
-icg status --denials --rate --since 24h
+icg status --denials --since 24h --trend
 
 # Pattern hot spots
 icg status --denials --pattern-summary --since 24h | grep -E "Increasing|Critical"
 
 # Weekly comparison
-icg status --denials --compare-weeks 2
+icg status --denials --since 14d --trend
 ```
 
 ### Setting Up Alerts
 
-Create alert thresholds:
+Alerting is not built into the CLI — there is no `icg alert`. The guard
+exposes its state to a scraper and the alerting lives in Prometheus, so
+that the rules sit with every other alert you run rather than in a second
+system:
 
 ```bash
-# Alert if critical denials exceed threshold
-icg alert create \
-  --name critical-denials \
-  --condition "denials > 10 AND severity = 'Critical'" \
-  --period 1h \
-  --action email \
-  --recipient ops-team@company.com
-
-# Alert if denial rate spikes
-icg alert create \
-  --name denial-spike \
-  --condition "rate > 50/hour" \
-  --period 1h \
-  --action slack \
-  --channel #ops-alerts
+# Serve /health/live, /health/ready and /metrics for an external scraper
+icg monitor --host 127.0.0.1 --port 8080
 ```
+
+The exported series include `icg_current_deny_rate`,
+`icg_critical_denials_recent`, `icg_rule_pack_loaded`,
+`icg_rule_pack_load_errors`, `icg_denial_log_readable`, `icg_health_status`
+and `icg_crash_rate`. Ready-made rules covering target/process failure, high
+or anomalous deny rate, pack load errors, an unreadable denial log, and
+critical denials are in [`monitoring/prometheus/alerts.yml`](../../monitoring/prometheus/alerts.yml);
+load them via `rule_files` and route `service: irreversible-command-gate`
+through your normal receivers. A Grafana board is in
+[`monitoring/grafana/icg-overview.json`](../../monitoring/grafana/icg-overview.json).
+
+See [`monitoring/README.md`](../../monitoring/README.md) for the endpoint
+contract and the environment variables that relocate its state files.
 
 ### Dashboard Setup
 
@@ -588,20 +596,21 @@ df -h /var/lib/icg
 sudo logrotate /etc/logrotate.d/icg
 
 # Review rule pack versions
-icg status --rule-packs
+icg coverage --list
 ```
 
 ### Monthly Maintenance
 
 ```bash
 # Full denial analysis
-icg status --denials --since 30d --report > /tmp/monthly-report-$(date +%Y%m).txt
+icg status --denials --since 30d --format json > /tmp/monthly-report-$(date +%Y%m).json
 
 # Rule pack update check
 icg update --check-only
 
 # Review and document any false positives
-icg status --denials --since 30d --tag false-positive
+# There is no --tag; export the record and annotate it in your tracker
+   icg export-denial <telemetry-id> > false-positive.json
 
 # Backup rule packs
 sudo tar -czf /tmp/icg-packs-backup-$(date +%Y%m).tar.gz /etc/icg/packs/
@@ -616,11 +625,20 @@ icg backup create --output /tmp/icg-full-backup-$(date +%Y%m%d).tar.gz
 # Review all overrides
 icg override list --include-expired > /tmp/overrides-review-$(date +%Y%m).txt
 
-# Audit critical denials
-icg audit --since 90d --severity Critical
+# Audit critical denials over the quarter
+icg status --denials --since 90d --format json \
+  | jq 'select(.severity == "Critical")'
 
-# Performance check
-icg benchmark --duration 60s
+# Grouped by rule, to see which ones actually fire
+icg status --denials --since 90d --pattern-summary
+```
+
+There is no `icg benchmark`. To measure what the guard costs a tool call,
+time the real thing — a check is a few milliseconds on a warm cache, and
+the number you want is your own hardware's:
+
+```bash
+time (for _ in $(seq 100); do icg check --command "git status" >/dev/null; done)
 ```
 
 ### Log Rotation
@@ -871,7 +889,9 @@ icg health --check-packs --verbose
 jq empty /etc/icg/packs/problem-pack.json
 
 # Check regex syntax
-icg validate-pack /etc/icg/packs/problem-pack.json
+icg coverage --list --pack /etc/icg/packs/problem-pack.json   # does it parse and load?
+icg health --check-packs                                     # validate every installed pack
+icg redos-check /etc/icg/packs/problem-pack.json             # catastrophic backtracking
 ```
 
 **Solutions**:
@@ -892,7 +912,7 @@ icg status --denials --trend --since 1h
 icg status --denials --pattern-summary --since 1h
 
 # Check for specific agent
-icg status --denials --by-session --since 1h
+icg status --denials --since 1h --format json | jq -r .session_id | sort | uniq -c
 ```
 
 **Solutions**:
@@ -1004,7 +1024,7 @@ Create organization-specific packs:
 
 ```bash
 # Scaffold new pack
-icg new-pack --id my-tool --mode command
+icg new-pack my-tool --pack-type command --output-dir packs/
 
 # Edit pack.json
 vim /etc/icg/packs/my-tool.json
@@ -1021,23 +1041,29 @@ sudo chmod 644 /etc/icg/packs/my-tool.json
 icg health --check-packs
 ```
 
-### Performance Tuning
+### Performance
 
-Optimize for high-throughput environments:
+There is nothing to tune. The guard is a short-lived process invoked once
+per tool call: it loads the packs, matches regexes against one string, and
+exits. There is no cache to size and no worker pool — `ICG_CACHE_SIZE` and
+`ICG_WORKERS` are not read by anything.
+
+Measure it rather than trusting a number from this page:
 
 ```bash
-# Benchmark current performance
-icg benchmark --iterations 1000
-
-# Adjust cache size
-export ICG_CACHE_SIZE=1000
-
-# Adjust worker threads
-export ICG_WORKERS=4
-
-# Re-benchmark
-icg benchmark --iterations 1000
+time (for _ in $(seq 100); do icg check --command "git status" >/dev/null; done)
 ```
+
+A check costs single-digit milliseconds on a warm page cache. If it is
+slower than that, the cause is almost always one of:
+
+- **A pathological regex.** `icg redos-check <pack>` finds catastrophic
+  backtracking; it is a gate in CI for exactly this reason.
+- **Pack-directory I/O on a cold or network filesystem.** `/etc/icg/packs`
+  belongs on local disk.
+- **A predicate rule doing real work.** `git-stale-remote-head-push` makes a
+  live remote lookup by design — that one is a network round trip, and it is
+  the documented exception to the no-network rule, not a regression.
 
 ---
 
@@ -1125,7 +1151,7 @@ ls -la /tmp/icg-emergency-*
 
 **Validation**:
 ```bash
-icg status --denials --since 7d --report
+icg status --denials --since 7d --format json
 # Should generate comprehensive report
 ```
 
@@ -1215,7 +1241,9 @@ Use this checklist to assess operator readiness:
 | `icg update` | Update rule packs |
 | `icg override` | Manage repository overrides |
 | `icg backup` | Create backup |
-| `icg benchmark` | Performance test |
+| `icg monitor` | Serve /metrics and health probes for a scraper |
+| `icg redos-check` | Check a pack for catastrophic backtracking |
+| `icg coverage-diff` | Compare two packs for coverage regressions |
 
 ### Severity Matrix
 

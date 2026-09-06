@@ -1,3 +1,11 @@
+> **Archived.** This is a point-in-time audit of `docs/examples/README.md`
+> as it stood on its stated date. It is kept as the record of why those
+> scenarios were rewritten, and is **not current** — the scenarios it grades
+> have since changed, and some commands it names (`icg verify-coverage`) never
+> existed. For the live picture see
+> [`docs/examples/README.md`](../../examples/README.md) and run
+> `icg coverage --list`.
+
 # Integration-scenario coverage gap analysis
 
 The fixtures and tests in `tests/fixtures/integration-scenarios/` and

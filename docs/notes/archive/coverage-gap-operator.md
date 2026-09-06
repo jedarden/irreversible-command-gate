@@ -1,9 +1,17 @@
+> **Archived.** This is a point-in-time audit of `docs/examples/README.md`
+> as it stood on its stated date. It is kept as the record of why those
+> scenarios were rewritten, and is **not current** — the scenarios it grades
+> have since changed, and some commands it names (`icg verify-coverage`) never
+> existed. For the live picture see
+> [`docs/examples/README.md`](../../examples/README.md) and run
+> `icg coverage --list`.
+
 # Operator scenario coverage-gap audit
 
 Audit date: 2026-08-17
 
 This audit covers the five operator scenarios in
-[`docs/examples/README.md`](README.md). `✓` means the scenario has a stable
+[`docs/examples/README.md`](../../examples/README.md). `✓` means the scenario has a stable
 fixture, its documented `icg` commands are executable, and expected behavior is
 asserted by the fixture-backed integration suite.
 
