@@ -555,6 +555,10 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
         }
     };
 
+    // Heredoc redirections seen on the current line, in order. Their bodies
+    // are literal text and are consumed -- not lexed -- when the line ends.
+    let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
+
     let mut chars = input.chars().peekable();
     while let Some(character) = chars.next() {
         if escaped {
@@ -596,6 +600,35 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
         }
 
         match character {
+            // A heredoc body is literal text, not shell. Without this the
+            // lexer treats an apostrophe in the body as an opening quote that
+            // never closes, swallows the rest of the input into one word, and
+            // emits no executable token afterwards -- which silently skips
+            // every command-mode pack for the remainder of the command.
+            '<' if chars.peek() == Some(&'<') => {
+                chars.next();
+                if chars.peek() == Some(&'<') {
+                    // `<<<` is a herestring: its operand is an ordinary word
+                    // on the same line, with no body to consume.
+                    chars.next();
+                    finish_word(&mut command, &mut word, &mut word_started);
+                    continue;
+                }
+                let strip_tabs = if chars.peek() == Some(&'-') {
+                    chars.next();
+                    true
+                } else {
+                    false
+                };
+                while matches!(chars.peek(), Some(' ' | '\t')) {
+                    chars.next();
+                }
+                let delimiter = read_heredoc_delimiter(&mut chars);
+                if !delimiter.is_empty() {
+                    pending_heredocs.push((delimiter, strip_tabs));
+                }
+                finish_word(&mut command, &mut word, &mut word_started);
+            }
             '\'' | '"' => {
                 quote = Some(character);
                 word_started = true;
@@ -603,6 +636,11 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
             '\\' => escaped = true,
             '\n' => {
                 finish_command(&mut commands, &mut command, &mut word, &mut word_started);
+                // The bodies begin on the line after the redirection, in the
+                // order the redirections appeared.
+                for (delimiter, strip_tabs) in std::mem::take(&mut pending_heredocs) {
+                    consume_heredoc_body(&mut chars, &delimiter, strip_tabs);
+                }
             }
             character if character.is_whitespace() => {
                 finish_word(&mut command, &mut word, &mut word_started);
@@ -630,6 +668,69 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
     finish_command(&mut commands, &mut command, &mut word, &mut word_started);
 
     commands
+}
+
+/// Read the word naming a heredoc terminator, honouring `'X'` and `"X"`.
+///
+/// Quoting the delimiter suppresses expansion in the body; it does not change
+/// where the body ends, so both forms yield the same terminator text.
+fn read_heredoc_delimiter(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut delimiter = String::new();
+    match chars.peek().copied() {
+        Some(quote @ ('\'' | '"')) => {
+            chars.next();
+            for character in chars.by_ref() {
+                if character == quote {
+                    break;
+                }
+                delimiter.push(character);
+            }
+        }
+        _ => {
+            while let Some(&character) = chars.peek() {
+                if character.is_whitespace() || matches!(character, ';' | '&' | '|' | '<' | '>') {
+                    break;
+                }
+                delimiter.push(character);
+                chars.next();
+            }
+        }
+    }
+    delimiter
+}
+
+/// Consume a heredoc body without lexing it, stopping after the line that is
+/// exactly the terminator.
+///
+/// A line merely containing the terminator does not end the body. An
+/// unterminated heredoc is malformed shell; consuming to end of input is the
+/// conservative reading -- the alternative is resuming the lexer inside what
+/// is still body text.
+fn consume_heredoc_body(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    delimiter: &str,
+    strip_tabs: bool,
+) {
+    loop {
+        if chars.peek().is_none() {
+            return;
+        }
+        let mut line = String::new();
+        for character in chars.by_ref() {
+            if character == '\n' {
+                break;
+            }
+            line.push(character);
+        }
+        let candidate = if strip_tabs {
+            line.trim_start_matches('\t')
+        } else {
+            line.as_str()
+        };
+        if candidate == delimiter {
+            return;
+        }
+    }
 }
 
 fn executable_basename(token: &str) -> &str {

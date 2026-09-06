@@ -1004,3 +1004,44 @@ fn docs_state_that_the_guard_does_not_check_caller_identity() {
          so they reach the agent without shadowing the operator's shell"
     );
 }
+
+/// Every stanza in the coverage-justification record must name a real rule.
+///
+/// `coverage-diff` cannot distinguish a widening from a narrowing, so it
+/// flags any regex change on a destructive pattern and CI requires a
+/// `## <pattern-id>` stanza in packs/coverage-justifications.md. That file is
+/// a standing waiver list, so it needs its own guard: a stanza naming a rule
+/// that no longer exists is dead weight that quietly grows, and a typo in an
+/// id is a waiver that silently covers nothing.
+#[test]
+fn coverage_justifications_name_real_patterns() {
+    let record = repo_relative("packs/coverage-justifications.md");
+    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+
+    let mut shipped: BTreeSet<String> = BTreeSet::new();
+    for entry in fs::read_dir(&packs_dir).expect("packs/ readable") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let pack: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).expect("pack parses");
+        for pattern in pack["guarded_patterns"].as_array().unwrap() {
+            shipped.insert(pattern["id"].as_str().unwrap().to_owned());
+        }
+    }
+
+    for line in record.lines() {
+        let Some(id) = line.strip_prefix("## ") else {
+            continue;
+        };
+        let id = id.trim();
+        assert!(
+            shipped.contains(id),
+            "packs/coverage-justifications.md has a stanza for `{id}`, which no \
+             shipped pack defines. Either the id is a typo -- in which case the \
+             waiver covers nothing and CI will still stop -- or the rule is gone \
+             and the stanza should be removed."
+        );
+    }
+}
