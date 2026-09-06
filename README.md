@@ -50,7 +50,7 @@ Grab the release binary — or build from source, which needs nothing but a
 Rust toolchain:
 
 ```bash
-curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1/icg
+curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.2/icg
 chmod +x icg
 
 # or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
@@ -121,12 +121,13 @@ release-integrity machinery, and 526 passing tests across 52 files are in
 the tree and working. The whole crate is 25,800 lines of Rust with 17
 dependencies and no C toolchain requirement.
 
-**`v0.1.1` is the first end-to-end release** (2026-09-06): binary, pack
-tarball, byte-level pack manifest, and the merged `rule-pack.json`. The
-trust-pointer and auto-update flow now has a real release to point at but
-has not yet been exercised across two of them, so treat `icg update` as
-unproven until a second release lands. Tracked in
-[`docs/plan/plan.md`](docs/plan/plan.md), Phase 0.
+**`v0.1.2` is the current release** (2026-09-06), following `v0.1.1` the same
+day. Each carries the binary, the pack tarball, a byte-level pack manifest,
+and the merged `rule-pack.json`. Two releases now exist, so `icg update`'s
+trust-pointer flow finally has a real predecessor to advance from — but that
+transition has not yet been exercised end to end. Treat `icg update` as
+unproven until it has. Tracked in [`docs/plan/plan.md`](docs/plan/plan.md),
+Phase 0.
 
 ## Documentation
 

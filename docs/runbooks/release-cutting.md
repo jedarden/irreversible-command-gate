@@ -1,9 +1,34 @@
 # Release-cutting runbook
 
-This is the human release gate for `irreversible-command-gate`. A push to
-`main` may run CI and build candidate artifacts, but it must not publish a
-trusted release automatically. The operator runs `gh release create` only
-after the checks below are complete.
+This is the release gate for `irreversible-command-gate`.
+
+**Read this first: the release is cut by CI, not by hand.** The `icg-ci`
+WorkflowTemplate's `build-and-release` step reads the version out of
+`Cargo.toml`, and if no *published* release carries that tag it runs the
+Layer 1 gates, tags Forgejo, builds the artifacts, and calls
+`gh release create` itself. Both v0.1.1 and v0.1.2 were published that way —
+their notes carry the template's "Built from commit:" preamble.
+
+So the act that cuts a release is **merging a version bump to `main`**, and
+the review below has to happen *before* that push, not after it. An earlier
+revision of this runbook described an operator running `gh release create`
+manually after review; that has not been how it works since the template
+gained its release step, and following it would have you either duplicating
+a release CI already made or waiting for an approval step that does not
+exist.
+
+Two consequences worth stating plainly:
+
+- **The version bump is the release trigger.** Do not bump `Cargo.toml`
+  "to be ready" and push it — that publishes.
+- **CI clones the tip of Forgejo `main`, not the commit that triggered the
+  run.** A run that starts before your push and reaches `build-and-release`
+  after it will build your commit. Do not push a bump while a run is in
+  flight if you need the released commit to be the reviewed one.
+
+The steps below remain the review that must precede that push, plus the
+manual fallback for the case where CI produced artifacts but the release was
+not created.
 
 ## Release gate
 
@@ -34,9 +59,47 @@ gate. There is no additional approval-workflow layer. If any required
 evidence is missing or is bound to a different commit, stop without creating
 the release.
 
-## Procedure
+## Procedure — normal path
 
-Set these values from the verified `icg-ci` run and review record:
+1. Complete the release gate above against the commit currently on `main`.
+2. Bump `version` in `Cargo.toml`. Update every doc that cites the release
+   tag or the `icg --version` banner; `install_docs_cite_the_current_release_version`
+   fails the build if you miss one.
+3. Run the gates locally before pushing — these are the same commands
+   `build-and-release` runs, and a failure here is a failure there:
+
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --all-targets -- -D warnings
+   cargo test
+   cargo run --quiet -- build-pack --pack-dir packs --output /tmp/current-merged.json
+   cargo run --quiet -- pack-manifest --pack-dir packs --output /tmp/current-manifest.json
+   gh release download "$PREVIOUS_TAG" --repo jedarden/irreversible-command-gate \
+     --pattern rule-pack.json --dir /tmp --clobber
+   cargo run --quiet -- regression-suite packs --release-gate --output /tmp/suite.json
+   cargo run --quiet -- coverage-diff /tmp/rule-pack.json /tmp/current-merged.json
+   cargo run --quiet -- redos-check /tmp/current-merged.json --timeout-ms 100
+   ```
+
+4. Commit and push to Forgejo `main`. CI does the rest.
+5. Verify the published release (step 4 of the manual procedure below), then
+   replace the template's generic notes with real ones:
+
+   ```bash
+   gh release edit "$TAG" --repo jedarden/irreversible-command-gate \
+     --notes-file /path/to/release-notes.md
+   ```
+
+   The template cannot know what changed, so its notes are a placeholder.
+   Editing them is part of cutting the release, not an optional extra.
+6. Advance the Layer 4 trust pointer, as in step 5 below.
+
+## Procedure — manual fallback
+
+Use this only when CI produced verified artifacts but did not create the
+release (for example, the workflow failed after the gates and before
+`gh release create`). Set these values from the verified `icg-ci` run and
+review record:
 
 ```bash
 REPO=jedarden/irreversible-command-gate

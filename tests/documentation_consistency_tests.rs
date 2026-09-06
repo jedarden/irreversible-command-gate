@@ -392,7 +392,7 @@ fn operator_docs_do_not_cite_a_fictional_surface() {
         ),
         (
             "releases/download/v0.1.0",
-            "v0.1.0 is an orphaned tag; the first real release is v0.1.1",
+            "v0.1.0 is an orphaned tag that never carried artifacts",
         ),
         (
             "irreversible-command-gate/v0.1.0/packs/",

@@ -41,8 +41,8 @@ process. Keep the harness's own approval and sandbox controls enabled.
 ### Option 1: Release binary (recommended)
 
 ```bash
-# Release binary and packs (v0.1.1, linux x86_64)
-BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1
+# Release binary and packs (v0.1.2, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.2
 curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
 sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
@@ -51,7 +51,7 @@ sudo tar -xzf icg-packs.tar.gz -C /etc/icg
 sudo chown -R root:root /etc/icg/packs
 
 # Verify
-icg --version          # icg 0.1.1
+icg --version          # icg 0.1.2
 icg coverage --list    # all ten packs
 ```
 
@@ -69,7 +69,7 @@ cargo build --release
 sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
 icg --version
-# icg 0.1.1
+# icg 0.1.2
 ```
 
 There are no system dependencies beyond a Rust toolchain — TLS is rustls,
@@ -568,7 +568,7 @@ More depth: `docs/operators/troubleshooting.md`.
 ## Quick Reference
 
 ```bash
-icg --version                     # icg 0.1.1
+icg --version                     # icg 0.1.2
 icg coverage --list               # list loaded rule packs
 icg check --command "<cmd>"       # test a command string
 icg check --stdin                 # test a PreToolUse JSON document
