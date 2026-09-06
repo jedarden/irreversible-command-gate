@@ -513,9 +513,16 @@ git push origin main
 ICG_DISABLED=1 <dangerous-command>
 ```
 
-`ICG_DISABLED` is an operator-controlled escape hatch that disables
-enforcement for a single invocation. It prints a warning and must be
-justified afterward — export the denial record for the review:
+`ICG_DISABLED` disables enforcement for a single invocation. It is an
+**audited** escape hatch, not a restricted one: it is an environment
+variable, so anything that can set a variable can use it — the guarded agent
+included. What it guarantees is a record, not a gate. Every use prints a
+warning to stderr and writes an emergency-bypass entry to telemetry naming
+the front-end that was bypassed (the command itself is deliberately not
+recorded, since it may carry a credential).
+
+Treat it as a break-glass you will have to explain, and export the denial
+record for the review:
 
 ```bash
 icg export-denial <telemetry-id> > incident.txt

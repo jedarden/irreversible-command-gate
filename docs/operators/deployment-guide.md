@@ -23,11 +23,13 @@ Claude Code or local Codex CLI
      harness
 ```
 
-The `icg wrapper` subcommand is not a production wrapper yet. It currently
-parses and prints command segments and then allows the invocation; it does
-not locate or execute the real `git`, `vault`, or other binary. Do not create
-PATH-shadowing symlinks to this build. The native hook is the deployment
-mechanism to install.
+The `icg wrapper` subcommand is implemented. Invoked under a shadowed name,
+it evaluates the command, exits non-zero without exec'ing on a deny, and
+otherwise `exec`s the real binary found later in `PATH`. It is defence in
+depth behind the hook, not a replacement for it: it cannot see an
+absolute-path invocation (`/usr/bin/bao …`) or a direct library call, and
+`Write`/`Edit`/`apply_patch` content never reaches it at all. The native hook
+remains the required harness integration.
 
 The guard is a backstop for honest mistakes, not a boundary against a
 malicious process. Local host hooks do not cover cloud-hosted agent jobs,
@@ -348,6 +350,59 @@ protected system paths, then configure only the local harness hook. This is
 the smallest useful deployment. Add Unix PATH symlinks only when the real
 shadowed binaries are available later in `PATH` and the wrapper's limitations
 are acceptable; the native hook remains the required harness integration.
+
+### Scoping the wrapper to the agent
+
+The hook and the wrapper differ in who they reach, and it is worth being
+deliberate about it.
+
+`icg hook` is invoked only by the harness's `PreToolUse` dispatcher, so it
+sees the agent's tool calls and nothing else. An operator typing the same
+command in their own shell never goes through it. That separation is a
+property of where the hook sits; the guard itself performs no identity, TTY
+or privilege check, and never has.
+
+The wrapper has no such property by default. Symlinks in `/usr/local/bin`
+shadow the binary for **every** process on the host that resolves through
+`PATH` — an operator's interactive shell included. If you want the wrapper to
+guard the agent while leaving your own shell alone, install the symlinks
+somewhere only the agent's environment looks:
+
+```bash
+sudo install -d -o root -g root -m 0755 /usr/local/libexec/icg-wrappers
+sudo icg install --dir /usr/local/libexec/icg-wrappers
+```
+
+The symlink set is derived from the loaded packs' `tool_keywords`, so it
+tracks the installed policy rather than a hand-maintained list. With the ten
+shipped packs that is `bao`, `bead`, `bf`, `docker`, `git`, `needle`, `tmux`
+and `vault`. `icg install` warns if the directory is not earlier in `PATH`
+than the real binaries.
+
+Then prepend that directory to the agent's `PATH` only — in the harness's
+environment or the unit that launches it — and leave it out of your login
+shell:
+
+```bash
+PATH="/usr/local/libexec/icg-wrappers:$PATH"   # agent environment only
+```
+
+Verify from both sides:
+
+```bash
+command -v bao                       # your shell: /usr/bin/bao
+sudo -u <agent-user> env PATH="/usr/local/libexec/icg-wrappers:$PATH" command -v bao
+                                     # agent:      /usr/local/libexec/icg-wrappers/bao
+```
+
+Keep the directory root-owned either way. A wrapper the guarded agent can
+replace is not a guard.
+
+This is a convenience boundary, not a security one: the agent can still call
+the real binary by absolute path, and `ICG_DISABLED=1` is an environment
+variable available to whoever sets it. Denials that say "a human runs it"
+describe the procedure you have agreed to, not a capability difference the
+guard can enforce.
 
 ### Shared host with both harnesses
 
@@ -692,10 +747,22 @@ sudo icg telemetry status
 
 ### A PATH wrapper does not block a command
 
-This is expected for the current repository state. `icg wrapper` is a parser
-scaffold and does not execute a real binary or enforce a rule pack. Remove any
-experimental symlink and rely on the native hook until a completed wrapper
-implementation is released and documented.
+The wrapper is implemented, so an unblocked command means one of the
+following — check them in this order:
+
+1. **The invocation used an absolute path.** `/usr/bin/bao kv destroy` never
+   consults `PATH` and so never reaches the symlink. This is a documented
+   limitation, not a fault.
+2. **The symlink is not earlier in `PATH` than the real binary.** Confirm
+   with `command -v bao` — it must resolve to the symlink, not to
+   `/usr/bin/bao`.
+3. **No pack claims that tool.** The symlink set comes from the loaded packs'
+   `tool_keywords`; `icg coverage --list --format json` shows them. A tool no
+   pack names is allowed by design.
+4. **The packs did not load.** With an empty or missing pack directory the
+   guard fails open silently. `icg coverage --list` is the check.
+5. **`ICG_DISABLED=1` is set** in that environment. The bypass prints a
+   warning to stderr, which is easy to miss in a wrapped invocation.
 
 ### A deployment must be rolled back
 

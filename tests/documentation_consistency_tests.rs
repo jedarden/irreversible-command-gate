@@ -924,3 +924,83 @@ fn flags_for_subcommand(path: &[String]) -> Option<BTreeSet<String>> {
     }
     None
 }
+
+/// No operator doc may describe the PATH wrapper as unimplemented.
+///
+/// `troubleshooting_does_not_claim_the_wrapper_is_unimplemented` guards one
+/// file by one phrase. `deployment-guide.md` said the same thing in two other
+/// wordings -- "not a production wrapper yet", "a parser scaffold [that] does
+/// not execute a real binary" -- and told the reader not to create the
+/// symlinks at all. argv[0] dispatch ships: the wrapper denies with a
+/// non-zero exit and otherwise execs the real binary (wrapper_deny_tests.rs).
+#[test]
+fn no_doc_claims_the_wrapper_is_unimplemented() {
+    let stale = [
+        "subcommand is not implemented",
+        "not a production wrapper",
+        "parser scaffold",
+        "does not execute a real binary",
+        "Do not create PATH-shadowing symlinks",
+        "wrapper is not yet implemented",
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders = Vec::new();
+    for doc in markdown_files(&root.join("docs"))
+        .into_iter()
+        .chain([root.join("README.md"), root.join("AGENTS.md")])
+    {
+        let Ok(text) = fs::read_to_string(&doc) else {
+            continue;
+        };
+        let relative = doc.strip_prefix(root).unwrap_or(&doc).display().to_string();
+        if relative.contains("ideas-ledger") || relative.contains("notes/archive/") {
+            continue;
+        }
+        for phrase in stale {
+            if text.contains(phrase) {
+                offenders.push(format!("{relative}: {phrase:?}"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "docs still describe the shipped PATH wrapper as unimplemented:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// The guard performs no identity check, and the docs must say so.
+///
+/// Four rules tell the caller that "a human" should run the operation
+/// instead. Nothing in the engine distinguishes a human from an agent --
+/// there is no isatty, getuid or SUDO_USER anywhere in `src/` -- so that
+/// phrasing describes a procedure, and a reader who assumes otherwise has
+/// assumed a control that does not exist.
+#[test]
+fn docs_state_that_the_guard_does_not_check_caller_identity() {
+    let readme = repo_relative("README.md");
+    assert!(
+        readme.contains("It does not know who is calling."),
+        "the README's non-goals must state that no identity check exists"
+    );
+
+    let quick_start = quick_start();
+    assert!(
+        quick_start.contains("**audited** escape hatch, not a restricted one"),
+        "quick-start must describe ICG_DISABLED as audited rather than restricted"
+    );
+    assert!(
+        !quick_start.contains("operator-controlled escape hatch"),
+        "quick-start must not imply ICG_DISABLED is restricted to an operator; \
+         it is an environment variable the guarded agent can set"
+    );
+
+    let deployment = repo_relative("docs/operators/deployment-guide.md");
+    assert!(
+        deployment.contains("### Scoping the wrapper to the agent"),
+        "the deployment guide must explain how to scope the wrapper's symlinks \
+         so they reach the agent without shadowing the operator's shell"
+    );
+}

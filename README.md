@@ -121,6 +121,15 @@ scaffolds a pack and its regression test together.
 - **It does not defend against prompt injection** or a malicious repository
   trying to trick an honest agent. Different threat class, explicitly out of
   scope.
+- **It does not know who is calling.** There is no identity, TTY or privilege
+  check anywhere in the engine. Rules whose text says "a human runs it"
+  describe a procedure you follow, not a capability the guard enforces. The
+  agent/human split you get from hook mode is structural — `icg hook` only
+  runs inside the harness's tool loop — and the PATH wrapper has no such
+  split unless you scope its symlinks to the agent's `PATH`
+  ([deployment guide](docs/operators/deployment-guide.md#scoping-the-wrapper-to-the-agent)).
+  `ICG_DISABLED=1` is audited, not restricted: an agent can set it as easily
+  as you can.
 - **It does not reach cloud-hosted agent sessions** — ChatGPT web, Codex
   cloud tasks, claude.ai. Only local CLIs invoke local hooks. See
   [multi-harness-integration.md](docs/notes/multi-harness-integration.md).
