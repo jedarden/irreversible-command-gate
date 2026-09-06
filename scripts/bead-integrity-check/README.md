@@ -133,7 +133,7 @@ fi
 
 ## See Also
 
-- [CLAUDE.md - Beads (bead-rs CLI)](../../CLAUDE.md)
+- Beads (bead-rs CLI) conventions — the operator environment's `CLAUDE.md`, outside this repo
 - [`bead doctor`](https://github.com/jedarden/bead-rs) for safe auto-repair
 - [`bead sync flush-only`](https://github.com/jedarden/bead-rs) for database→checkpoint synchronization
 

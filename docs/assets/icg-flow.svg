@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 62 1040 478" width="1040" height="478" role="img"
+     aria-labelledby="t d">
+  <title id="t">How irreversible-command-gate evaluates a tool call</title>
+  <desc id="d">An agent's tool call is intercepted by the harness PreToolUse hook and handed to
+  icg, which dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded
+  patterns, and returns one of four verdicts: allow, warning, rewrite, or deny. Only deny stops
+  the command.</desc>
+
+  <style>
+    :root { color-scheme: light dark; }
+    .bg    { fill: #fbfbfa; }
+    .card  { fill: #ffffff; stroke: #d8d5cf; }
+    .inner { fill: #f4f2ee; stroke: #e2ded7; }
+    .t     { fill: #1f1e1c; font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .m     { fill: #1f1e1c; font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+    .dim   { fill: #6b675f; }
+    .rule  { stroke: #c9c5bd; }
+    .arrow { stroke: #8a857c; fill: none; }
+    .head  { fill: #8a857c; }
+    .allow  { fill: #1a7f4b; } .allowbg  { fill: #e8f5ee; stroke: #9fd4b6; }
+    .warn   { fill: #8a6100; } .warnbg   { fill: #fdf3e0; stroke: #e8c987; }
+    .rewr   { fill: #1f6a8f; } .rewrbg   { fill: #e6f2f8; stroke: #a2cbe0; }
+    .deny   { fill: #a4272b; } .denybg   { fill: #fceceb; stroke: #eaa9a6; }
+    @media (prefers-color-scheme: dark) {
+      .bg    { fill: #16161a; }
+      .card  { fill: #1e1e24; stroke: #34343d; }
+      .inner { fill: #24242c; stroke: #34343d; }
+      .t, .m { fill: #e8e6e3; }
+      .dim   { fill: #9a958d; }
+      .rule  { stroke: #3a3a44; }
+      .arrow { stroke: #7c7a86; }
+      .head  { fill: #7c7a86; }
+      .allow  { fill: #6ed49b; } .allowbg  { fill: #14291f; stroke: #2f6b48; }
+      .warn   { fill: #edc25c; } .warnbg   { fill: #2b2312; stroke: #6d5820; }
+      .rewr   { fill: #7cc4e8; } .rewrbg   { fill: #12242e; stroke: #2c5a75; }
+      .deny   { fill: #f08a86; } .denybg   { fill: #2d1615; stroke: #7a3330; }
+    }
+  </style>
+
+  <rect class="bg" width="1040" height="560"/>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="head" d="M0 0 L10 5 L0 10 z"/>
+    </marker>
+  </defs>
+
+  <!-- 1. agent -->
+  <rect class="card" x="24" y="150" width="196" height="150" rx="10"/>
+  <text class="t" x="42" y="180" font-size="15" font-weight="600">Agent</text>
+  <text class="dim t" x="42" y="202" font-size="12.5">Claude Code · Codex CLI</text>
+  <rect class="inner" x="42" y="216" width="160" height="60" rx="6"/>
+  <text class="m dim" x="54" y="238" font-size="11.5">wants to run</text>
+  <text class="m" x="54" y="260" font-size="12">bao kv destroy …</text>
+
+  <path class="arrow" d="M228 225 L282 225" marker-end="url(#a)" stroke-width="1.6"/>
+
+  <!-- 2. hook -->
+  <rect class="card" x="290" y="150" width="176" height="150" rx="10"/>
+  <text class="t" x="308" y="180" font-size="15" font-weight="600">PreToolUse hook</text>
+  <text class="dim t" x="308" y="202" font-size="12.5">the harness pauses</text>
+  <text class="dim t" x="308" y="219" font-size="12.5">the call and asks</text>
+  <rect class="inner" x="308" y="232" width="140" height="44" rx="6"/>
+  <text class="m" x="320" y="252" font-size="11.5">icg hook</text>
+  <text class="m dim" x="320" y="268" font-size="11">JSON in / JSON out</text>
+
+  <path class="arrow" d="M474 225 L528 225" marker-end="url(#a)" stroke-width="1.6"/>
+
+  <!-- 3. engine -->
+  <rect class="card" x="536" y="82" width="286" height="286" rx="10"/>
+  <text class="t" x="556" y="112" font-size="15" font-weight="600">icg engine</text>
+  <text class="dim t" x="556" y="132" font-size="12">deterministic · no network I/O</text>
+  <line class="rule" x1="556" y1="146" x2="802" y2="146" stroke-width="1"/>
+
+  <text class="dim m" x="556" y="172" font-size="11">1</text>
+  <text class="t" x="576" y="172" font-size="12.5">dispatch by tool keyword</text>
+  <text class="m dim" x="576" y="190" font-size="11.5">bao|vault → openbao pack</text>
+
+  <text class="dim m" x="556" y="222" font-size="11">2</text>
+  <text class="t" x="576" y="222" font-size="12.5">safe patterns first</text>
+  <text class="dim t" x="576" y="240" font-size="11.5">a match ends it — allow</text>
+
+  <text class="dim m" x="556" y="272" font-size="11">3</text>
+  <text class="t" x="576" y="272" font-size="12.5">guarded patterns</text>
+  <text class="dim t" x="576" y="290" font-size="11.5">first match wins; its rule</text>
+  <text class="dim t" x="576" y="306" font-size="11.5">picks the channel below</text>
+
+  <line class="rule" x1="556" y1="326" x2="802" y2="326" stroke-width="1"/>
+  <text class="dim t" x="556" y="348" font-size="11.5">no pack loaded, no match, or a crash → allow</text>
+
+  <!-- rule packs feeding the engine -->
+  <rect class="inner" x="536" y="404" width="286" height="120" rx="10"/>
+  <text class="t" x="556" y="430" font-size="13" font-weight="600">/etc/icg/packs/*.json</text>
+  <text class="dim t" x="556" y="450" font-size="11.5">root-owned policy the guarded agent</text>
+  <text class="dim t" x="556" y="466" font-size="11.5">cannot rewrite — 10 packs, 26 rules</text>
+  <text class="m dim" x="556" y="492" font-size="11">openbao · git · secrets · docker</text>
+  <text class="m dim" x="556" y="508" font-size="11">image-tag · storage-class · beads · …</text>
+  <path class="arrow" d="M679 400 L679 374" marker-end="url(#a)" stroke-width="1.6"/>
+
+  <!-- 4. verdicts -->
+  <path class="arrow" d="M830 225 L868 225" marker-end="url(#a)" stroke-width="1.6"/>
+
+  <rect class="allowbg" x="876" y="96" width="140" height="58" rx="8"/>
+  <text class="allow" x="892" y="121" font-size="13" font-weight="700">ALLOW</text>
+  <text class="dim t" x="892" y="140" font-size="11">runs, silently</text>
+
+  <rect class="warnbg" x="876" y="164" width="140" height="58" rx="8"/>
+  <text class="warn" x="892" y="189" font-size="13" font-weight="700">WARNING</text>
+  <text class="dim t" x="892" y="208" font-size="11">runs, with a caution</text>
+
+  <rect class="rewrbg" x="876" y="232" width="140" height="58" rx="8"/>
+  <text class="rewr" x="892" y="257" font-size="13" font-weight="700">REWRITE</text>
+  <text class="dim t" x="892" y="276" font-size="11">safe form substituted</text>
+
+  <rect class="denybg" x="876" y="300" width="140" height="58" rx="8"/>
+  <text class="deny" x="892" y="325" font-size="13" font-weight="700">DENY</text>
+  <text class="dim t" x="892" y="344" font-size="11">blocked + what to do</text>
+
+  <text class="dim t" x="876" y="382" font-size="11.5">Only DENY stops the</text>
+  <text class="dim t" x="876" y="398" font-size="11.5">command. Every verdict</text>
+  <text class="dim t" x="876" y="414" font-size="11.5">names the pack and rule.</text>
+
+  <!-- footer -->
+  <line class="rule" x1="24" y1="470" x2="500" y2="470" stroke-width="1"/>
+  <text class="dim t" x="24" y="496" font-size="12">A backstop for an honest, fallible agent — not a boundary</text>
+  <text class="dim t" x="24" y="514" font-size="12">against a hostile one. ~10 ms per check.</text>
+</svg>

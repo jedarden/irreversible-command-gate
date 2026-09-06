@@ -1,111 +1,169 @@
 # irreversible-command-gate
 
-A guard for AI coding/automation agents that intercepts commands before they
-execute and blocks the ones that cause irreversible or hard-to-reverse
-damage (destroying secrets, deleting cluster state, force-pushing, purging
-data), while letting normal read/write operations through unimpeded.
+**A last-second guard for AI coding agents.** It sits in the harness's
+`PreToolUse` hook, reads the command or file the agent is about to act on,
+and stops the handful that cannot be undone — destroying a secret,
+force-pushing over history, printing a credential into the transcript,
+purging a volume — while everything else passes through untouched.
 
-This exists because the enforcement infrastructure already running in this
-environment (`~/.claude/hooks/org-rule-guard.py`) only covers a handful of
-org-specific rules — GitHub Actions files, `kind: Job`/`CronJob`, `:latest`
-image tags, committed credential values, and mutating `kubectl` verbs. It
-says nothing about HashiCorp Vault/OpenBao destructive operations, `git
-push --force`, bead-store corruption risks, or the many other irreversible
-actions an agent with real credentials could take. See
-`docs/notes/existing-enforcement-infrastructure.md` for the full coverage
-gap analysis this project starts from.
+Every denial says what to do instead. That is the point: the agent should
+finish the turn knowing the sanctioned path, not just that it was blocked.
 
-## What this does not do
+<p align="center">
+  <img src="docs/assets/icg-demo.gif"
+       alt="Terminal recording: icg allows git status, rewrites a force-push into a plain push, warns on a secret read to stdout, and denies a docker prune and a bare git credential fill."
+       width="900">
+</p>
 
-Stated plainly, because it's easy to assume more than is actually true:
+<sub>Real `icg check` output — reproduce it with
+[`docs/assets/demo.sh`](docs/assets/demo.sh).</sub>
 
-- **This is a backstop for an honest, fallible agent, not a defense against
-  a genuinely adversarial or compromised one.** An agent that deliberately
-  wants to defeat this guard can — the artifacts live in root-owned
-  locations (`/usr/local/bin/icg`, `/etc/icg/packs`,
-  `/etc/icg/trust-pointer.json`) so the guarded agent cannot rewrite them,
-  but the release pipeline that vets what loads has not yet produced a
-  verified end-to-end release (see `docs/plan/plan.md`, Phase 0). See
-  `docs/notes/runtime-config-vs-hardcoded.md`.
-- **It does not reach OpenAI's cloud-hosted Codex** (ChatGPT web / async
-  "Codex cloud tasks"). Only the local `codex` and Claude Code CLIs are
-  covered. See `docs/notes/multi-harness-integration.md`.
-- **It does not defend against prompt injection or a malicious/compromised
-  repository trying to trick an otherwise-honest agent.** That's a
-  different threat class, explicitly out of scope (see the ideas ledger's
-  second run for why that idea was killed rather than adopted).
-- **Both hook and PATH-wrapper front-ends are fully implemented.** The
-  binary automatically detects when invoked under a shadowed name (via symlinks
-  like `vault` → `icg` in PATH) and runs command-mode checks before exec'ing
-  the real binary. Hook mode (`icg hook`) handles both command-mode and
-  content-mode (Write/Edit) checks via the PreToolUse JSON protocol.
-  The wrapper does not cover absolute-path invocations or direct library calls.
+## How it works
 
-## Getting Started
+<p align="center">
+  <img src="docs/assets/icg-flow.svg"
+       alt="An agent's tool call goes to the harness PreToolUse hook, which hands it to icg. icg dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded patterns, and returns allow, warning, rewrite, or deny. Rule packs live root-owned in /etc/icg/packs. Only deny stops the command."
+       width="1000">
+</p>
 
-New to icg? Start here:
+Four verdicts, one per redirect channel a rule can declare — and **only
+`deny` stops the command**:
 
-**2026-08-26:** CI workflow updated to gate actual packs instead of static fixtures. All 376+ tests pass locally. Release verification pending - no GitHub release has been created yet. The icg-ci workflow needs to complete successfully end-to-end to create the first release.
+| Verdict | Hook response | When |
+| --- | --- | --- |
+| `ALLOW` | `permissionDecision: allow` | No rule matched, or a safe pattern matched first |
+| `WARNING` | `allow` + `additionalContext` | The rule cannot decide reliably enough to block, but the agent should know |
+| `REWRITE` | `allow` + `updatedInput` | A safe form of the same intent exists — the harness retries with it |
+| `DENY` | `permissionDecision: deny` | Irreversible; the reason carries the alternative |
 
-- **[Onboarding Guide](docs/onboarding-guide.md)** — Structured learning path for operators and developers (recommended starting point)
-- **[Quick Start Guide](docs/quick-start.md)** — Get up and running in 5 minutes
-- **[Fail-Closed Mode Guide](docs/operators/fail-closed-mode.md)** — Activation, monitoring, emergency demotion, and troubleshooting for the graduated availability policy
-- **[Training Manual](docs/operators/training-manual.md)** — Comprehensive operator training (8-hour learning path)
-- **[Examples](docs/examples/README.md)** — Real-world scenarios and workflows
+The engine is deterministic and does no network I/O. It **fails open**: an
+empty pack directory, an unrecognised tool, or a crashed check allows the
+command. A missed violation is recoverable; a wedged agent fleet is not.
+A graduated [fail-closed policy](docs/operators/fail-closed-mode.md) exists
+for once a release has proven itself.
 
-## Structure
+Median cost of a check on a warm cache: **~10 ms**.
 
-- `docs/notes/` — features, constraints, design decisions, including the
-  existing-infrastructure gap analysis, runtime-config-vs-hardcoded
-  exploration, and the release-bound per-repository override contract
-- `docs/research/` — external reference material and prior art
-  (`destructive_command_guard`, `agent-guard`, `vault-mcp-server`, etc.)
-- `docs/operators/` — installation, deployment, upgrade, and troubleshooting
-  procedures for the current CLI
-  - `training-manual.md` — Comprehensive operator training guide
-  - `deny-messages.md` — Complete denial message interpretation guide
-- `docs/developers/` — developer documentation for extending icg
-  - `rule-pack-best-practices.md` — Best practices for rule pack authoring
-- `docs/examples/` — real-world scenarios and workflows
-- `docs/onboarding-guide.md` — structured learning path with role-specific tracks
-- `docs/plan/plan.md` — complete application plan
+## Try it in a minute
+
+No release has been cut yet, so build from source. There are no system
+dependencies beyond a Rust toolchain:
+
+```bash
+git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+cd irreversible-command-gate
+cargo build --release
+
+./target/release/icg coverage --list
+./target/release/icg check --command "bao kv destroy secret/app/db"
+./target/release/icg check --command "git push --force origin main"
+./target/release/icg check --command "git status"
+```
+
+`icg check` is the human-facing tester and always exits `0` — parse its
+output, not its status. `icg hook` is the machine entry point: one
+PreToolUse JSON document in, one decision envelope out.
+
+To actually guard an agent, install the binary and packs root-owned and
+register the hook — five minutes, in the
+**[Quick Start Guide](docs/quick-start.md)**.
+
+## What ships today
+
+Ten rule packs, 26 guarded patterns, 18 safe patterns that keep common
+read-only forms fast and quiet.
+
+| Pack | Rules | Blocks |
+| --- | --- | --- |
+| `openbao` | 3 | `kv destroy`, `metadata delete`, mount/policy deletion, `operator rekey`; secret literals in argv; secret reads to stdout |
+| `git` | 4 | bare `git credential fill`; `--force` push (rewritten to a plain push); commits with no pathspec; pushing over a stale remote head |
+| `secrets` | 6 | GitHub tokens and PATs, AWS keys, Slack tokens, Anthropic keys, PEM private-key blocks — in commands *and* file content |
+| `docker` | 3 | `system prune --all`, `volume rm`, `image rm --force` |
+| `image-tag` | 2 | `:latest` and bare-SHA image references in manifests |
+| `storage-class` | 1 | storage classes that cannot be expanded or reclassed in place |
+| `beads` · `misc` · `tmux` · `argocd-topology` | 7 | conventions of the fleet this was built for — useful mainly as worked examples |
+
+The first four packs describe footguns that exist wherever the tool does.
+The last row encodes local convention. The
+[coverage table](docs/quick-start.md#what-gets-protected) marks every pack
+*General* or *Fleet-specific* and names every rule id, so you can tell at a
+glance which ones travel.
+
+Nothing about the engine is fleet-specific — `icg new-pack <tool>`
+scaffolds a pack and its regression test together.
+
+## What this deliberately does not do
+
+- **It is a backstop for an honest, fallible agent, not a boundary against
+  a hostile one.** Policy lives root-owned in `/etc/icg/` so the guarded
+  agent cannot rewrite it, but an agent that sets out to defeat the guard
+  can. Keep the harness's own approval and sandbox controls on.
+- **It does not defend against prompt injection** or a malicious repository
+  trying to trick an honest agent. Different threat class, explicitly out of
+  scope.
+- **It does not reach cloud-hosted agent sessions** — ChatGPT web, Codex
+  cloud tasks, claude.ai. Only local CLIs invoke local hooks. See
+  [multi-harness-integration.md](docs/notes/multi-harness-integration.md).
+- **It does not cover `kubectl` mutations, `.github/workflows/*`, or
+  `kind: Job`/`CronJob`.** Those stay with the org-level Python hook by
+  decision, not by omission —
+  [existing-enforcement-infrastructure.md](docs/notes/existing-enforcement-infrastructure.md).
+
+## Project status
+
+Honest version: the engine, the packs, both front-ends (hook and PATH
+wrapper), the release-integrity machinery, and 562 tests — 257 unit, 305 integration across 51 files
+are in the tree and working. **No end-to-end release has been cut yet**, so
+build-from-source is the only install path and the trust-pointer /
+auto-update flow is unproven in production. Tracked in
+[`docs/plan/plan.md`](docs/plan/plan.md), Phase 0.
+
+## Documentation
+
+Start at **[docs/README.md](docs/README.md)** for the full map. The short
+version:
+
+| You are | Read |
+| --- | --- |
+| Trying it out | [Quick Start](docs/quick-start.md) |
+| Deploying it | [Deployment guide](docs/operators/deployment-guide.md) → [Operator docs](docs/operators/README.md) |
+| Hit a denial | [Deny-message guide](docs/operators/deny-messages.md) |
+| Writing a rule pack | [Rule-pack best practices](docs/developers/rule-pack-best-practices.md) |
+| An agent working in this repo | [AGENTS.md](AGENTS.md) |
+| Curious about the design | [plan.md](docs/plan/plan.md) · [ideas ledger](docs/notes/ideas-ledger.md) |
+
+## Authoring a rule pack
+
+```bash
+icg new-pack <tool> --pack-type command --output-dir packs/
+```
+
+Writes `<tool>.json` and `<tool>_pack_tests.rs` together, pre-filled, and
+refuses to overwrite either. `--pack-type content` scaffolds a file-content
+pack instead.
+
+Before proposing a pack change, run the release gate — it builds the fixed
+deny-regression corpus and reports any rule that stopped covering what it
+used to:
+
+```bash
+icg regression-suite packs --release-gate --output regression-suite.json
+icg coverage-diff <previous-pack> <current-pack>
+```
+
+Per-pack generation (`icg regression-suite packs/<id>.json`) needs a
+derivable or explicit `example_command` for every guarded pattern; packs
+built on predicates or content regexes are covered by the `--release-gate`
+corpus and their own tests instead.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-## Fixed deny-regression suite
-
-Generate one validated deny case for every enabled `guarded_pattern` in a JSON
-rule pack. Disabled patterns are intentionally omitted from the fixed suite;
-their `enabled: true` → `false` transition is a release-integrity regression
-that still requires the normal Layer 1/2 release review. The command derives a
-concrete command from command-regex rules, or uses
-an optional `example_command` on a guarded-pattern entry:
-
-```bash
-icg regression-suite path/to/rule-pack.json --output regression-suite.json
-```
-
-The generated JSON records each pack ID, guarded-pattern ID, command, and
-expected `deny` verdict. Generation fails if a case is missing, is not a deny
-rule, is shadowed by a safe rule, or no longer matches its intended pattern.
-
-## Authoring a rule pack
-
-Start a new pack and its matching regression-test stub together:
-
-```bash
-icg new-pack <tool> --pack-type command --output-dir path/to/output
-```
-
-`--pack-type` may be `command` (the default) or `content`. The command writes
-`<tool>.json` and `<tool>_pack_tests.rs`, pre-filling the pack and guarded-rule
-fields. It refuses to overwrite either file, so an existing scaffold must be
-removed or renamed deliberately before retrying.
-
 ---
 
-Part of [jedarden.com](https://jedarden.com)
+Part of [jedarden.com](https://jedarden.com).
 
-*This GitHub repo is a read-only mirror of git.ardenone.com/jedarden/irreversible-command-gate — issues and PRs are welcome here either way.*
+*The GitHub repo is a read-only mirror of
+`git.ardenone.com/jedarden/irreversible-command-gate` — issues and PRs are
+welcome on either.*

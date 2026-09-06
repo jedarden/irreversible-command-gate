@@ -301,7 +301,7 @@ policy. Alert labels use rule metadata rather than command contents.
 
 ## Related Documentation
 
-- [Main README](../../../README.md)
-- [Operator Training Manual](../../../docs/operators/training-manual.md)
-- [Rule Pack Best Practices](../../../docs/developers/rule-pack-best-practices.md)
-- [Container README](containers/argo-guarded-builder/README.md)
+- [Main README](../README.md)
+- [Operator Training Manual](operators/training-manual.md)
+- [Rule Pack Best Practices](developers/rule-pack-best-practices.md)
+- [Container README](../containers/argo-guarded-builder/README.md)

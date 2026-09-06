@@ -129,6 +129,6 @@ When updating this builder image:
 
 ## Related Documentation
 
-- [Main README](../../../README.md)
-- [Operator Training Manual](../../../docs/operators/training-manual.md)
-- [Rule Pack Best Practices](../../../docs/developers/rule-pack-best-practices.md)
+- [Main README](../../README.md)
+- [Operator Training Manual](../../docs/operators/training-manual.md)
+- [Rule Pack Best Practices](../../docs/developers/rule-pack-best-practices.md)
