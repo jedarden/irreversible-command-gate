@@ -172,7 +172,7 @@ A rule pack is a JSON file defining patterns for a specific tool or domain:
 **Command-Mode Packs** (inspect shell invocations):
 - Use `tool_keywords` to match executables
 - Use `command_regex` for pattern matching
-- Examples: `vault`, `git`, `misc`, `tmux`
+- Examples: `openbao`, `git`, `misc`, `tmux`
 - Work in both hook and wrapper frontends
 
 **Content-Mode Packs** (inspect file writes):
@@ -187,13 +187,17 @@ A rule pack is a JSON file defining patterns for a specific tool or domain:
 
 ### Pattern Structure
 
+Both examples below are abridged from the shipped `openbao` pack — compare
+against `packs/openbao.json`. Note that one pack covers both CLI names:
+`tool_keywords` lists `bao` and `vault`.
+
 #### Safe Pattern
 
 ```json
 {
-  "id": "safe-read",
+  "id": "safe-bao-kv-metadata-get",
   "type": "command_regex",
-  "regex": "vault kv get"
+  "regex": "(?i)\\b(bao|vault)\\s+kv\\s+metadata\\s+get\\b"
 }
 ```
 
@@ -201,16 +205,16 @@ A rule pack is a JSON file defining patterns for a specific tool or domain:
 
 ```json
 {
-  "id": "vault-kv-destroy",
+  "id": "openbao-destructive-verb",
   "type": "command_regex",
-  "regex": "vault kv destroy",
+  "regex": "(?i)\\b(bao|vault)\\s+(kv\\s+destroy|kv\\s+metadata\\s+delete|...)",
   "tier": "tier1",
   "severity": "Critical",
-  "explanation": "Permanently destroys vault data versions",
+  "explanation": "Permanently destroys secret data, an auth mount, a policy, or the unseal shares.",
   "destructive": true,
   "redirect": {
     "channel": "deny",
-    "reason_template": "vault kv destroy is permanently destructive and cannot be undone",
+    "reason_template": "This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. ...",
     "rewrite_template": null
   }
 }
@@ -244,7 +248,7 @@ A rule pack is a JSON file defining patterns for a specific tool or domain:
 
 ### Severity Levels
 
-- **Critical**: Immediate, irreversible damage (vault destroy, git force-push)
+- **Critical**: Immediate, irreversible damage (`bao kv destroy`, `git push --force`)
 - **High**: Significant damage or hard to reverse (policy delete, ssd storage)
 - **Medium**: Moderate damage with workarounds
 
@@ -459,39 +463,75 @@ The hook frontend integrates with Claude Code and Codex CLI via the PreToolUse J
 
 #### Input Format
 
+Claude Code sends `tool_name`/`tool_input`; `icg` also accepts the camelCase
+spelling used by older fixtures. Extra fields are ignored.
+
 ```json
 {
-  "toolName": "Bash",
-  "toolInput": {
-    "command": "vault kv destroy secret/test"
-  },
-  "id": "tool-use-123",
-  "timestamp": "2026-08-16T10:30:00Z",
-  "sessionId": "session-456"
+  "tool_name": "Bash",
+  "tool_input": { "command": "bao kv destroy secret/test" },
+  "tool_use_id": "toolu_0123456789"
 }
 ```
+
+`Write` and `Edit` supply `file_path` and content instead, feeding the
+content-mode packs; Codex `apply_patch` input is accepted too, including
+multi-file patches.
 
 #### Output Format
 
-**Deny Response**:
+One decision envelope on stdout, matching the harness `PreToolUse` schema.
+There is no icg-specific wrapper object.
+
+**Deny** — the pack and pattern are appended to the reason, in brackets:
+
 ```json
 {
-  "verdict": "deny",
-  "packId": "vault",
-  "patternId": "vault-kv-destroy",
-  "severity": "Critical",
-  "reason": "vault kv destroy is permanently destructive and cannot be undone",
-  "rewrite": null,
-  "telemetryId": "den-abc123"
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. ... [pack=openbao, pattern=openbao-destructive-verb]"
+  }
 }
 ```
 
-**Allow Response**:
+**Rewrite** (`updated_input` channel) — an allow that hands the harness a
+safe command to retry with:
+
 ```json
 {
-  "verdict": "allow",
-  "telemetryId": "all-def456"
+  "hookSpecificOutput": {
+    "additionalContext": "Removed --force/-f/--force-with-lease from git push; ... [pack=git, pattern=git-force-push]",
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": { "command": "git push origin main" }
+  }
 }
+```
+
+**Warning** (`additional_context` channel) — an allow that carries a caution:
+
+```json
+{
+  "hookSpecificOutput": {
+    "additionalContext": "This read prints a secret value to stdout ... [pack=openbao, pattern=openbao-kv-get-to-stdout]",
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow"
+  }
+}
+```
+
+**Allow** — nothing matched:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+```
+
+Reproduce any of these:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"bao kv destroy secret/test"}}' \
+  | icg hook --rule-pack packs
 ```
 
 ### Wrapper Frontend (PATH Symlinks)
@@ -500,24 +540,28 @@ The wrapper frontend shadows binaries via symlinks in `$PATH`.
 
 #### How It Works
 
-1. Agent runs `vault kv destroy secret/test`
-2. Shell resolves `$PATH` to icg symlink at `/usr/local/bin/vault`
+1. Agent runs `bao kv destroy secret/test`
+2. Shell resolves `$PATH` to the icg symlink at `/usr/local/bin/bao`
 3. icg intercepts argv, evaluates against rule packs
-4. icg outputs decision to stderr
-5. icg execs the real `vault` binary if allowed
-6. icg exits with error code if denied
+4. icg writes the decision to stderr
+5. icg execs the real `bao` found later in `$PATH` if allowed
+6. icg exits non-zero without exec'ing if denied
+
+This does not cover absolute-path invocations (`/usr/bin/bao ...`) or direct
+library calls. The hook front-end is the complete one.
 
 #### Installation
 
-```bash
-# Add wrapper directory to PATH
-export PATH="/opt/icg/wrapper:$PATH"
+`icg install` creates the symlinks for every command-mode pack currently
+loaded, into `/usr/local/bin` by default:
 
-# Create symlinks
-ln -s /opt/icg/bin/icg /opt/icg/wrapper/vault
-ln -s /opt/icg/bin/icg /opt/icg/wrapper/git
-ln -s /opt/icg/bin/icg /opt/icg/wrapper/kubectl
+```bash
+sudo icg install                      # or --dir <path>, --uninstall to remove
 ```
+
+It derives the names from the packs' `tool_keywords`, so the set tracks the
+installed policy rather than a hand-maintained list. There is no `kubectl`
+symlink and there will not be one — kubectl stays with the org-level hook.
 
 #### Wrapper Detection
 
@@ -598,7 +642,7 @@ Test end-to-end workflows:
 cargo test --test integration
 
 # Run with specific rule pack
-ICG_PACK_PATH=./packs/kubectl/pack.json cargo test
+ICG_PACK_DIR=./packs/kubectl/pack.json cargo test
 ```
 
 ### Regression Tests
@@ -626,7 +670,7 @@ Test with real commands:
 
 ```bash
 # Test a specific command
-ICG_PACK_PATH=./packs/vault/pack.json \
+ICG_PACK_DIR=./packs/openbao.json \
   cargo run --bin icg -- check \
   --command "vault kv destroy secret/test"
 

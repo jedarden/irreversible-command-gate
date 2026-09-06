@@ -30,22 +30,22 @@ Welcome to the irreversible command gate (icg)! This guide provides a structured
 If you haven't installed icg yet, follow the Quick Start Guide:
 
 ```bash
-# No GitHub release has been cut yet; build from source.
-git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
-cd irreversible-command-gate
-cargo build --release
+# Release binary and packs (v0.1.1, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1
+curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
-sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
+sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
+sudo install -d -o root -g root -m 0755 /etc/icg
+sudo tar -xzf icg-packs.tar.gz -C /etc/icg
+sudo chown -R root:root /etc/icg/packs
 
 # Verify
-icg --version
-# icg 0.1.1
+icg --version          # icg 0.1.1
+icg coverage --list    # all ten packs
 ```
 
-> Once the release pipeline has produced a verified release, prefer the
-> published tarball over a local build. Until then this is the only
-> supported install path — see the
-> [Quick Start Guide](quick-start.md).
+Building from source works too and needs only a Rust toolchain. Full
+instructions: **[Quick Start Guide](quick-start.md)**.
 
 Full installation instructions: **[Quick Start Guide](quick-start.md)**
 

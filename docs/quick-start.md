@@ -38,31 +38,46 @@ process. Keep the harness's own approval and sandbox controls enabled.
 
 ## Installation (2 minutes)
 
-### Option 1: Build from Source (currently the only path)
-
-**No GitHub release has been cut yet** — the release pipeline exists but has
-not produced a verified end-to-end release (tracked as `irrevers-84b36e47`).
-Until one exists, build from source:
+### Option 1: Release binary (recommended)
 
 ```bash
-# Clone repository
+# Release binary and packs (v0.1.1, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1
+curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
+
+sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
+sudo install -d -o root -g root -m 0755 /etc/icg
+sudo tar -xzf icg-packs.tar.gz -C /etc/icg
+sudo chown -R root:root /etc/icg/packs
+
+# Verify
+icg --version          # icg 0.1.1
+icg coverage --list    # all ten packs
+```
+
+The release also carries `pack-manifest.json` (byte-level checksums for
+`icg pack-manifest --verify`) and `rule-pack.json` (the merged single-file
+pack, for the legacy `/etc/icg/rule-pack.json` layout).
+
+### Option 2: Build from source
+
+```bash
 git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
 cd irreversible-command-gate
-
-# Build
 cargo build --release
 
-# Install to the root-owned system location
 sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
 
-# Verify installation
 icg --version
 # icg 0.1.1
 ```
 
-Once releases exist, prefer downloading the release binary. For the full
-production procedure (build verification, ownership model, trust pointers),
-see `docs/operators/deployment-guide.md`.
+There are no system dependencies beyond a Rust toolchain — TLS is rustls,
+so no OpenSSL headers are required.
+
+For the full production procedure (build verification, ownership model,
+trust pointers), see `docs/operators/deployment-guide.md`.
+
 
 ---
 
@@ -70,9 +85,9 @@ see `docs/operators/deployment-guide.md`.
 
 ### Step 1: Install Rule Packs
 
-The hook loads every JSON manifest in `/etc/icg/packs/` by default. Copy the
-pack files from your checkout — the repo is the source of truth; there is no
-tagged release to download packs from yet.
+The hook loads every JSON manifest in `/etc/icg/packs/` by default. Option 1
+above already placed them; if you built from source, install them from the
+checkout instead:
 
 ```bash
 # Create the root-owned pack directory
@@ -84,6 +99,11 @@ sudo install -o root -g root -m 0644 packs/*.json /etc/icg/packs/
 # Verify rule packs are loaded
 icg coverage --list
 ```
+
+A checkout's `packs/` can be ahead of the last release. Prefer the released
+tarball for a guarded host so the installed policy matches a reviewed
+release, and confirm it with `icg pack-manifest --verify pack-manifest.json
+--pack-dir /etc/icg/packs`.
 
 The pack directory must stay root-owned; the guarded agent must not be able
 to edit policy. `icg update` (see

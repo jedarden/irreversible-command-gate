@@ -32,43 +32,43 @@ This document provides realistic, step-by-step scenarios demonstrating how icg w
 #### Step 1: Download and Install
 
 ```bash
-# No GitHub release has been cut yet; build from source.
-git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
-cd irreversible-command-gate
-cargo build --release
+# Release binary and packs (v0.1.1, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1
+curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
-sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
+sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
+sudo install -d -o root -g root -m 0755 /etc/icg
+sudo tar -xzf icg-packs.tar.gz -C /etc/icg
+sudo chown -R root:root /etc/icg/packs
 
 # Verify
-icg --version
-# icg 0.1.1
+icg --version          # icg 0.1.1
+icg coverage --list    # all ten packs
 ```
 
-> Once the release pipeline has produced a verified release, prefer the
-> published tarball over a local build. Until then this is the only
-> supported install path — see the
-> [Quick Start Guide](../quick-start.md).
+> Building from source is equally supported and needs only a Rust
+> toolchain — see the [Quick Start Guide](../quick-start.md).
 
 #### Step 2: Install Rule Packs
 
+Step 1's tarball already placed all ten under `/etc/icg/packs/`. Confirm
+they load, and that they are byte-identical to the reviewed release:
+
 ```bash
-# Create rule pack directory
-sudo mkdir -p /etc/icg/packs
+icg coverage --list
+# ✓ pack argocd-topology (1 patterns)
+# ✓ pack beads (3 patterns)
+# ... ten packs
 
-# Download default rule packs
-sudo curl -o /etc/icg/packs/openbao.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/openbao.json
-
-sudo curl -o /etc/icg/packs/git.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/git.json
-
-sudo curl -o /etc/icg/packs/image-tag.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/image-tag.json
-
-# Verify rule packs
 icg health --check-packs
-# Output: ✓ All rule packs valid
+icg pack-manifest --verify pack-manifest.json --pack-dir /etc/icg/packs
+# Pack directory matches manifest (10 packs)
 ```
+
+Cherry-picking individual packs out of the tree is not an install path: the
+manifest covers the directory as a whole, and a partial set silently
+narrows coverage without failing anything. Install the release tarball, or
+install `packs/*.json` from a checkout in one go.
 
 #### Step 3: Configure Claude Code Hook
 

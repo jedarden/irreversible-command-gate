@@ -8,63 +8,108 @@ This guide explains how to interpret icg denial messages and take appropriate co
 
 Every denial message includes:
 
-- **Rule Pack ID**: Which rule pack caught the violation (e.g., `vault`, `git`, `image-tag`)
-- **Pattern ID**: Which specific pattern matched (e.g., `vault-destructive`, `force-push`)
+- **Rule Pack ID**: Which rule pack caught the violation (e.g., `openbao`, `git`, `image-tag`)
+- **Pattern ID**: Which specific pattern matched (e.g., `openbao-destructive-verb`, `force-push`)
 - **Severity**: How critical the violation is (`Critical`, `High`, `Medium`)
 - **Explanation**: Why this operation is dangerous
 - **Redirect**: What to do instead (corrective action)
 
 ### Example Denial Message
 
+Verbatim output of `icg check --command "bao kv destroy secret/app/api-key"`
+— plain `Field: value` lines on stdout, no box drawing:
+
 ```
 DENIED by icg
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Rule Pack:    vault
-Pattern ID:   vault-destructive
-Severity:     Critical
-Explanation:  This operation would permanently destroy secret data and cannot be undone.
-Redirect:     Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.
-Command:      vault kv destroy secret/app/api-key
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is
+recoverable; 'kv destroy' and 'kv metadata delete' are not. ...
+Pack: openbao
+Pattern: openbao-destructive-verb
+Severity: Critical
+Explanation: Permanently destroys secret data, an auth mount, a policy, or the unseal
+shares. ...
+Redirect: <the Reason text, repeated>
 ```
+
+`Reason` and `Redirect` carry the same text for a `deny`-channel rule: the
+reason a caller is shown *is* the redirect. `Explanation` is the standing
+description of the hazard, independent of the command that tripped it.
+
+Through the hook, the same decision arrives as JSON — the reason lands in
+`hookSpecificOutput.permissionDecisionReason`, with `[pack=…, pattern=…]`
+appended.
 
 ## Rule Pack Specific Denials
 
-### Vault/OpenBao Pack
+### OpenBao Pack
 
-#### Pattern: vault-destructive
+The pack id is `openbao`. One pack covers both CLI names — `tool_keywords`
+lists `bao` and `vault` — so `vault kv destroy` and `bao kv destroy` hit the
+same rule.
 
-**Message Example**:
+#### Pattern: openbao-destructive-verb
+
+**Real message** (`icg check --command "bao kv destroy secret/app/db"`):
+
 ```
-DENIED: vault kv destroy would permanently destroy secret data
+DENIED by icg
+Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is
+recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy
+breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the
+unseal shares unless the new ones are captured and written back before the rekey
+completes. If this is genuinely intended, a human runs it.
+Pack: openbao
+Pattern: openbao-destructive-verb
 Severity: Critical
+Explanation: Permanently destroys secret data, an auth mount, a policy, or the unseal
+shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that
+is not written back leaves the instance unable to unseal.
+Redirect: <the Reason text, repeated>
 ```
 
 **What Was Blocked**:
-- `vault kv destroy secret/<path>` - Permanent secret destruction
-- `vault kv destroy -versions=<n> <path>` - Permanent version destruction
-- `bao secrets disable <path>` - Disable secret engine
-- `vault policy delete <name>` - Delete policy
-- `vault token revoke` - Revoke token
+- `bao|vault kv destroy <path>` — destroys specific versions, unrecoverably
+- `bao|vault kv metadata delete <path>` — destroys **every** version and the
+  path's metadata
+- `bao|vault secrets disable <path>` / `auth disable <path>` — breaks every
+  consumer of that mount
+- `bao|vault policy delete <name>`
+- `bao|vault token revoke`, `lease revoke`
+- `bao|vault operator rekey`
 
-**Why It's Dangerous**:
-- Destroyed secrets cannot be recovered
-- Permanent data loss
-- No undo mechanism
+**Why It's Dangerous**: KV v2 version history does not survive `destroy` or
+`metadata delete`. There is no undelete for either. Disabling a mount or
+policy breaks every ExternalSecret depending on it, and a rekey whose new
+shares are not written back leaves the instance unable to unseal.
 
 **Corrective Action**:
-1. **If you need to update a secret**: Use `vault kv patch` or `vault kv put`
-2. **If you need to delete metadata**: Use `vault kv metadata delete` (safer than destroy)
-3. **If you need to reconcile**: Use `vault kv patch` with reconciliation operations
-4. **If you truly need to destroy**: This is a deliberate protection - consult your team lead
+
+1. **To remove a value recoverably**: `bao kv delete <path>`. This is a soft
+   delete — an operator can `bao kv undelete`. It is the only removal an
+   agent should reach for.
+2. **To replace a value**: `bao kv put` / `bao kv patch` with `-cas=<version>`.
+   An update never loses data; `max_versions` bounds the history.
+3. **To check a path exists** without revealing the value:
+   `bao kv metadata get <path>`.
+4. **If a path genuinely must be destroyed**: a human does it, out of band.
+   That is the rule, not a formality.
+
+> **Do not use `kv metadata delete` as the "safer" alternative to `kv
+> destroy`.** It is strictly worse: `destroy` removes the versions you name,
+> `metadata delete` removes every version *and* the metadata, permanently.
+> Both are denied by this rule, and for the same reason. (An earlier revision
+> of this guide recommended it; it was wrong.)
 
 **Example Correction**:
 ```bash
-# WRONG (blocked)
-vault kv destroy secret/app/api-key
+# WRONG (denied)
+bao kv destroy secret/app/api-key
 
-# RIGHT (allowed)
-vault kv patch secret/app/api-key -remove=expired_field
+# RIGHT (allowed) -- recoverable soft delete
+bao kv delete secret/app/api-key
+
+# RIGHT (allowed) -- replace the value, keeping history
+openssl rand -base64 32 | bao kv put -cas=7 secret/app/api-key password=-
 ```
 
 ---
@@ -351,12 +396,12 @@ Severity: Critical
 **Corrective Action**:
 1. **Use OpenBao/Vault for credential storage**:
    ```bash
-   vault kv get -field=api_key secret/app/production
+   bao kv get -field=api_key secret/<cluster>/app > ~/.config/app/creds
    ```
-2. **Use environment files with proper permissions**:
+2. **Use environment files with the permissions set before the write**:
    ```bash
-   echo "API_KEY=$(vault kv get -field=api_key secret/app)" > .env.local
-   chmod 600 .env.local
+   install -m 600 /dev/null .env.local
+   echo "API_KEY=$(bao kv get -field=api_key secret/app)" > .env.local
    ```
 3. **Use secret management tools**:
    - Kubernetes: External Secrets Operator
@@ -365,12 +410,18 @@ Severity: Critical
 
 **Example Correction**:
 ```bash
-# WRONG (blocked)
-echo "ghp_test_token" > github-token.txt
+# WRONG (denied)
+echo "ghp_<a real token>" > github-token.txt
 
-# RIGHT (allowed)
-vault kv get -field=token secret/github > github-token.txt
-chmod 600 github-token.txt
+# RIGHT -- create the destination mode-600 FIRST, then fill it. Redirecting
+# into a new file creates it 0644, so the credential is world-readable for
+# the moment between the write and the chmod.
+install -m 600 /dev/null ~/.config/app/creds
+bao kv get -field=token secret/<cluster>/app > ~/.config/app/creds
+
+# RIGHT -- or never let it touch disk at all
+TOKEN=$(bao kv get -field=token secret/<cluster>/app) \
+  curl -sS -H "Authorization: Bearer $TOKEN" https://api.example/...
 ```
 
 ---
@@ -585,16 +636,20 @@ If you need to bypass the guard for an emergency:
 
 ### Scenario 1: Accidental Destructive Command
 
-**Situation**: You accidentally type `vault kv destroy` instead of `vault kv delete`
+**Situation**: You accidentally type `bao kv destroy` instead of `bao kv delete`
 
 **Denial Message**:
 ```
-DENIED: vault kv destroy would permanently destroy secret data
+DENIED by icg
+Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is
+recoverable; 'kv destroy' and 'kv metadata delete' are not. ...
+Pack: openbao
+Pattern: openbao-destructive-verb
 ```
 
 **What to Do**:
 1. Recognize you made a mistake (the guard caught it!)
-2. Use the correct command: `vault kv delete` (for versioned metadata)
+2. Use the correct command: `bao kv delete` — a recoverable soft delete
 3. If you truly need to destroy: Consult your team lead first
 
 ### Scenario 2: Force Push After Rebase
@@ -721,10 +776,12 @@ icg status --denials --trend --since 30d
 
 ## Quick Reference Card
 
-### Vault
-- `vault kv destroy` → Use `vault kv patch` or `vault kv delete`
-- `vault policy delete` → Coordinate with team
-- `vault token revoke` → Use token renewal instead
+### OpenBao (`bao`, `vault`)
+- `kv destroy` / `kv metadata delete` → `bao kv delete` (recoverable), or
+  `bao kv put -cas=<n>` to replace the value
+- `secrets disable` / `auth disable` / `policy delete` → a human, out of band
+- `token revoke` → let it expire, or `bao token revoke -self`
+- `operator rekey` → capture and write back the new shares first
 
 ### Git
 - `git push --force` → Use `git merge` instead

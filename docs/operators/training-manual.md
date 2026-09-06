@@ -234,30 +234,25 @@ Before installing icg, ensure you have:
 
 ### Installation Methods
 
-#### Method 1: Build from Source (currently the only path)
-
-No GitHub release has been cut yet, so the release-binary path below is not
-yet usable. Build from source:
+#### Method 1: Release binary (recommended)
 
 ```bash
-# No GitHub release has been cut yet; build from source.
-git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
-cd irreversible-command-gate
-cargo build --release
+# Release binary and packs (v0.1.1, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.1
+curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
-sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
+sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
+sudo install -d -o root -g root -m 0755 /etc/icg
+sudo tar -xzf icg-packs.tar.gz -C /etc/icg
+sudo chown -R root:root /etc/icg/packs
 
 # Verify
-icg --version
-# icg 0.1.1
+icg --version          # icg 0.1.1
+icg coverage --list    # all ten packs
 ```
 
-> Once the release pipeline has produced a verified release, prefer the
-> published tarball over a local build. Until then this is the only
-> supported install path — see the
-> [Quick Start Guide](../quick-start.md).
+#### Method 2: Build from source
 
-#### Method 2: Release binary (once one exists)
 
 
 
@@ -283,32 +278,29 @@ icg --version
 
 ### Rule Pack Installation
 
+Method 1 already installed the packs from the release tarball. If you built
+from source, install them from the checkout:
+
 ```bash
-# Create rule pack directory
-sudo mkdir -p /etc/icg/packs
+sudo install -d -o root -g root -m 0755 /etc/icg/packs
+sudo install -o root -g root -m 0644 packs/*.json /etc/icg/packs/
 
-# Download default rule packs
-sudo curl -o /etc/icg/packs/openbao.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/openbao.json
-
-sudo curl -o /etc/icg/packs/git.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/git.json
-
-sudo curl -o /etc/icg/packs/image-tag.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/image-tag.json
-
-sudo curl -o /etc/icg/packs/storage-class.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/storage-class.json
-
-sudo curl -o /etc/icg/packs/beads.json \
-  https://raw.githubusercontent.com/jedarden/irreversible-command-gate/v0.1.0/packs/beads.json
-
-# Set permissions
-sudo chmod 644 /etc/icg/packs/*.json
-
-# Verify rule packs
+# Verify every pack loads
 icg health --check-packs
+icg coverage --list
 ```
+
+The pack directory must stay root-owned — the guarded agent must not be
+able to edit the policy that guards it. Confirm an installed release's
+packs are byte-identical to what was reviewed:
+
+```bash
+icg pack-manifest --verify pack-manifest.json --pack-dir /etc/icg/packs
+# Pack directory matches manifest (10 packs)
+```
+
+Thereafter, `icg update` is the sanctioned way to change the directory's
+contents; see the [release-cutting runbook](../runbooks/release-cutting.md).
 
 ### Hook Configuration
 
@@ -374,46 +366,48 @@ icg health --check-hooks
 ### Verification Testing
 
 ```bash
-# Test 1: Dangerous command (should be denied)
-echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}' | \
-  icg check --stdin --harness claude-code
+# Test 1: a dangerous command is denied
+echo '{"tool_name":"Bash","tool_input":{"command":"bao kv destroy secret/test"}}' \
+  | icg check --stdin
 
-# Expected output:
-# {
-#   "verdict": "deny",
-#   "packId": "openbao",
-#   "patternId": "openbao-destructive-verb",
-#   "severity": "Critical",
-#   "reason": "vault kv destroy is permanently destructive and cannot be undone",
-#   "rewrite": null,
-#   "telemetryId": "den-abc123"
-# }
+# DENIED by icg
+# Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is
+#   recoverable; 'kv destroy' and 'kv metadata delete' are not. ...
+# Pack: openbao
+# Pattern: openbao-destructive-verb
+# Severity: Critical
 
-# Test 2: Safe command (should be allowed)
-echo '{"toolName":"Bash","toolInput":{"command":"vault kv get secret/test"}}' | \
-  icg check --stdin --harness claude-code
+# Test 2: a safe command is allowed
+echo '{"tool_name":"Bash","tool_input":{"command":"bao kv metadata get secret/test"}}' \
+  | icg check --stdin
 
-# Expected output:
-# {
-#   "verdict": "allow",
-#   "telemetryId": "all-def456"
-# }
+# ALLOW: no configured rule matched
 
-# Test 3: Run full health check
+# Test 3: the same two through the hook front-end the harness actually calls
+echo '{"tool_name":"Bash","tool_input":{"command":"bao kv destroy secret/test"}}' \
+  | icg hook
+
+# {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny",
+#   "permissionDecisionReason":"... [pack=openbao, pattern=openbao-destructive-verb]"}}
+
+# Test 4: full health inventory
 icg health --verbose
 
-# Expected output:
-# ✓ icg binary: /usr/local/bin/icg v0.1.0
-# ✓ Rule packs: 5 packs loaded
-#   - openbao (3 patterns)
-#   - git (12 patterns)
-#   - image-tag (6 patterns)
-#   - storage-class (4 patterns)
-#   - beads (2 patterns)
+# ✓ All rule packs valid
+# ✓ Claude Code hook configured
+# ✓ icg binary: /usr/local/bin/icg v0.1.1
+# ✓ Rule packs: 10 packs loaded
+#   - argocd-topology (1 patterns)
+#   - beads (3 patterns)
+#   ... ten packs
 # ✓ Claude Code hook: Configured
 # ✓ State store: /var/lib/icg/state.db
 # ✓ Denial log: /var/log/icg/denials.log
 ```
+
+`icg check` prints human-readable decisions and always exits `0`; `icg hook`
+emits the JSON envelope. Neither is a substitute for the other — verify both.
+
 
 ---
 

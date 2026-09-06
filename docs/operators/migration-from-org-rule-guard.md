@@ -27,7 +27,7 @@ icg supersedes most of these rules and adds new coverage:
 | No mutating `kubectl` | Explicitly not implemented | Remains with org-rule-guard.py |
 | No credential values (Write/Edit) | Remains with org-rule-guard.py | Coexistence |
 | (New) Credential values in Bash | `secrets` pack | **NEW** |
-| (New) Vault/OpenBao destructive ops | `vault` pack | **NEW** |
+| (New) OpenBao destructive ops | `openbao` pack | **NEW** |
 | (New) Git force-push | `git` pack | **NEW** |
 | (New) Beads protection | `beads` pack | **NEW** |
 
@@ -36,7 +36,7 @@ icg supersedes most of these rules and adds new coverage:
 **Phase 1: Coexistence** (Current)
 - Both hooks active
 - Double denials are expected and harmless
-- icg handles new rules (vault, git, beads, secrets in Bash)
+- icg handles new rules (openbao, git, beads, secrets in Bash)
 - org-rule-guard.py handles its original 5 rules
 
 **Phase 2: Gradual Transition** (Future)
@@ -284,7 +284,7 @@ icg smoke-test-vs-org-rule-guard
 Test that icg's new rules work:
 
 ```bash
-# Test vault pack
+# Test the openbao pack
 vault kv destroy secret/test  # Should be denied
 
 # Test git pack
