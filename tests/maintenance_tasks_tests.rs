@@ -454,7 +454,6 @@ fn maintenance_scenario_trust_channel_roundtrip() {
     // track different release channels.
     let temp_dir = secure_tempdir();
     let trust_path = temp_dir.path().join("trust-pointer-canary.json");
-    let pack_dir = temp_dir.path().join("packs-canary");
 
     // Step 1: Set trust pointer for canary channel
     let set = icg(&[
