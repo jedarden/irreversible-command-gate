@@ -37,16 +37,15 @@ spec:
 
 #[test]
 fn allows_generated_child_application() {
-    for (file_path, content) in [(
+    let (file_path, content) = (
         "k8s/ardenone-cluster/investment-research-mcp/investment-research-mcp-application.yml",
         "kind: Application\nmetadata:\n  name: investment-research-mcp\nspec:\n  source:\n    path: ./k8s/ardenone-cluster/investment-research-mcp\n  destination:\n    server: https://k3s-server-a.ardenone.com:6443\n",
-    )] {
-        assert!(matches!(
-            engine().evaluate_content(&ContentSource::Write {
-                file_path: file_path.to_string(),
-                content: content.into(),
-            }),
-            CheckResult::Allowed
-        ));
-    }
+    );
+    assert!(matches!(
+        engine().evaluate_content(&ContentSource::Write {
+            file_path: file_path.to_string(),
+            content: content.into(),
+        }),
+        CheckResult::Allowed
+    ));
 }
