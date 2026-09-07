@@ -299,6 +299,12 @@ The hook writes denied operations to `/var/cache/icg/denials.jsonl` (or
 `ICG_LOG_FULL_CONTENT=true` only when the destination has an approved access
 policy. Alert labels use rule metadata rather than command contents.
 
+The default sink is reserved for live traffic: a Rust test process running
+against this library is refused it and records nothing, so building or testing
+icg on an instrumented host cannot pollute the collection window. Tests that
+need recorded denials set `ICG_DENIAL_LOG` to a scratch path, as any deployment
+that names its own sink would.
+
 ## Related Documentation
 
 - [Main README](../README.md)

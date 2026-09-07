@@ -633,6 +633,28 @@ cargo test -- --nocapture
 cargo test pack::
 ```
 
+### Denial logs are never written by a test run
+
+An operational denial write resolves its sink through
+`denial_log::operational_log_path`. With `ICG_DENIAL_LOG` unset that is the
+host's live log, `/var/cache/icg/denials.jsonl` — and a test-driven process is
+refused it outright: the denial is evaluated normally, nothing is recorded, and
+nothing is printed. This keeps `cargo test` from feeding fixture denials into a
+log an instrumented host is collecting real traffic into, where a fixture that
+exercises a real pattern id is indistinguishable from a live denial after the
+fact.
+
+A test that asserts on recorded denials names its own sink:
+
+```rust
+.env("ICG_DENIAL_LOG", temp.path().join("denials.jsonl"))
+```
+
+The guard covers both process shapes `cargo test` produces: this crate's own
+test binaries, and the unmodified `icg` binary an integration test spawns
+through `CARGO_BIN_EXE_icg`. `tests/denial_log_pollution_guard_tests.rs` fails
+if either ever reaches the live log.
+
 ### Integration Tests
 
 Test end-to-end workflows:

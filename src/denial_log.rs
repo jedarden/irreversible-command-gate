@@ -328,6 +328,12 @@ impl DenialRecord {
     }
 }
 
+/// Default location of the operational denial log.
+///
+/// Kept beside [`DenialStore::default_path`] so the write path and the
+/// documented default cannot drift apart.
+const DEFAULT_DENIAL_LOG_PATH: &str = "/var/cache/icg/denials.jsonl";
+
 /// Denial log store manager
 pub struct DenialStore {
     /// Path to the denial log file
@@ -372,8 +378,13 @@ impl DenialStore {
     /// Uses /var/cache/icg/ for operational logs (writable by hook identity).
     /// This is separate from security-critical artifacts in /etc/icg/.
     /// See docs/plan/plan.md Architecture 'Deploy location'.
+    ///
+    /// This is the documented location of the host's live log, not a
+    /// permission to write it: an operational write resolves its path through
+    /// [`operational_log_path`], which refuses this default to a test-driven
+    /// caller.
     pub fn default_path() -> Result<PathBuf> {
-        Ok(PathBuf::from("/var/cache/icg/denials.jsonl"))
+        Ok(PathBuf::from(DEFAULT_DENIAL_LOG_PATH))
     }
 
     /// Get the path used by this store
@@ -857,6 +868,78 @@ pub struct DenialAnalysis {
     pub anomaly_detected: bool,
 }
 
+/// Resolve the log an operational denial write may use.
+///
+/// `ICG_DENIAL_LOG` always wins: a deployment that names its own sink gets
+/// exactly that sink. Otherwise the fallback is the host's live log, and a
+/// test-driven caller is refused it -- return [`None`] and write nothing.
+///
+/// The refusal exists because the fallback is shared state on an instrumented
+/// host. On 2026-09-07 a host running a practice trial had 14 of its 72
+/// denial records produced by `cargo test` rather than live traffic: a
+/// fixture that exercises a *real* pattern id is indistinguishable from a
+/// real denial after the fact, so the whole trial window had to be thrown
+/// away. Per-test discipline (set the variable in every deny-path test) had
+/// already been tried and leaked; the guard lives here because this is the
+/// one place every operational write passes through.
+pub fn operational_log_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ICG_DENIAL_LOG").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    if process_is_test_driven() {
+        return None;
+    }
+    Some(PathBuf::from(DEFAULT_DENIAL_LOG_PATH))
+}
+
+/// Is the current process a Rust test binary, or one cargo launched for a
+/// test binary?
+///
+/// `cargo test` drives two kinds of process that can reach an operational
+/// write:
+///
+/// 1. **The test binary itself** -- a unit test compiled into this crate, or
+///    an integration test under `tests/` that calls into the library
+///    in-process. It runs with cargo's environment and libtest's argv.
+/// 2. **The binaries an integration test spawns** through
+///    `CARGO_BIN_EXE_icg`. Those are unmodified production binaries invoked
+///    as `icg hook`, so no compile-time `cfg` distinguishes them -- but they
+///    inherit cargo's environment, and cargo sets `CARGO_BIN_EXE_<name>` only
+///    while running that crate's tests.
+///
+/// Detection deliberately stops short of "the `CARGO` variable is set":
+/// `cargo run -- check --command ...` is documented developer usage of the
+/// real front end and should keep recording like one.
+fn process_is_test_driven() -> bool {
+    // Unit tests of this crate, compiled with the library.
+    if cfg!(test) {
+        return true;
+    }
+    // This crate's integration-test harness, and every child it spawns.
+    if std::env::var_os("CARGO_BIN_EXE_icg").is_some() {
+        return true;
+    }
+    // A test binary cargo built for another crate that links this library as
+    // a dependency: cargo puts test executables in target/<profile>/deps/,
+    // installed and `cargo run` binaries are never there, and libtest's flags
+    // never appear in a hook or wrapper argv. The argv scan is `args_os`
+    // because a hook invocation may carry non-UTF-8 arguments and this must
+    // never panic on the production path.
+    const LIBTEST_FLAGS: [&str; 3] = ["--nocapture", "--show-output", "--list"];
+    let is_libtest_flag = |arg: std::ffi::OsString| {
+        let arg: &str = &arg.to_string_lossy();
+        // libtest accepts both `--test-threads 2` and `--test-threads=2`; the
+        // latter is how this repo's own suites pass the flag.
+        LIBTEST_FLAGS.contains(&arg) || arg.starts_with("--test-threads")
+    };
+    if std::env::args_os().any(is_libtest_flag) {
+        return true;
+    }
+    std::env::args_os()
+        .next()
+        .is_some_and(|argv0| argv0.to_string_lossy().contains("/deps/"))
+}
+
 /// Persist an ordinary evaluated denial for operator reporting.
 ///
 /// This is deliberately best effort: an unavailable audit sink must not
@@ -871,6 +954,17 @@ pub fn record_operational_denial(source: &InputSource, result: &engine::CheckRes
     } = result
     else {
         return;
+    };
+
+    // Resolve the sink before touching the payload: a refused write must not
+    // even probe the caller's environment for a record it will not keep.
+    let path = match operational_log_path() {
+        Some(path) => path,
+        // A test binary is the caller. Nothing is written and nothing is
+        // printed: stderr on a guarded invocation is reserved for faults that
+        // matter, and a missing fixture record is not one. A test that wants
+        // to assert on logged denials sets ICG_DENIAL_LOG to a temporary path.
+        None => return,
     };
 
     let denied_input = match source {
@@ -911,9 +1005,6 @@ pub fn record_operational_denial(source: &InputSource, result: &engine::CheckRes
             .unwrap_or(false),
         ..Default::default()
     };
-    let path = std::env::var_os("ICG_DENIAL_LOG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/cache/icg/denials.jsonl"));
     let severity = if pack_id == "fail-closed" {
         DenialSeverity::Critical
     } else {
@@ -1098,6 +1189,42 @@ mod tests {
         assert_eq!(stats.unique_patterns, 0);
 
         Ok(())
+    }
+
+    /// Serialise the tests that mutate `ICG_DENIAL_LOG` for the whole
+    /// process; unit tests of one binary run on parallel threads.
+    static DENIAL_LOG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// This suite *is* a test binary, so the default is refused and an
+    /// explicit sink is still honoured -- the two rules a deny-path test
+    /// relies on.
+    #[test]
+    fn operational_path_refuses_the_default_to_a_test_binary() {
+        let _lock = DENIAL_LOG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("ICG_DENIAL_LOG");
+        assert_eq!(
+            operational_log_path(),
+            None,
+            "a test binary must not fall back to the host's live denial log"
+        );
+        std::env::remove_var("ICG_DENIAL_LOG");
+    }
+
+    #[test]
+    fn operational_path_honours_an_explicit_sink_even_in_a_test_binary() {
+        let _lock = DENIAL_LOG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let sink = std::env::temp_dir().join("icg-unit-test-denial-sink.jsonl");
+        std::env::set_var("ICG_DENIAL_LOG", &sink);
+        assert_eq!(
+            operational_log_path(),
+            Some(sink.clone()),
+            "an explicit ICG_DENIAL_LOG must win over the test-caller guard"
+        );
+        std::env::remove_var("ICG_DENIAL_LOG");
     }
 
     #[test]
