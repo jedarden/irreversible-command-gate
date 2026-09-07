@@ -1,0 +1,17 @@
+
+=== Starvation Recovery Run at 2026-09-06T14:47:12Z ===
+[1/5] Running SQLite integrity checks...
+  ✓ Database integrity check passed
+[2/5] Verifying checkpoint state...
+  ✓ Checkpoint is clean and up-to-date (covered=1056, current=1056)
+[3/5] Identifying assigned-but-open beads...
+  ✓ No assigned-but-open beads found
+[4/5] Checking for stale in-progress beads...
+  ✓ No stale in-progress beads found
+[5/5] Flushing checkpoint to persist repairs...
+  Final event sequence: 1056
+
+Recovery Summary:
+  Total repairs performed: 0
+=== End of Recovery Run ===
+
