@@ -460,6 +460,33 @@ fn absolute_normalized_path(path: &Path) -> Option<PathBuf> {
 /// that repository root must have `.git` as a directory. A `.git` file
 /// identifies a linked worktree and is deliberately allowed because it is not
 /// the shared primary checkout.
+/// Directories under `.beads/` that hold tool output or agent scratch rather
+/// than the store. Writing here cannot corrupt a concurrent worker's view.
+///
+/// `state/` and `logs/` are an agent convention, not a bead-rs one -- bead-rs
+/// creates beads.db, checkpoint/, config.json, diagnostics/, receipts/ and
+/// traces/. They are gitignored and carry no tracked files.
+const BEADS_NON_STORE_DIRS: [&str; 7] = [
+    "state",
+    "logs",
+    "diagnostics",
+    "traces",
+    "receipts",
+    "crash-reports",
+    "backup",
+];
+
+/// Is this path part of the shared bead STORE -- the data whose concurrent
+/// mutation corrupts other workers?
+///
+/// Not simply "anything under .beads/". That was the original test, and on
+/// lab it denied 23 writes in 21 hours, every one a scratch script such as
+/// `.beads/state/<bead-id>/render_markdown.py`. The rule is Critical and its
+/// message tells the caller to make a git worktree; neither is right for a
+/// throwaway file in a gitignored directory.
+///
+/// A linked worktree (`.git` is a file) is never guarded: it is the escape
+/// hatch the rule's own redirect recommends.
 fn is_shared_beads_target(file_path: &str) -> bool {
     let Some(path) = absolute_normalized_path(Path::new(file_path)) else {
         return false;
@@ -469,12 +496,61 @@ fn is_shared_beads_target(file_path: &str) -> bool {
     while let Some(candidate) = ancestor {
         let git_path = candidate.join(".git");
         if git_path.is_dir() || git_path.is_file() {
-            return git_path.is_dir() && path.starts_with(candidate.join(".beads"));
+            if !git_path.is_dir() {
+                return false;
+            }
+            let beads_root = candidate.join(".beads");
+            let Ok(relative) = path.strip_prefix(&beads_root) else {
+                return false;
+            };
+            return is_bead_store_path(relative);
         }
         ancestor = candidate.parent();
     }
 
     false
+}
+
+/// Classify a path relative to `.beads/`.
+fn is_bead_store_path(relative: &Path) -> bool {
+    let mut components = relative.components();
+    let Some(first) = components.next() else {
+        return false; // `.beads` itself
+    };
+    let first = first.as_os_str().to_string_lossy();
+
+    // A recognised non-store subdirectory, at any depth beneath it.
+    if BEADS_NON_STORE_DIRS
+        .iter()
+        .any(|dir| first == *dir || first.starts_with(&format!("{dir}-")))
+    {
+        return false;
+    }
+
+    // The durable checkpoint is store state.
+    if first == "checkpoint" {
+        return true;
+    }
+
+    // Otherwise only top-level store files count. A file nested under an
+    // unrecognised subdirectory is somebody's working directory, not the
+    // store, and defaulting it to "guarded" is what produced the 23 false
+    // positives.
+    if components.next().is_some() {
+        return false;
+    }
+    matches!(
+        first.as_ref(),
+        "beads.db"
+            | "beads.db-shm"
+            | "beads.db-wal"
+            | "beads.db.lock"
+            | "config.json"
+            | "config.yaml"
+            | "events.jsonl"
+            | "heartbeats.jsonl"
+            | "issues.jsonl"
+    )
 }
 
 /// Input source from PreToolUse hook
