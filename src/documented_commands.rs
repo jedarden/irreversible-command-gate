@@ -480,7 +480,7 @@ fn print_check_definition(check: &Check) {
 fn explain_denial(id: &str, requested_log: Option<&Path>) -> Result<()> {
     let paths = requested_log
         .map(|path| vec![path.to_path_buf()])
-        .unwrap_or_else(default_denial_log_paths);
+        .unwrap_or_else(denial_log_search_paths);
 
     for path in paths {
         if !path.is_file() {
@@ -661,7 +661,7 @@ pub fn run_bug_report(args: BugReportArgs) -> Result<()> {
     let denial_paths = args
         .denial_log
         .map(|path| vec![path])
-        .unwrap_or_else(default_denial_log_paths);
+        .unwrap_or_else(denial_log_search_paths);
 
     let mut report = String::new();
     writeln!(report, "icg bug report").unwrap();
@@ -772,10 +772,21 @@ fn operator_denial_path(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("ICG_DENIAL_LOG") {
         return Ok(PathBuf::from(path));
     }
-    default_denial_log_paths()
-        .into_iter()
+    let candidates = denial_log_search_paths();
+    candidates
+        .iter()
         .find(|path| path.is_file())
-        .context("no denial log found; set ICG_DENIAL_LOG for an operator report")
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no denial log found. Looked for:\n{}\nSet ICG_DENIAL_LOG to point at one.",
+                candidates
+                    .iter()
+                    .map(|path| format!("  {}", path.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })
 }
 
 fn load_operator_denials(explicit: Option<&Path>) -> Result<Vec<OperatorDenial>> {
@@ -923,16 +934,25 @@ pub fn run_operator_status(args: &StatusArgs) -> Result<()> {
 fn print_denial_table(denials: &[OperatorDenial], since: &str) {
     println!("DENIALS (last {since})");
     println!("════════════════════════════════════════════════════════════════");
-    println!("Time                    Pack        Pattern              Severity");
-    println!("────────────────────────────────────────────────────────────────");
+    println!(
+        "{:<20} {:<10} {:<30} Severity",
+        "Time (UTC)", "Pack", "Pattern"
+    );
+    println!("{}", "─".repeat(72));
     for denial in denials {
+        // Records carry RFC3339 with nanoseconds and an offset
+        // ("2026-09-07T04:10:49.885197245+00:00"), which is 35 characters and
+        // overran its column. Seconds are the useful resolution here.
         let time = denial
             .timestamp
             .replace('T', " ")
+            .split('.')
+            .next()
+            .unwrap_or(&denial.timestamp)
             .trim_end_matches('Z')
             .to_string();
         println!(
-            "{time:<23} {:<11} {:<20} {}",
+            "{time:<20} {:<10} {:<30} {}",
             denial.pack_id, denial.pattern_id, denial.severity
         );
     }
@@ -945,15 +965,20 @@ fn print_pattern_summary(denials: &[OperatorDenial], since: &str) {
     }
     println!("DENIAL PATTERNS (last {since})");
     println!("════════════════════════════════════════════════════════════════");
-    println!("Pattern ID                Count   % of Total   Trend");
-    println!("───────────────────────────────────────────────────────────────────");
+    // `git-commit-without-pathspec` is 27 characters, so a 26-wide column
+    // printed "git-commit-without-pathspec44" with the count welded on.
+    println!(
+        "{:<32} {:>6}  {:>10}   Trend",
+        "Pattern ID", "Count", "% of Total"
+    );
+    println!("{}", "─".repeat(72));
     for (pattern, count) in counts {
         let percentage = if denials.is_empty() {
             0
         } else {
             (count * 100 + denials.len() / 2) / denials.len()
         };
-        println!("{pattern:<26}{count:<8}{percentage:>3}%          → Stable");
+        println!("{pattern:<32} {count:>6}  {percentage:>9}%   → Stable");
     }
 }
 
@@ -1502,14 +1527,25 @@ fn resolve_pack_paths(explicit: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(paths.into_iter().collect())
 }
 
-fn default_denial_log_paths() -> Vec<PathBuf> {
-    let mut paths = vec![
-        PathBuf::from("/var/log/icg/denials.jsonl"),
-        PathBuf::from("/var/log/icg/denials.log"),
-    ];
-    if let Ok(path) = crate::state_store::StateStore::default_path() {
+/// Where an operator command looks for the denial log, in order.
+///
+/// The first entry is the writer's own default, taken from `DenialStore`
+/// rather than repeated here: the reader and the writer each used to carry a
+/// separate default and they disagreed, so `icg status --denials` could not
+/// read the log the hook had been writing all along.
+///
+/// `StateStore::default_path()` is deliberately absent. It is
+/// /var/cache/icg/session-state.json -- state, not denials -- and because
+/// selection only asked `is_file()`, it was chosen and then failed to parse
+/// as "invalid denial record in /var/cache/icg/session-state.json", which
+/// reads like a corrupt log rather than a reader looking in the wrong place.
+pub fn denial_log_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(path) = denial_log::DenialStore::default_path() {
         paths.push(path);
     }
+    paths.push(PathBuf::from("/var/log/icg/denials.jsonl"));
+    paths.push(PathBuf::from("/var/log/icg/denials.log"));
     paths
 }
 
