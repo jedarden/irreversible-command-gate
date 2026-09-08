@@ -554,6 +554,12 @@ impl PolicyStore {
         self.path.with_extension("lock")
     }
 
+    /// Take the exclusive policy lock.
+    ///
+    /// Creating and locking the lock file needs write access to the policy
+    /// directory, which the guarded agent deliberately does not have.  Callers
+    /// are therefore operator or deployment-controller actions, never a hook
+    /// or wrapper invocation.
     fn acquire_lock(&self) -> Result<PolicyLock> {
         self.ensure_parent()?;
         let file = OpenOptions::new()
@@ -599,6 +605,12 @@ impl PolicyStore {
 
     /// Load policy state.  Missing state is the safe bootstrap state:
     /// Fail-Open with a clean streak of zero.
+    ///
+    /// This is the read path a guarded invocation uses, and it takes no lock:
+    /// in a production deployment the policy directory is administrator
+    /// owned, so the guarded process must not even try to open the lock file
+    /// for writing.  Anything that mutates state goes through [`Self::update`]
+    /// or [`Self::reconcile_release_health`], which are operator actions.
     pub fn load(&self) -> Result<PolicyState> {
         if !self.path.exists() {
             return PolicyState::new(DEFAULT_GRADUATION_THRESHOLD);
@@ -704,6 +716,10 @@ impl PolicyStore {
     }
 
     /// Reconcile one host's release-health evidence into the deployment policy.
+    ///
+    /// This is the graduation path, and it writes: it takes the exclusive
+    /// policy lock, so it runs as the administrator (or a deployment
+    /// controller) and is never part of a guarded tool call.
     ///
     /// The poison-pill detector remains authoritative.  A durable rollback
     /// count is consumed before a release can be counted, and a concerning

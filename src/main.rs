@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use coverage::*;
 use engine::{Engine, InputSource};
-use fail_closed::{PolicyStore, PolicyTransition, ReconcileOutcome};
+use fail_closed::PolicyStore;
 use icg::{
     coverage, denial_log, emergency_bypass, engine, fail_closed, health, health_server, monitoring,
     new_pack, overrides, pack_manifest, regex_safety, regression, rollback, rule_pack, state_store,
@@ -832,8 +832,11 @@ fn check_and_handle_anomaly(
         eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
     }
 
-    reconcile_fail_closed_policy(state_store, &trust_store, &poison_pill_config);
-
+    // Fail-closed graduation is deliberately NOT reconciled here. The
+    // guarded agent cannot write its own policy (see the deployment ownership
+    // table), so every attempt would take a lock it can never be granted and
+    // warn on the same stderr channel a real fault needs. Graduation is an
+    // operator action: `icg policy reconcile`.
     Ok(())
 }
 
@@ -888,47 +891,6 @@ fn configured_poison_pill_config() -> PoisonPillConfig {
                 "⚠️  Using default poison-pill configuration; telemetry configuration unavailable: {error:#}"
             );
             PoisonPillConfig::default()
-        }
-    }
-}
-
-/// Reconcile policy state after the poison-pill reaction for either hook or
-/// wrapper front-ends. Policy-store failures are operational alerts, not a
-/// reason to rewrite an already-emitted operation decision.
-fn reconcile_fail_closed_policy(
-    state_store: &state_store::StateStore,
-    trust_store: &TrustPointerStore,
-    poison_pill_config: &PoisonPillConfig,
-) {
-    let policy_store = PolicyStore::from_env();
-    match policy_store.reconcile_release_health(state_store, trust_store, poison_pill_config) {
-        Ok(ReconcileOutcome::Clean(transition)) => {
-            if let PolicyTransition::Graduated {
-                ref release_ref,
-                generation,
-            } = transition
-            {
-                eprintln!(
-                    "🚀 FAIL-CLOSED GRADUATION: release `{release_ref}` reached the clean-release threshold; policy generation {generation} is now Fail-Closed"
-                );
-            }
-            eprintln!("ℹ️  Fail-closed policy reconciliation: {transition:?}");
-        }
-        Ok(ReconcileOutcome::PoisonPill(transition)) => {
-            eprintln!("⚠️  Fail-closed graduation reset by poison-pill evidence: {transition:?}");
-        }
-        Ok(ReconcileOutcome::Invalidated(transition)) => {
-            eprintln!("⚠️  Fail-closed graduation evidence invalidated: {transition:?}");
-        }
-        Ok(ReconcileOutcome::Pending { reason }) => {
-            eprintln!("ℹ️  Fail-closed graduation pending: {reason}");
-        }
-        Ok(ReconcileOutcome::NoChange) => {}
-        Err(error) => {
-            eprintln!(
-                "⚠️  Failed to reconcile fail-closed graduation policy {}: {error:#}",
-                policy_store.path().display()
-            );
         }
     }
 }
@@ -1255,7 +1217,9 @@ fn run_shadowed_tool(
             {
                 eprintln!("🚨 POISON-PILL AUTO-ROLLBACK FAILED: {error:#}");
             }
-            reconcile_fail_closed_policy(&state_store, &trust_store, &poison_pill_config);
+            // As in the hook front-end, the guarded process never reconciles
+            // the fail-closed policy: it has no write access to it, and an
+            // operator runs `icg policy reconcile` instead.
         }
     }
 
@@ -2549,10 +2513,14 @@ fn main() -> Result<()> {
                 };
                 let runtime_store = state_store::StateStore::new(state_path);
                 let trust_store = TrustPointerStore::new(trust_path);
+                // Reconciliation is the operator path to graduation, so it
+                // reads the same configured telemetry controls the hook's
+                // poison-pill reaction uses rather than a second set of
+                // defaults.
                 let outcome = policy_store.reconcile_release_health(
                     &runtime_store,
                     &trust_store,
-                    &PoisonPillConfig::default(),
+                    &configured_poison_pill_config(),
                 )?;
                 println!("Fail-closed policy reconciliation: {outcome:?}");
                 Ok(())
