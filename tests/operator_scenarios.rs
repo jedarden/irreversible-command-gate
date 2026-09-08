@@ -88,7 +88,13 @@ fn first_time_installation_validates_documented_commands_and_outputs() {
 
     let version = run(&["--version"]);
     assert!(version.status.success(), "{}", stderr(&version));
-    assert_eq!(stdout(&version).trim(), "icg 0.1.3");
+    // Derived, not hardcoded: icg-ci auto-bumps the patch version, so a
+    // literal here goes stale on the next release and fails a run that has
+    // nothing wrong with it. That is exactly what happened on v0.1.4.
+    assert_eq!(
+        stdout(&version).trim(),
+        format!("icg {}", env!("CARGO_PKG_VERSION"))
+    );
 
     let pack_check = run_with_env(&["health", "--check-packs"], &[("ICG_PACK_DIR", &packs)]);
     assert!(pack_check.status.success(), "{}", stderr(&pack_check));
@@ -150,10 +156,15 @@ fn first_time_installation_validates_documented_commands_and_outputs() {
     );
     assert!(verbose.status.success(), "{}", stderr(&verbose));
     for expected_line in expected["health"]["verbose"].as_array().unwrap() {
+        // The fixture writes {version} rather than a literal, for the same
+        // reason as above -- the crate version moves on its own now.
+        let expected_line = expected_line
+            .as_str()
+            .unwrap()
+            .replace("{version}", env!("CARGO_PKG_VERSION"));
         assert!(
-            stdout(&verbose).contains(expected_line.as_str().unwrap()),
-            "missing documented health line: {}",
-            expected_line
+            stdout(&verbose).contains(&expected_line),
+            "missing documented health line: {expected_line}"
         );
     }
 
