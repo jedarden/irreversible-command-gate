@@ -1074,7 +1074,12 @@ impl HealthStore {
         let run_id = new_run_id();
         state.mark_start_with_id(run_id.clone());
         self.persist_unlocked(&state)?;
-        eprintln!("icg_health_event event=run_started run_id={run_id}");
+        // Deliberately silent.  Starting a run is the uneventful case, and on
+        // an instrumented host this is the hot path for every agent's every
+        // tool call -- announcing it would fill the channel a real fault has
+        // to announce itself on.  The run id is persisted in the health state
+        // above and is readable with `icg health`; the fault and
+        // crash-recovery events below still print, because those are events.
         Ok(RunStart {
             run_id,
             recovered_crash,

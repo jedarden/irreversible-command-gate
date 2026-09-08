@@ -204,23 +204,16 @@ fn hook_invocation_leaves_administrator_owned_policy_untouched() {
         "fail-open hook should continue: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // Nothing about the policy may reach stderr: the guarded process neither
-    // locks it nor writes it, so it has nothing to report.  `icg_health_event`
-    // lines are the guard's own lifecycle telemetry, which also does not
-    // belong on the fault channel but has a separate cause and a separate
-    // bead (irrevers-0aa08f4e); filter those rather than weakening this to a
-    // substring match, so any NEW warning still fails here.  When that bead
-    // lands, delete the filter and assert `stderr.is_empty()`.
+    // Nothing may reach stderr at all.  The guarded process neither locks nor
+    // writes the policy, and a run that starts uneventfully is not an event
+    // worth a line -- the channel belongs to faults.  Asserting emptiness
+    // rather than the absence of one known string is deliberate: it is what
+    // makes this test catch the NEXT thing that decides to narrate itself
+    // here.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let unexpected: Vec<&str> = stderr
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter(|line| !line.starts_with("icg_health_event "))
-        .collect();
     assert!(
-        unexpected.is_empty(),
-        "a guarded invocation must not warn about the administrator-owned policy: {unexpected:#?}"
+        stderr.is_empty(),
+        "a guarded invocation must leave stderr clear for real faults: {stderr}"
     );
     assert!(
         !lock_path.exists(),
@@ -299,4 +292,28 @@ fn operator_policy_commands_manage_the_durable_policy() {
         reconcile_output.contains("Fail-closed policy reconciliation: Pending"),
         "reconciliation without a trust pointer is pending, not clean: {reconcile_output}"
     );
+}
+
+/// The counterpart to the assertion above: stderr goes quiet for uneventful
+/// runs, so it must still carry the events that are not uneventful.  A
+/// recovered crash is the loudest thing the lifecycle can report, and it
+/// keeps reporting.
+#[test]
+fn a_recovered_crash_still_announces_itself_on_stderr() {
+    let _lock = env_lock();
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let input = br#"{"toolName":"Bash","toolInput":{"command":"printf safe"}}"#;
+    let output = run_hook(&directory, Some(PolicyMode::FailOpen), input);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("icg_health_event event=crash_detected"),
+        "a recovered crash must still be reported: {stderr}"
+    );
+    assert!(
+        !stderr.contains("event=run_started"),
+        "starting a run is not an event: {stderr}"
+    );
+    let response = String::from_utf8_lossy(&output.stdout);
+    assert!(response.contains("\"permissionDecision\":\"allow\""));
 }
