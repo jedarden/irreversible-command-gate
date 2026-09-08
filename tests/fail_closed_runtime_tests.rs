@@ -25,32 +25,33 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 /// The hook resolves its trust directory to a hardcoded `/etc/icg`
 /// (`TrustPointerStore::default_path`) with no override, so these tests cannot
 /// isolate it the way they isolate health, policy and telemetry paths.  When
-/// that directory is world-writable the guard correctly reports a security
-/// violation on every invocation -- a REAL fault, not test noise: the argo
-/// guarded-builder image ships it at mode 0777, which is irrevers-beee1069.
+/// that directory does not satisfy the guard's own security check, the guard
+/// correctly reports a violation on every invocation -- a REAL fault, not test
+/// noise -- and these tests would be asserting against someone else's defect.
 ///
-/// Returns true when the ambient directory would make the guard shout. The two
-/// tests below skip with a printed reason rather than assert against it, so
-/// they keep their full strength on a correctly-configured host and stop
-/// reporting someone else's defect as their own failure. Delete this once
-/// irrevers-beee1069 lands and the image is republished.
-fn ambient_trust_directory_is_insecure() -> bool {
-    let Ok(metadata) = std::fs::metadata("/etc/icg") else {
+/// Ask the guard's own check rather than reimplementing a condition of it.
+/// The argo guarded-builder image fails it two independent ways
+/// (irrevers-beee1069): it ships /etc/icg at 0777, AND its pods run as uid 0
+/// with `USER` unset, which the check reports as "Current user can WRITE to
+/// artifact directory" even after the mode is corrected. A guard that tested
+/// only the world-writable bit would start failing again the moment the
+/// Dockerfile is fixed.
+fn skip_if_ambient_trust_directory_is_insecure(test: &str) -> bool {
+    let Ok(default_path) = icg::trust_pointer::TrustPointerStore::default_path() else {
         return false;
     };
-    metadata.permissions().mode() & 0o002 != 0
-}
-
-fn skip_if_ambient_trust_directory_is_insecure(test: &str) -> bool {
-    if ambient_trust_directory_is_insecure() {
-        eprintln!(
-            "SKIP {test}: /etc/icg is world-writable on this host, so the guard reports a \
-             security violation on every call (irrevers-beee1069). The assertion under test \
-             is about the fail-closed policy, not that defect."
-        );
-        return true;
+    let store = icg::trust_pointer::TrustPointerStore::new(default_path);
+    match store.verify_artifact_directory_security() {
+        Ok(()) => false,
+        Err(error) => {
+            eprintln!(
+                "SKIP {test}: the ambient trust directory fails the guard's own security \
+                 check, so it reports a violation on every call (irrevers-beee1069): {error:#}. \
+                 The assertion under test is about the fail-closed policy, not that defect."
+            );
+            true
+        }
     }
-    false
 }
 
 fn seed_stale_run(path: &std::path::Path) {
