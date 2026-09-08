@@ -65,7 +65,7 @@ Grab the release binary — or build from source, which needs nothing but a
 Rust toolchain:
 
 ```bash
-curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.3/icg
+curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.4/icg
 chmod +x icg
 
 # or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
@@ -160,15 +160,28 @@ release-integrity machinery, and 526 passing tests across 52 files are in
 the tree and working. The whole crate is 25,800 lines of Rust with 17
 dependencies and no C toolchain requirement.
 
-**`v0.1.3` is the current release** (2026-09-06). It fixes a guard bypass:
-an apostrophe in a heredoc body caused the lexer to lose the rest of the
-command, silently skipping every command-mode pack — six of ten, including
-all the Critical destructive rules. Upgrade from v0.1.1 or v0.1.2. Each carries the binary, the pack tarball, a byte-level pack manifest,
-and the merged `rule-pack.json`. Two releases now exist, so `icg update`'s
-trust-pointer flow finally has a real predecessor to advance from — but that
-transition has not yet been exercised end to end. Treat `icg update` as
-unproven until it has. Tracked in [`docs/plan/plan.md`](docs/plan/plan.md),
-Phase 0.
+**`v0.1.4` is the current release** (2026-09-08). It is the first release
+cut by the version auto-bump in `icg-ci`: before it, a push that did not
+touch `Cargo.toml` produced a green run that shipped nothing, and five fixes
+accumulated behind the published `v0.1.3`. Those fixes are what this release
+carries — `icg status --denials` reads the log the hook actually writes;
+`cargo test` on an instrumented host no longer appends to the live denial
+log; `beads-shared-checkout-write` guards the bead store rather than every
+scratch file under `.beads/`; the hook no longer demands a write lock on
+root-owned policy state on every call; and a healthy guarded invocation now
+leaves stderr empty for real faults.
+
+`v0.1.3` (2026-09-06) remains the release to upgrade from if you are on
+`v0.1.1` or `v0.1.2`: it closed a guard bypass where an apostrophe in a
+heredoc body made the lexer lose the rest of the command, silently skipping
+six of ten command-mode packs including all the Critical destructive rules.
+
+Each release carries the binary, the pack tarball, a byte-level pack
+manifest, and the merged `rule-pack.json`. Several releases now exist, so
+`icg update`'s trust-pointer flow has real predecessors to advance from — but
+that transition has still not been exercised end to end. Treat `icg update`
+as unproven until it has. Tracked in
+[`docs/plan/plan.md`](docs/plan/plan.md), Phase 0.
 
 ## Documentation
 
