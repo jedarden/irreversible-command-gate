@@ -36,7 +36,27 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /etc/icg/packs /etc/icg/overrides /var/cache/icg
+# Explicit modes: the artifact directory's entire purpose is being
+# un-writable by the guarded process, so its permissions must not depend on
+# the ambient umask of the build environment -- and here that umask is 0000,
+# because this image is built by kaniko. Confirmed against 0.1.0: every
+# directory a RUN created without an explicit mode shipped at 0777
+# (/etc/icg, /etc/icg/overrides, /var/cache/icg, /root/.cargo), which made
+# verify_artifact_directory_security (src/trust_pointer.rs) report a security
+# violation on every hook invocation in every guarded CI pod
+# (irrevers-beee1069). /etc/icg/packs only escaped because the COPY below
+# imposed the source directory's mode on it.
+#
+# The chmod deliberately lands BEFORE `COPY packs /etc/icg/packs/`, and the
+# chmod is what wins: a COPY into a destination directory that already exists
+# only adds entries inside it and leaves the directory's own metadata alone.
+# Applying the source's mode is what the COPY does when it has to create the
+# destination itself -- which is precisely the 0.1.0 escape described above.
+# The assertion RUN near the bottom of this file fails the build if a change
+# in builder behavior ever relaxes this anyway.
+RUN mkdir -p /etc/icg/packs /etc/icg/overrides /var/cache/icg \
+    && chown -R root:root /etc/icg /var/cache/icg \
+    && chmod 0755 /etc/icg /etc/icg/packs /etc/icg/overrides /var/cache/icg
 COPY --from=icg-builder /tmp/icg-source/target/release/icg /usr/local/bin/icg
 COPY packs /etc/icg/packs/
 
@@ -56,8 +76,26 @@ RUN chmod 0755 /usr/local/bin/icg \
          fi; \
        done \
     && /usr/local/bin/icg --version \
-    && test "$(/usr/local/bin/icg --version | awk '{print $2}')" = "${ICG_VERSION}" \
+    && icg_semver="$(/usr/local/bin/icg --version | awk '{print $2}')" \
+    && case "$icg_semver" in \
+         [0-9]*.[0-9]*.[0-9]*) : ;; \
+         *) echo "icg --version is not semver: '$icg_semver'" >&2; exit 1 ;; \
+       esac \
     && /usr/local/bin/icg coverage
+
+# Assert the trust directory the guard depends on cannot regress to being
+# writable by anything other than root. A build-time failure here beats a
+# runtime security violation the guard only warns about and continues past.
+RUN for dir in /etc/icg /etc/icg/packs /etc/icg/overrides /var/cache/icg; do \
+      owner="$(stat -c '%U' "$dir")"; \
+      mode="$(stat -c '%a' "$dir")"; \
+      if [ "$owner" != "root" ]; then \
+        echo "SECURITY: $dir is owned by $owner, not root" >&2; exit 1; \
+      fi; \
+      case "$mode" in \
+        *2|*3|*6|*7) echo "SECURITY: $dir is world-writable (mode $mode)" >&2; exit 1 ;; \
+      esac; \
+    done
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD ["/usr/local/bin/icg", "--version"]
