@@ -88,6 +88,7 @@ fn run_hook_with_policy(
 ) -> Output {
     let health_path = directory.path().join("health.json");
     let telemetry_path = directory.path().join("telemetry.json");
+    let state_path = directory.path().join("session-state.json");
     if seed_crash {
         seed_stale_run(&health_path);
     }
@@ -97,6 +98,10 @@ fn run_hook_with_policy(
         .env("ICG_HEALTH_PATH", &health_path)
         .env("ICG_FAIL_CLOSED_POLICY", policy_path)
         .env("ICG_TELEMETRY_PATH", &telemetry_path)
+        // The operational state store is the one artifact the guarded
+        // invocation legitimately owns; keep it out of /var/cache/icg so the
+        // assertions below measure this run and nothing ambient.
+        .env("ICG_STATE_PATH", &state_path)
         // The CI executor configures its production pack location globally.
         // These lifecycle tests deliberately exercise crash recovery without
         // loading a pack, so do not let a missing executor-local directory
@@ -116,8 +121,14 @@ fn run_hook_with_policy(
     child.wait_with_output().expect("hook should finish")
 }
 
+/// A recovered crash is recorded as evidence in the operational state store
+/// the guarded process owns; the poison-pill policy event is the operator's
+/// reconciliation of that evidence, never a guarded write.  The old contract
+/// -- the hook itself persisting `last_poison_pill_event` -- only held on an
+/// agent-writable policy directory, which the hardened deployment
+/// deliberately does not provide (irrevers-3e6c6fde).
 #[test]
-fn recovered_guard_crash_is_fail_open_by_default_and_persisted() {
+fn recovered_guard_crash_records_evidence_and_reconciles_into_policy() {
     let _lock = env_lock();
     let directory = tempfile::tempdir().expect("temporary directory");
     let input = br#"{"toolName":"Bash","toolInput":{"command":"printf safe"}}"#;
@@ -134,11 +145,75 @@ fn recovered_guard_crash_is_fail_open_by_default_and_persisted() {
         .load_or_create()
         .expect("health state should recover");
     assert_eq!(health.total_crashes, 1);
-    let policy = PolicyStore::new(directory.path().join("policy.json"))
+
+    let state_store =
+        icg::state_store::StateStore::new(directory.path().join("session-state.json"));
+    let evidence = state_store
+        .guard_crash_state()
+        .expect("guard-crash evidence should persist");
+    assert_eq!(evidence.crash_count, 1);
+    let crash_id = evidence
+        .last_crash_id
+        .expect("recorded evidence should identify the crash");
+
+    let policy_path = directory.path().join("policy.json");
+    assert!(
+        !policy_path.exists(),
+        "a guarded invocation must not create fail-closed policy state"
+    );
+
+    let state_path = directory.path().join("session-state.json");
+    let trust_path = directory.path().join("trust-pointer.json");
+    let run_reconcile = || {
+        Command::new(env!("CARGO_BIN_EXE_icg"))
+            .args(["policy", "reconcile"])
+            .arg("--path")
+            .arg(&policy_path)
+            .arg("--state-store-path")
+            .arg(&state_path)
+            .arg("--trust-pointer-path")
+            .arg(&trust_path)
+            .env(
+                "ICG_TELEMETRY_PATH",
+                directory.path().join("telemetry.json"),
+            )
+            .output()
+            .expect("policy reconcile should run")
+    };
+
+    let reconcile = run_reconcile();
+    assert!(
+        reconcile.status.success(),
+        "policy reconcile should succeed: {}",
+        String::from_utf8_lossy(&reconcile.stderr)
+    );
+    let reconcile_output = String::from_utf8_lossy(&reconcile.stdout);
+    assert!(
+        reconcile_output.contains("PoisonPill"),
+        "reconciliation should consume the crash evidence: {reconcile_output}"
+    );
+    let policy = PolicyStore::new(&policy_path)
         .load()
-        .expect("poison-pill policy event should persist");
-    assert!(policy.last_poison_pill_event.is_some());
+        .expect("reconciled policy should load");
     assert_eq!(policy.mode, PolicyMode::FailOpen);
+    assert_eq!(
+        policy.last_poison_pill_event.as_deref(),
+        Some(format!("guard-crash:{crash_id}").as_str())
+    );
+
+    // The counter makes consumption idempotent: replaying the same evidence
+    // against an already-caught-up policy does not poison twice.
+    let replay = run_reconcile();
+    assert!(
+        replay.status.success(),
+        "replayed policy reconcile should succeed: {}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay_output = String::from_utf8_lossy(&replay.stdout);
+    assert!(
+        replay_output.contains("Pending"),
+        "replayed reconciliation must not consume the same crash twice: {replay_output}"
+    );
 }
 
 #[test]
@@ -146,7 +221,18 @@ fn recovered_guard_crash_denies_in_fail_closed_mode() {
     let _lock = env_lock();
     let directory = tempfile::tempdir().expect("temporary directory");
     let input = br#"{"toolName":"Bash","toolInput":{"command":"printf unsafe"}}"#;
-    let output = run_hook(&directory, Some(PolicyMode::FailClosed), input);
+    let policy_path = directory.path().join("policy.json");
+    let lock_path = directory.path().join("policy.lock");
+
+    let policy = PolicyStore::new(&policy_path);
+    let mut state = PolicyState::new(3).expect("default threshold should be valid");
+    state.mode = PolicyMode::FailClosed;
+    policy.save(&state).expect("deployed policy should persist");
+    // Seeding went through the writer, which legitimately takes the lock.
+    // Clear it so the assertions below measure the hook, not the setup.
+    std::fs::remove_file(&lock_path).expect("seed lock should be removable");
+
+    let output = run_hook_with_policy(&directory, &policy_path, true, input);
     assert!(
         output.status.success(),
         "hook protocol should return a denial response: {}",
@@ -160,11 +246,32 @@ fn recovered_guard_crash_denies_in_fail_closed_mode() {
         .load_or_create()
         .expect("health state should recover");
     assert_eq!(health.total_crashes, 1);
-    let policy = PolicyStore::new(directory.path().join("policy.json"))
+    let evidence = icg::state_store::StateStore::new(directory.path().join("session-state.json"))
+        .guard_crash_state()
+        .expect("guard-crash evidence should persist");
+    assert_eq!(evidence.crash_count, 1);
+
+    // The denial comes from reading the durable Fail-Closed posture, not
+    // from the guarded process writing policy state to justify itself.
+    assert!(
+        !lock_path.exists(),
+        "the hook must not create the fail-closed policy lock"
+    );
+    let policy = PolicyStore::new(&policy_path)
         .load()
         .expect("policy should remain readable after enforcement");
     assert_eq!(policy.mode, PolicyMode::FailClosed);
-    assert!(policy.last_poison_pill_event.is_some());
+    assert!(
+        policy.last_poison_pill_event.is_none(),
+        "the denial must come from reading the durable policy, not from the \
+         guarded process writing a poison-pill event: {:?}",
+        policy.last_poison_pill_event
+    );
+    assert!(
+        policy.events.is_empty(),
+        "the guarded process must not write policy events: {:?}",
+        policy.events
+    );
 }
 
 #[test]
@@ -267,6 +374,88 @@ fn hook_invocation_leaves_administrator_owned_policy_untouched() {
         deployed.events.is_empty(),
         "the guarded process must not write policy events: {:?}",
         deployed.events
+    );
+}
+
+/// The invocation right after a recovered crash is the moment the guard is
+/// most degraded, and it must still keep the hardened ownership boundary:
+/// crash evidence goes to the operational state store the guarded agent
+/// owns, while the administrator-owned policy directory is neither locked
+/// nor written (irrevers-3e6c6fde).
+#[test]
+fn recovered_guard_crash_keeps_administrator_owned_policy_untouched() {
+    if skip_if_ambient_trust_directory_is_insecure(
+        "recovered_guard_crash_keeps_administrator_owned_policy_untouched",
+    ) {
+        return;
+    }
+    let _lock = env_lock();
+    let policy_directory = tempfile::tempdir().expect("policy directory");
+    let state_directory = tempfile::tempdir().expect("guard state directory");
+    let policy_path = policy_directory.path().join("fail-closed-policy.json");
+    let lock_path = policy_directory.path().join("fail-closed-policy.lock");
+
+    let policy = PolicyStore::new(&policy_path);
+    let mut state = PolicyState::new(3).expect("default threshold should be valid");
+    state.mode = PolicyMode::FailOpen;
+    policy.save(&state).expect("deployed policy should persist");
+    std::fs::remove_file(&lock_path).expect("seed lock should be removable");
+
+    let set_policy_directory_mode = |mode: u32| {
+        let mut permissions = std::fs::metadata(policy_directory.path())
+            .expect("policy directory metadata")
+            .permissions();
+        permissions.set_mode(mode);
+        std::fs::set_permissions(policy_directory.path(), permissions)
+            .expect("policy directory permissions should apply");
+    };
+    set_policy_directory_mode(0o555);
+
+    let input = br#"{"toolName":"Bash","toolInput":{"command":"printf safe"}}"#;
+    let output = run_hook_with_policy(&state_directory, &policy_path, true, input);
+
+    // Restore write access so the temporary directory can still be removed.
+    set_policy_directory_mode(0o700);
+
+    assert!(
+        output.status.success(),
+        "fail-open hook should continue: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("icg_health_event event=crash_detected"),
+        "the recovered crash must still be reported: {stderr}"
+    );
+    assert!(
+        !stderr.contains("permission denied"),
+        "recording crash evidence must stay in the state store the guarded \
+         agent owns, not reach for the policy directory: {stderr}"
+    );
+    let response = String::from_utf8_lossy(&output.stdout);
+    assert!(response.contains("\"permissionDecision\":\"allow\""));
+
+    assert!(
+        !lock_path.exists(),
+        "the post-crash invocation must not create the fail-closed policy lock"
+    );
+    let deployed = PolicyStore::new(&policy_path)
+        .load()
+        .expect("policy should remain readable");
+    assert_eq!(deployed.mode, PolicyMode::FailOpen);
+    assert!(
+        deployed.last_poison_pill_event.is_none() && deployed.events.is_empty(),
+        "the guarded process must not write policy state: {:?}",
+        deployed.events
+    );
+
+    let evidence =
+        icg::state_store::StateStore::new(state_directory.path().join("session-state.json"))
+            .guard_crash_state()
+            .expect("guard-crash evidence should persist");
+    assert_eq!(
+        evidence.crash_count, 1,
+        "the crash evidence itself must not be dropped on the hardened layout"
     );
 }
 

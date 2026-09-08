@@ -897,12 +897,18 @@ fn configured_poison_pill_config() -> PoisonPillConfig {
 
 /// Consume a crash recovered by the lifecycle marker before evaluating the
 /// next operation.  The health store detects process disappearance on the
-/// next invocation; this boundary turns that durable evidence into the same
-/// idempotent poison-pill event used by policy reconciliation.
+/// next invocation; this boundary records that durable evidence in the
+/// operational state store the guarded process owns.
+///
+/// The evidence becomes a fail-closed poison-pill event only when the
+/// operator's `icg policy reconcile` consumes it.  A guarded invocation
+/// never writes the policy or takes its lock, so a hardened deployment --
+/// where the policy directory is administrator-owned -- keeps its ownership
+/// boundary even on the invocation right after a crash (irrevers-3e6c6fde).
 ///
 /// Returns true when the active policy requires this invocation to halt.  In
-/// fail-open mode the event is still logged and persisted, but evaluation is
-/// allowed to continue so the fleet retains the compatibility baseline.
+/// fail-open mode the evidence is still recorded, but evaluation is allowed
+/// to continue so the fleet retains the compatibility baseline.
 fn recovered_guard_crash_requires_halt(
     engine: &Engine,
     lifecycle: Option<&health::GuardLifecycle>,
@@ -911,23 +917,36 @@ fn recovered_guard_crash_requires_halt(
         return false;
     };
 
-    let event_ref = format!("guard-crash:{}", crash.id);
-    let policy_store = PolicyStore::from_env();
-    match policy_store.record_poison_pill(&event_ref) {
-        Ok(transition) => eprintln!(
-            "⚠️  Recovered guard crash consumed as poison-pill event {event_ref}: {transition:?}"
-        ),
+    match state_store::StateStore::default_path() {
+        Ok(state_path) => {
+            let state_store = state_store::StateStore::new(state_path);
+            match state_store.record_guard_crash(&crash.id) {
+                Ok(_) => eprintln!(
+                    "⚠️  Recovered guard crash {} recorded for policy reconciliation",
+                    crash.id
+                ),
+                Err(error) => eprintln!(
+                    "⚠️  Failed to record recovered guard crash {}: {error:#}",
+                    crash.id
+                ),
+            }
+        }
         Err(error) => eprintln!(
-            "⚠️  Failed to persist recovered guard crash poison-pill {event_ref}: {error:#}"
+            "⚠️  Failed to locate state store for recovered guard crash {}: {error:#}",
+            crash.id
         ),
     }
 
     if engine.fail_closed() {
-        eprintln!("🚨 Fail-Closed enforcement: guard crash {event_ref} halts this operation");
+        eprintln!(
+            "🚨 Fail-Closed enforcement: guard crash {} halts this operation",
+            crash.id
+        );
         true
     } else {
         eprintln!(
-            "⚠️  Fail-Open enforcement: guard crash {event_ref} recorded; allowing this operation"
+            "⚠️  Fail-Open enforcement: guard crash {} recorded; allowing this operation",
+            crash.id
         );
         false
     }

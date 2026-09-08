@@ -157,13 +157,20 @@ pub struct PolicyState {
     pub counted_releases: Vec<String>,
 
     /// Last poison-pill event consumed by this policy.  The event reference is
-    /// opaque to this module and is normally the durable rollback count.
+    /// opaque to this module and is either a durable rollback count or a
+    /// recovered guard-crash identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_poison_pill_event: Option<String>,
 
     /// Last rollback count observed in the poison-pill state store.
     #[serde(default)]
     pub last_processed_rollback_count: u64,
+
+    /// Last guard-crash count observed in the poison-pill state store.  The
+    /// guarded process records crash evidence there; consuming it into a
+    /// policy event is the operator reconciliation below.
+    #[serde(default)]
+    pub last_processed_guard_crash_count: u64,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_transition_at: Option<String>,
@@ -206,6 +213,7 @@ impl PolicyState {
             counted_releases: Vec::new(),
             last_poison_pill_event: None,
             last_processed_rollback_count: 0,
+            last_processed_guard_crash_count: 0,
             last_transition_at: None,
             last_transition_reason: None,
             events: Vec::new(),
@@ -725,7 +733,9 @@ impl PolicyStore {
     /// count is consumed before a release can be counted, and a concerning
     /// deviation is treated as an invalid release even when rollback is
     /// disabled or cooldown-suppressed.  This keeps missing rollback action
-    /// from being mistaken for a clean observation.
+    /// from being mistaken for a clean observation.  Recovered guard crashes,
+    /// recorded in the same state store by the guarded process, are consumed
+    /// the same way; both counters make repeated runs idempotent.
     pub fn reconcile_release_health(
         &self,
         state_store: &StateStore,
@@ -739,6 +749,25 @@ impl PolicyStore {
         if rollback.rollback_count > state.last_processed_rollback_count {
             let event_ref = format!("rollback:{}", rollback.rollback_count);
             state.last_processed_rollback_count = rollback.rollback_count;
+            let transition = state.record_poison_pill(event_ref)?;
+            self.save_unlocked(&state)?;
+            return Ok(ReconcileOutcome::PoisonPill(transition));
+        }
+
+        // Crash evidence is recorded by the guarded process in the state
+        // store it owns (see `StateStore::record_guard_crash`); this is where
+        // it becomes a policy event.  Reaching this store requires no guarded
+        // write to the policy, so a hardened deployment keeps its ownership
+        // boundary even on the invocation right after a crash.
+        let guard_crash = state_store.guard_crash_state()?;
+        if guard_crash.crash_count > state.last_processed_guard_crash_count {
+            let event_ref = format!(
+                "guard-crash:{}",
+                guard_crash
+                    .last_crash_id
+                    .unwrap_or_else(|| guard_crash.crash_count.to_string())
+            );
+            state.last_processed_guard_crash_count = guard_crash.crash_count;
             let transition = state.record_poison_pill(event_ref)?;
             self.save_unlocked(&state)?;
             return Ok(ReconcileOutcome::PoisonPill(transition));

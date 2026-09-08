@@ -49,11 +49,14 @@ icg hook or Unix PATH wrapper
         |       `-- stale marker on next start becomes one crash event
         |
         +--> StateStore: release evaluations, deny history,
-        |       trust-pointer history, rollback metadata
+        |       trust-pointer history, rollback metadata,
+        |       recovered guard-crash evidence
         |
         +--> poison-pill detector --> exact previous trust pointer
         |
         `--> PolicyStore: mode, clean-release streak, generation, events
+                `-- written only by `icg policy reconcile` and the
+                    manual operator controls, never by a guarded invocation
 ```
 
 The stores have separate authority:
@@ -67,6 +70,10 @@ The stores have separate authority:
   telemetry at lifecycle boundaries.
 - Poison-pill rollback owns release rollback. Policy reconciliation consumes
   its durable rollback count and does not rewrite poison-pill data.
+- A recovered guard crash is recorded by the guarded process as a counter in
+  the cache state store it owns; reconciliation consumes that counter into a
+  poison-pill event, so the invocation right after a crash still never writes
+  the administrator-owned policy (irrevers-3e6c6fde).
 
 The current implementation has two durable modes, `FailOpen` and `FailClosed`.
 The `Graduating` state in the historical design document is a deployment/canary
@@ -102,7 +109,8 @@ The automatic release qualification defaults are:
 - at least three prior releases and 300 prior-release observations;
 - no more than 1,000 current-release observations when the decision is made;
 - an enabled detector and no concerning deviation; and
-- no new rollback count, stale evidence, or incomplete observation.
+- no unconsumed rollback count or recovered guard crash, no stale evidence,
+  and no incomplete observation.
 
 The code reconciles poison-pill and release evidence; it does not automatically
 turn every health metric into a clean-release failure. Reject promotion when
@@ -143,8 +151,9 @@ Do not lower it during an incident to recover from failed qualification.
 
 ### 3. Reconcile after each approved release
 
-Normal hook and wrapper paths reconcile after evaluation. Operators can inspect
-or reconcile explicitly:
+Reconciliation is an operator action: the hook and wrapper front-ends never
+write the policy, so graduation, poison-pill events, and the consumption of
+recorded crash evidence all happen here:
 
 ```bash
 sudo icg policy reconcile
@@ -156,9 +165,9 @@ clean. `CleanRelease` advances once for that exact reference; repeating the
 command is idempotent. `Graduated` means the policy file committed `FailClosed`
 and a new generation.
 
-The CLI reconciliation command uses default poison-pill settings. The normal
-hook path maps configured telemetry controls into the reaction, so when those
-controls are customized its automatic reconciliation is authoritative.
+The reconciliation command reads the same configured telemetry controls the
+guarded paths use for the poison-pill reaction, so customized controls apply
+to explicit reconciliation too.
 
 ### 4. Canary the committed policy
 

@@ -155,6 +155,61 @@ fn poison_pill_resets_open_policy_without_editing_telemetry() {
     );
 }
 
+/// Crash evidence recorded by the guarded process in its own state store is
+/// consumed by the operator's reconciliation into the same poison-pill event
+/// rollback evidence produces, exactly once (irrevers-3e6c6fde).
+#[test]
+fn reconcile_consumes_guard_crash_evidence_once() {
+    let directory = secure_tempdir();
+    let runtime = StateStore::new(directory.path().join("runtime.json"));
+    let trust = TrustPointerStore::new(directory.path().join("trust.json"));
+    let policy = PolicyStore::new(directory.path().join("policy.json"));
+    let poison_config = test_poison_config();
+
+    runtime
+        .record_guard_crash("crash-1741234567890123456-4242")
+        .expect("guard-crash evidence should persist");
+
+    let result = policy
+        .reconcile_release_health(&runtime, &trust, &poison_config)
+        .expect("guard-crash evidence should reconcile");
+    assert!(matches!(result, ReconcileOutcome::PoisonPill(_)));
+    let state = policy.load().expect("policy should load");
+    assert_eq!(
+        state.last_poison_pill_event.as_deref(),
+        Some("guard-crash:crash-1741234567890123456-4242")
+    );
+    assert_eq!(
+        state.events.last().expect("event should exist").event_type,
+        PolicyEventType::PoisonPill
+    );
+
+    // The counter makes the consumption idempotent; without a trust pointer
+    // the replayed reconciliation is pending, not a second poison pill.
+    assert!(matches!(
+        policy
+            .reconcile_release_health(&runtime, &trust, &poison_config)
+            .expect("replayed reconciliation should succeed"),
+        ReconcileOutcome::Pending { .. }
+    ));
+
+    // A second, later crash is a new event.
+    runtime
+        .record_guard_crash("crash-1741234599999999999-4243")
+        .expect("second guard-crash evidence should persist");
+    assert!(matches!(
+        policy
+            .reconcile_release_health(&runtime, &trust, &poison_config)
+            .expect("second crash should reconcile"),
+        ReconcileOutcome::PoisonPill(_)
+    ));
+    let state = policy.load().expect("policy should reload");
+    assert_eq!(
+        state.last_poison_pill_event.as_deref(),
+        Some("guard-crash:crash-1741234599999999999-4243")
+    );
+}
+
 #[test]
 fn operator_force_graduate_and_force_revert_are_durable() {
     let directory = tempfile::tempdir().expect("temporary directory");

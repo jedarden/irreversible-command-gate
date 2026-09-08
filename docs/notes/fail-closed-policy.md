@@ -13,9 +13,12 @@ commands, defaults, alerting, and emergency procedures, use the
 - An in-process engine/pack-loading failure is allowed in Fail-Open and denied
   as `pack=fail-closed, pattern=guard-crash` in Fail-Closed.
 - `GuardLifecycle` persists a run marker before hook/wrapper work. A stale
-  marker on the next invocation records one crash and applies the durable
-  policy. This is the available process-disappearance evidence in the current
-  per-invocation architecture.
+  marker on the next invocation records one crash in the health store and one
+  guard-crash evidence counter in the operational state store; `icg policy
+  reconcile` turns that evidence into the poison-pill policy event. This is
+  the available process-disappearance evidence in the current per-invocation
+  architecture, and the guarded invocation never writes the policy to record
+  it (irrevers-3e6c6fde).
 - A harness must still deny process errors, timeouts, missing output, and
   malformed output if those failures occur outside the process's response
   boundary.
@@ -41,7 +44,9 @@ than 1,000, and no concerning deviation. Three unique eligible releases are
 required by default to commit Fail-Closed. Release references are counted at
 most once.
 
-The policy consumes rollback evidence in this order:
+The policy consumes rollback and recovered guard-crash evidence in this
+order, both as durable counters in the operational state store that make
+repeated reconciliation idempotent:
 
 ```text
 release-bound evaluations

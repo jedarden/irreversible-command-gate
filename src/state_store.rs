@@ -400,6 +400,28 @@ impl RollbackState {
     }
 }
 
+/// Evidence about recovered guard crashes, recorded by the guarded process
+/// itself.
+///
+/// The counter makes consumption idempotent for the operator's policy
+/// reconciliation, which is the only writer of the fail-closed policy and
+/// tracks how far it has read in `last_processed_guard_crash_count`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuardCrashState {
+    /// Identifier of the last recovered crash, as recorded by the health
+    /// store.  Policy reconciliation prefixes it into its event reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_crash_id: Option<String>,
+
+    /// UTC timestamp at which the crash evidence was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_crash_at: Option<String>,
+
+    /// Number of recovered crashes recorded in this state file.
+    #[serde(default)]
+    pub crash_count: u64,
+}
+
 /// Session and production runtime state.
 ///
 /// Older state files containing only `session_id`, `git_pull_timestamp`, and
@@ -439,6 +461,10 @@ pub struct SessionState {
     /// Rollback metadata for the current host.
     #[serde(default)]
     pub rollback: RollbackState,
+
+    /// Recovered guard-crash evidence for the current host.
+    #[serde(default)]
+    pub guard_crash: GuardCrashState,
 }
 
 fn default_schema_version() -> u32 {
@@ -457,6 +483,7 @@ impl SessionState {
             deny_history: Vec::new(),
             release_telemetry: Vec::new(),
             rollback: RollbackState::default(),
+            guard_crash: GuardCrashState::default(),
         }
     }
 
@@ -562,6 +589,13 @@ impl SessionState {
         self.rollback.rollback_count = self.rollback.rollback_count.saturating_add(1);
     }
 
+    /// Record one recovered guard crash by its health-store identifier.
+    pub fn record_guard_crash(&mut self, crash_id: impl Into<String>) {
+        self.guard_crash.last_crash_id = Some(crash_id.into());
+        self.guard_crash.last_crash_at = Some(chrono::Utc::now().to_rfc3339());
+        self.guard_crash.crash_count = self.guard_crash.crash_count.saturating_add(1);
+    }
+
     /// Clear the session's ordering markers and start a fresh session.
     ///
     /// Trust-pointer history, deny history, and rollback metadata are host
@@ -642,7 +676,13 @@ impl StateStore {
     /// Uses /var/cache/icg/ for operational state (writable by hook identity).
     /// This is separate from security-critical artifacts in /etc/icg/.
     /// See docs/plan/plan.md Architecture 'Deploy location'.
+    ///
+    /// `ICG_STATE_PATH` relocates the store the same way `ICG_HEALTH_PATH`
+    /// relocates health state; it is operational state, never a policy path.
     pub fn default_path() -> Result<PathBuf> {
+        if let Some(path) = std::env::var_os("ICG_STATE_PATH").filter(|path| !path.is_empty()) {
+            return Ok(PathBuf::from(path));
+        }
         Ok(PathBuf::from("/var/cache/icg/session-state.json"))
     }
 
@@ -1070,6 +1110,21 @@ impl StateStore {
     pub fn clear_last_rollback(&self) -> Result<()> {
         self.update(|state| state.rollback.clear_last_rollback())?;
         Ok(())
+    }
+
+    /// Record one recovered guard crash and return the resulting state.
+    ///
+    /// This is the guarded process's own write: crash evidence belongs to the
+    /// operational state it owns, and only policy reconciliation -- an
+    /// operator action -- turns it into a fail-closed policy event.
+    pub fn record_guard_crash(&self, crash_id: impl Into<String>) -> Result<GuardCrashState> {
+        let state = self.update(|state| state.record_guard_crash(crash_id))?;
+        Ok(state.guard_crash)
+    }
+
+    /// Load recovered guard-crash evidence.
+    pub fn guard_crash_state(&self) -> Result<GuardCrashState> {
+        Ok(self.load()?.guard_crash)
     }
 }
 
