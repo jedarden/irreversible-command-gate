@@ -9,6 +9,7 @@ pub mod documented_commands;
 pub mod emergency_bypass;
 pub mod engine;
 pub mod fail_closed;
+pub mod github_workflows;
 pub mod health;
 pub mod health_server;
 pub mod metrics;
