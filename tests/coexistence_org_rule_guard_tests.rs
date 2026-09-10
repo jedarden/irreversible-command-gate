@@ -388,6 +388,107 @@ fn coexistence_edit_tool_use_does_not_flag_non_workflows_path() {
     );
 }
 
+/// False-positive fixtures from irrevers-61a08562's path-matcher test table:
+/// paths that merely contain the substring "workflows" outside `.github`,
+/// and sibling directories under `.github` that look like but are not
+/// `.github/workflows`. These must never be flagged by the hook detection,
+/// through the same PreToolUse front-door used by the matching-path tests
+/// above (coexistence_write_tool_use_flags_github_workflows_path and
+/// coexistence_edit_tool_use_flags_github_workflows_path).
+const WORKFLOWS_LOOKALIKE_PATHS: &[&str] = &[
+    "src/workflows/foo.yml",
+    "workflows/foo.yml",
+    ".github/workflows-extra/foo.yml",
+    ".github/workflows-archive/old.yml",
+    ".github/workflows2/foo.yml",
+    "docs/my-workflows-notes.md",
+    "scripts/workflows_helper.py",
+    ".github/ISSUE_TEMPLATE/bug.md",
+    ".github/dependabot.yml",
+];
+
+#[test]
+fn coexistence_write_tool_use_does_not_flag_workflows_lookalike_paths() {
+    let engine = load_image_tag_engine();
+
+    for file_path in WORKFLOWS_LOOKALIKE_PATHS {
+        let input = PreToolUseInput {
+            tool_name: "Write".to_string(),
+            tool_input: ToolInput {
+                command: None,
+                file_path: Some(file_path.to_string()),
+                content: Some("name: ci\n".to_string()),
+                old_string: None,
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+
+        let source = match Engine::input_source_from_pre_tool_use(input)
+            .expect("Write tool_use event should convert to an InputSource")
+            .expect("Write is a known tool and must produce an InputSource")
+        {
+            InputSource::Content(source) => source,
+            other => {
+                panic!("expected InputSource::Content for a Write tool_use event, got {other:?}")
+            }
+        };
+
+        let result = engine.evaluate_content(&source);
+
+        assert!(
+            matches!(result, CheckResult::Allowed),
+            "Expected a Write tool_use event targeting lookalike path {file_path} to NOT be \
+             flagged by the hook detection, got {result:?}."
+        );
+    }
+}
+
+#[test]
+fn coexistence_edit_tool_use_does_not_flag_workflows_lookalike_paths() {
+    let engine = load_image_tag_engine();
+
+    for file_path in WORKFLOWS_LOOKALIKE_PATHS {
+        let input = PreToolUseInput {
+            tool_name: "Edit".to_string(),
+            tool_input: ToolInput {
+                command: None,
+                file_path: Some(file_path.to_string()),
+                content: None,
+                old_string: Some("push".to_string()),
+                new_string: Some("pull_request".to_string()),
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+
+        let source = match Engine::input_source_from_pre_tool_use(input)
+            .expect("Edit tool_use event should convert to an InputSource")
+            .expect("Edit is a known tool and must produce an InputSource")
+        {
+            InputSource::Content(source) => source,
+            other => {
+                panic!("expected InputSource::Content for an Edit tool_use event, got {other:?}")
+            }
+        };
+
+        let result = engine.evaluate_content(&source);
+
+        assert!(
+            matches!(result, CheckResult::Allowed),
+            "Expected an Edit tool_use event targeting lookalike path {file_path} to NOT be \
+             flagged by the hook detection, got {result:?}."
+        );
+    }
+}
+
 #[test]
 fn coexistence_non_yaml_files_consistent_allow() {
     // This test verifies consistent ALLOW behavior for non-YAML files.
