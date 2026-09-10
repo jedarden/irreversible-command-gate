@@ -2344,6 +2344,18 @@ impl Engine {
     }
 
     fn evaluate_content_inner(&self, source: &ContentSource) -> CheckResult {
+        if crate::github_workflows::is_github_workflows_path(source.file_path()) {
+            return CheckResult::Denied {
+                reason: "Writes to .github/workflows/ are blocked: workflow definitions grant \
+                         arbitrary CI privileges and must not be modified by an automated \
+                         write/edit. Ask a human maintainer to make this change via a reviewed \
+                         pull request instead."
+                    .to_string(),
+                pack_id: "github-workflows".to_string(),
+                pattern_id: "github-workflows-protected".to_string(),
+            };
+        }
+
         if self.should_fail_open() {
             return if self.should_fail_closed() {
                 CheckResult::Denied {
@@ -3842,6 +3854,51 @@ mod tests {
 
         let result = engine.evaluate_content(&source);
         assert_eq!(result, CheckResult::Allowed);
+    }
+
+    #[test]
+    fn test_evaluate_content_denies_github_workflows_write() {
+        let engine = default_engine();
+        for file_path in [
+            ".github/workflows/ci.yml",
+            "/home/repo/.github/workflows/ci.yml",
+            "./.github/workflows/ci.yml",
+        ] {
+            let source = ContentSource::Write {
+                file_path: file_path.to_string(),
+                content: "name: ci".to_string(),
+            };
+
+            match engine.evaluate_content(&source) {
+                CheckResult::Denied {
+                    pack_id,
+                    pattern_id,
+                    reason,
+                } => {
+                    assert_eq!(pack_id, "github-workflows");
+                    assert_eq!(pattern_id, "github-workflows-protected");
+                    assert!(!reason.is_empty());
+                }
+                other => panic!("expected Denied for {file_path}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_evaluate_content_allows_non_github_workflows_write() {
+        let engine = default_engine();
+        for file_path in ["src/workflows/foo.yml", ".github/workflows-extra/foo.yml"] {
+            let source = ContentSource::Write {
+                file_path: file_path.to_string(),
+                content: "name: ci".to_string(),
+            };
+
+            assert_eq!(
+                engine.evaluate_content(&source),
+                CheckResult::Allowed,
+                "expected Allowed for {file_path}"
+            );
+        }
     }
 
     #[test]
