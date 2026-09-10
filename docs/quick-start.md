@@ -65,8 +65,8 @@ agent*), `--pack-source <dir>` for an offline pack set, `--uninstall`.
 ### Option 1: Release binary, by hand
 
 ```bash
-# Release binary and packs (v0.1.8, linux x86_64)
-BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.8
+# Release binary and packs (v0.1.9, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.9
 curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
 sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
