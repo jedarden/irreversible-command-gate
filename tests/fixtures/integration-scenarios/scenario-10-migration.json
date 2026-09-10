@@ -26,9 +26,7 @@
       "icg_denies": false,
       "icg_pack": null,
       "icg_pattern": null
-    }
-  ],
-  "org_guard_only_probes": [
+    },
     {
       "name": "GitHub Actions workflow",
       "tool_name": "Write",
@@ -37,8 +35,12 @@
         "content": "name: CI\non: [push]\n"
       },
       "org_guard_denies": true,
-      "icg_denies": false
-    },
+      "icg_denies": true,
+      "icg_pack": "github-workflows",
+      "icg_pattern": "github-workflows-protected"
+    }
+  ],
+  "org_guard_only_probes": [
     {
       "name": "Kubernetes Job manifest",
       "tool_name": "Write",

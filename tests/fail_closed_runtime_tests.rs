@@ -22,6 +22,26 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// A per-test temporary directory that already satisfies the guard's own
+/// artifact-directory security invariant.
+///
+/// `tempfile::tempdir()` inherits the ambient umask: in a umask-0000 CI
+/// container it lands at 0777, and any test pointing `policy reconcile` at a
+/// path inside it dies in `verify_artifact_directory_security` before the
+/// fail-closed behavior under test is reached (cargo-remote-68w6b,
+/// 2026-09-10: both reconcile tests failed exactly there while the rest of
+/// the suite passed). Unlike the ambient `/etc/icg` the skip helper below
+/// works around, this fixture is ours, so fix it instead of skipping: 0700
+/// keeps the reconcile assertions running in every environment. Reproduced
+/// locally by running this suite under `umask 0000`: the developer-default
+/// 022 umask masks the bug everywhere except CI.
+fn secure_tempdir() -> TempDir {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("tempdir permissions should be settable");
+    directory
+}
+
 /// The hook resolves its trust directory to a hardcoded `/etc/icg`
 /// (`TrustPointerStore::default_path`) with no override, so these tests cannot
 /// isolate it the way they isolate health, policy and telemetry paths.  When
@@ -130,7 +150,7 @@ fn run_hook_with_policy(
 #[test]
 fn recovered_guard_crash_records_evidence_and_reconciles_into_policy() {
     let _lock = env_lock();
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = secure_tempdir();
     let input = br#"{"toolName":"Bash","toolInput":{"command":"printf safe"}}"#;
     let output = run_hook(&directory, None, input);
     assert!(
@@ -470,7 +490,7 @@ fn operator_policy_commands_manage_the_durable_policy() {
         return;
     }
     let _lock = env_lock();
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let directory = secure_tempdir();
     let policy_path = directory.path().join("fail-closed-policy.json");
 
     let policy = PolicyStore::new(&policy_path);

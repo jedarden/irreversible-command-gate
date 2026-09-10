@@ -108,9 +108,7 @@ fn hook_denies_edit_to_github_workflows_path() {
         denied["hookSpecificOutput"]["permissionDecision"], "deny",
         "expected deny for .github/workflows/ci.yml, got {denied:?}"
     );
-    assert!(denied["hookSpecificOutput"]
-        .get("updatedInput")
-        .is_none());
+    assert!(denied["hookSpecificOutput"].get("updatedInput").is_none());
 }
 
 /// False-positive fixtures from irrevers-61a08562's path-matcher test table:
@@ -126,6 +124,8 @@ const LOOKALIKE_PATHS: &[&str] = &[
     "scripts/workflows_helper.py",
     ".github/ISSUE_TEMPLATE/bug.md",
     ".github/dependabot.yml",
+    // the .github directory itself (unit fn does_not_match_dot_github_alone)
+    ".github",
 ];
 
 #[test]

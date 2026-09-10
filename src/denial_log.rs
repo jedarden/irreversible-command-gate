@@ -1244,7 +1244,7 @@ mod tests {
                 "Test".to_string(),
                 DeniedInput::Command {
                     command: format!("test {}", i),
-                    segments: vec![format!("test"), i.to_string()],
+                    segments: vec!["test".to_string(), i.to_string()],
                     working_dir: None,
                 },
             )
