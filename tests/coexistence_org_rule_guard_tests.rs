@@ -8,13 +8,15 @@
 //! - PASS criterion: CONSISTENT verdicts (both deny, or both allow)
 //! - FAIL criterion: DIVERGENT verdict (one denies, the other does not)
 //! - Expected behavior: Both systems fire on the same :latest violation → redundant double-deny
-//! - Test scope: ONLY rule 3 (:latest image tags in .yaml writes) is covered by both systems
+//! - Test scope: rule 3 (:latest image tags in .yaml writes) and rule 1 (.github/workflows
+//!   writes) are both covered by icg; the rest are probed only to document expected divergence
 //!
-//! Rules 1-2 (.github/workflows, kind:Job/CronJob) and rule 4 (mutating kubectl) legitimately
-//! diverge because icg doesn't absorb them. Rule 5 (credential values) is only partially
-//! absorbed (Bash channel only). This test ONLY probes rule 3 overlap.
+//! Rule 2 (kind:Job/CronJob) and rule 4 (mutating kubectl) legitimately diverge because icg
+//! doesn't absorb them. Rule 5 (credential values) is only partially absorbed (Bash channel
+//! only). Rule 1 (.github/workflows) is now absorbed by icg as well (see
+//! coexistence_scope_limited_to_rule_3_overlap_only).
 
-use icg::engine::{CheckResult, ContentSource, Engine};
+use icg::engine::{CheckResult, ContentSource, Engine, InputSource, PreToolUseInput, ToolInput};
 use icg::rule_pack::load_pack;
 
 fn load_image_tag_engine() -> Engine {
@@ -125,7 +127,7 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
     // This test documents the COEXISTENCE SCOPE and verifies we don't probe beyond it.
     //
     // Rule 3 (:latest in .yaml) is the ONLY rule covered by BOTH systems:
-    // - Rule 1 (.github/workflows) → org-rule-guard.py only, icg doesn't absorb
+    // - Rule 1 (.github/workflows) → now absorbed by icg (both systems deny)
     // - Rule 2 (kind:Job/CronJob) → org-rule-guard.py only, icg doesn't absorb
     // - Rule 3 (:latest in .yaml) → BOTH systems, this test's focus
     // - Rule 4 (mutating kubectl) → org-rule-guard.py only, PERMANENTLY not absorbed (plan.md)
@@ -143,10 +145,10 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
         file_path: ".github/workflows/ci.yaml".to_string(),
         content: "name: CI\non: [push]\n".to_string(),
     });
-    // icg allows this (no pack covers .github/workflows yet)
-    // org-rule-guard.py rule 1 denies this
-    // This DIVERGENCE is EXPECTED (not absorbed) and NOT a coexistence test failure
-    assert!(matches!(result, CheckResult::Allowed));
+    // icg now denies this (github_workflows guard is absorbed into evaluate_content_inner)
+    // org-rule-guard.py rule 1 also denies this
+    // Both deny → consistent, PASS
+    assert!(matches!(result, CheckResult::Denied { .. }));
 
     // Rule 2: kind: Job / kind: CronJob
     let result = engine.evaluate_content(&ContentSource::Write {
@@ -174,6 +176,65 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
     // Write/Edit path: org-rule-guard.py still handles it
     // Bash path: absorbed by icg's credential-packs
     // Partial divergence is EXPECTED and NOT a coexistence test failure
+}
+
+#[test]
+fn coexistence_write_tool_use_flags_github_workflows_path() {
+    // This test drives the hook detection built in irrevers-520cbfa5 through
+    // the actual PreToolUse front-end (PreToolUseInput -> InputSource ->
+    // evaluate_content), constructing a Write tool_use event whose file_path
+    // is under .github/workflows/**, rather than building a ContentSource
+    // directly. This is the shape a real Claude Code Write tool call takes.
+
+    let engine = load_image_tag_engine();
+
+    let input = PreToolUseInput {
+        tool_name: "Write".to_string(),
+        tool_input: ToolInput {
+            command: None,
+            file_path: Some(".github/workflows/deploy.yml".to_string()),
+            content: Some("name: Deploy\non: [push]\n".to_string()),
+            old_string: None,
+            new_string: None,
+            encoding: None,
+            mime_type: None,
+        },
+        id: None,
+        timestamp: None,
+        session_id: None,
+    };
+
+    let source = match Engine::input_source_from_pre_tool_use(input)
+        .expect("Write tool_use event should convert to an InputSource")
+        .expect("Write is a known tool and must produce an InputSource")
+    {
+        InputSource::Content(source) => source,
+        other => panic!("expected InputSource::Content for a Write tool_use event, got {other:?}"),
+    };
+
+    let result = engine.evaluate_content(&source);
+
+    match result {
+        CheckResult::Denied {
+            pack_id,
+            pattern_id,
+            reason,
+        } => {
+            assert_eq!(
+                pack_id, "github-workflows",
+                "denial must come from the github-workflows guard"
+            );
+            assert_eq!(pattern_id, "github-workflows-protected");
+            assert!(
+                reason.contains(".github/workflows"),
+                "deny reason should mention .github/workflows, got: {reason}"
+            );
+        }
+        other => panic!(
+            "Expected a Write tool_use event targeting .github/workflows/deploy.yml to be \
+             flagged (denied) by the hook detection, got {other:?}."
+        ),
+    }
 }
 
 #[test]
