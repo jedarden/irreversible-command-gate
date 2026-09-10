@@ -39,6 +39,66 @@ pub fn is_github_workflows_path(path: &str) -> bool {
         .any(|pair| component_eq(&pair[0], ".github") && component_eq(&pair[1], "workflows"))
 }
 
+/// Human-readable explanation for why a `.github/workflows/**` path is
+/// protected, shared by [`detect`] and any caller that needs the same wording
+/// without going through the detection call.
+pub const PROTECTED_REASON: &str = "Writes to .github/workflows/ are blocked: workflow \
+    definitions grant arbitrary CI privileges and must not be modified by an automated \
+    write/edit. Ask a human maintainer to make this change via a reviewed pull request \
+    instead.";
+
+/// Structured outcome of checking a Write/Edit target path against the
+/// `.github/workflows/**` guard.
+///
+/// This is the shape a downstream redirect-message step is expected to
+/// consume, so it is a named enum rather than `Option<String>` or a bare
+/// `bool`: a non-match is always the explicit [`Detection::NoMatch`] variant,
+/// never `None`/`null` with no further shape, and a match always carries both
+/// the exact path string that triggered it (`matched_path`) and a
+/// human-readable `reason` -- callers never need to re-derive either from the
+/// input path or re-run [`is_github_workflows_path`] to explain the denial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Detection {
+    /// `path` is under `.github/workflows/`.
+    Matched {
+        /// The exact path string that was checked and matched. This is the
+        /// caller-supplied path, not a canonicalized or re-normalized form,
+        /// so a redirect message can quote back exactly what the tool call
+        /// targeted.
+        matched_path: String,
+        /// Human-readable explanation of why this path is protected.
+        reason: String,
+    },
+    /// `path` is not under `.github/workflows/`.
+    NoMatch,
+}
+
+impl Detection {
+    /// Does this detection represent a match?
+    pub fn is_match(&self) -> bool {
+        matches!(self, Detection::Matched { .. })
+    }
+}
+
+/// Check `path` against the `.github/workflows/**` guard and return a
+/// structured [`Detection`] describing the outcome.
+///
+/// This wraps [`is_github_workflows_path`] -- the underlying predicate is
+/// still the single source of truth for the matching logic -- and adds the
+/// matched path and reason a redirect-message step needs, so callers that
+/// want the structured result don't reimplement it around the bare
+/// predicate.
+pub fn detect(path: &str) -> Detection {
+    if is_github_workflows_path(path) {
+        Detection::Matched {
+            matched_path: path.to_string(),
+            reason: PROTECTED_REASON.to_string(),
+        }
+    } else {
+        Detection::NoMatch
+    }
+}
+
 /// Lexically normalize `path` into a flat list of its `Normal` components.
 ///
 /// `RootDir` and path prefixes (drive letters, UNC prefixes) only anchor the
@@ -190,5 +250,35 @@ mod tests {
     #[test]
     fn matches_trailing_slash_on_workflows_directory() {
         assert!(is_github_workflows_path(".github/workflows/"));
+    }
+
+    #[test]
+    fn detect_returns_matched_with_path_and_reason() {
+        match detect(".github/workflows/ci.yml") {
+            Detection::Matched {
+                matched_path,
+                reason,
+            } => {
+                assert_eq!(matched_path, ".github/workflows/ci.yml");
+                assert_eq!(reason, PROTECTED_REASON);
+                assert!(!reason.is_empty());
+            }
+            Detection::NoMatch => panic!("expected Matched for a .github/workflows/ path"),
+        }
+    }
+
+    #[test]
+    fn detect_returns_no_match_for_unrelated_path() {
+        assert_eq!(detect("src/workflows/foo.yml"), Detection::NoMatch);
+        assert_eq!(
+            detect(".github/workflows-extra/foo.yml"),
+            Detection::NoMatch
+        );
+    }
+
+    #[test]
+    fn detect_is_match_reflects_variant() {
+        assert!(detect(".github/workflows/ci.yml").is_match());
+        assert!(!detect("README.md").is_match());
     }
 }

@@ -2344,13 +2344,11 @@ impl Engine {
     }
 
     fn evaluate_content_inner(&self, source: &ContentSource) -> CheckResult {
-        if crate::github_workflows::is_github_workflows_path(source.file_path()) {
+        if let crate::github_workflows::Detection::Matched { reason, .. } =
+            crate::github_workflows::detect(source.file_path())
+        {
             return CheckResult::Denied {
-                reason: "Writes to .github/workflows/ are blocked: workflow definitions grant \
-                         arbitrary CI privileges and must not be modified by an automated \
-                         write/edit. Ask a human maintainer to make this change via a reviewed \
-                         pull request instead."
-                    .to_string(),
+                reason,
                 pack_id: "github-workflows".to_string(),
                 pattern_id: "github-workflows-protected".to_string(),
             };
