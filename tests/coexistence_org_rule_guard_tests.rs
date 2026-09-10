@@ -390,8 +390,9 @@ fn coexistence_edit_tool_use_does_not_flag_non_workflows_path() {
 
 /// False-positive fixtures from irrevers-61a08562's path-matcher test table:
 /// paths that merely contain the substring "workflows" outside `.github`,
-/// and sibling directories under `.github` that look like but are not
-/// `.github/workflows`. These must never be flagged by the hook detection,
+/// sibling directories under `.github` that look like but are not
+/// `.github/workflows`, and the bare `.github` directory itself. These must
+/// never be flagged by the hook detection,
 /// through the same PreToolUse front-door used by the matching-path tests
 /// above (coexistence_write_tool_use_flags_github_workflows_path and
 /// coexistence_edit_tool_use_flags_github_workflows_path).
@@ -405,6 +406,8 @@ const WORKFLOWS_LOOKALIKE_PATHS: &[&str] = &[
     "scripts/workflows_helper.py",
     ".github/ISSUE_TEMPLATE/bug.md",
     ".github/dependabot.yml",
+    // the .github directory itself (unit fn does_not_match_dot_github_alone)
+    ".github",
 ];
 
 #[test]
