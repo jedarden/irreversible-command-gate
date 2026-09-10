@@ -113,18 +113,56 @@ fn hook_denies_edit_to_github_workflows_path() {
         .is_none());
 }
 
+/// False-positive fixtures from irrevers-61a08562's path-matcher test table:
+/// paths that merely contain the substring "workflows" outside `.github`,
+/// and sibling directories under `.github` that look like but are not
+/// `.github/workflows`. These must never be flagged by either tool.
+const LOOKALIKE_PATHS: &[&str] = &[
+    "src/workflows/foo.yml",
+    ".github/workflows-extra/foo.yml",
+    ".github/workflows-archive/old.yml",
+    ".github/workflows2/foo.yml",
+    "docs/my-workflows-notes.md",
+    "scripts/workflows_helper.py",
+    ".github/ISSUE_TEMPLATE/bug.md",
+    ".github/dependabot.yml",
+];
+
 #[test]
 fn hook_allows_write_to_lookalike_paths_outside_dot_github_workflows() {
     let temp = tempdir().expect("temporary directory should be created");
     let pack_path = empty_pack_path(temp.path());
 
-    for file_path in ["src/workflows/foo.yml", ".github/workflows-extra/foo.yml"] {
+    for file_path in LOOKALIKE_PATHS {
         let allowed = run_hook_for_tool(
             &pack_path,
             "Write",
             json!({
                 "filePath": file_path,
                 "content": "name: ci\n",
+            }),
+        );
+
+        assert_eq!(
+            allowed["hookSpecificOutput"]["permissionDecision"], "allow",
+            "expected allow for {file_path}, got {allowed:?}"
+        );
+    }
+}
+
+#[test]
+fn hook_allows_edit_to_lookalike_paths_outside_dot_github_workflows() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    for file_path in LOOKALIKE_PATHS {
+        let allowed = run_hook_for_tool(
+            &pack_path,
+            "Edit",
+            json!({
+                "file_path": file_path,
+                "old_string": "push",
+                "new_string": "pull_request",
             }),
         );
 
