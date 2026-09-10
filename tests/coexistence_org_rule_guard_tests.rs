@@ -283,6 +283,66 @@ fn coexistence_write_tool_use_does_not_flag_non_workflows_path() {
 }
 
 #[test]
+fn coexistence_edit_tool_use_flags_github_workflows_path() {
+    // This test drives the hook detection built in irrevers-520cbfa5 through
+    // the actual PreToolUse front-end (PreToolUseInput -> InputSource ->
+    // evaluate_content), constructing an Edit tool_use event whose file_path
+    // is under .github/workflows/**, rather than building a ContentSource
+    // directly. This complements coexistence_write_tool_use_flags_github_workflows_path,
+    // which covers the Write tool.
+
+    let engine = load_image_tag_engine();
+
+    let input = PreToolUseInput {
+        tool_name: "Edit".to_string(),
+        tool_input: ToolInput {
+            command: None,
+            file_path: Some(".github/workflows/deploy.yml".to_string()),
+            content: None,
+            old_string: Some("on: [push]\n".to_string()),
+            new_string: Some("on: [push, pull_request]\n".to_string()),
+            encoding: None,
+            mime_type: None,
+        },
+        id: None,
+        timestamp: None,
+        session_id: None,
+    };
+
+    let source = match Engine::input_source_from_pre_tool_use(input)
+        .expect("Edit tool_use event should convert to an InputSource")
+        .expect("Edit is a known tool and must produce an InputSource")
+    {
+        InputSource::Content(source) => source,
+        other => panic!("expected InputSource::Content for an Edit tool_use event, got {other:?}"),
+    };
+
+    let result = engine.evaluate_content(&source);
+
+    match result {
+        CheckResult::Denied {
+            pack_id,
+            pattern_id,
+            reason,
+        } => {
+            assert_eq!(
+                pack_id, "github-workflows",
+                "denial must come from the github-workflows guard"
+            );
+            assert_eq!(pattern_id, "github-workflows-protected");
+            assert!(
+                reason.contains(".github/workflows"),
+                "deny reason should mention .github/workflows, got: {reason}"
+            );
+        }
+        other => panic!(
+            "Expected an Edit tool_use event targeting .github/workflows/deploy.yml to be \
+             flagged (denied) by the hook detection, got {other:?}."
+        ),
+    }
+}
+
+#[test]
 fn coexistence_non_yaml_files_consistent_allow() {
     // This test verifies consistent ALLOW behavior for non-YAML files.
     // Both systems allow :latest in non-YAML contexts (markdown, python, etc.)
