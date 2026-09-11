@@ -270,7 +270,10 @@ history, the HEAD tree, and the bead store. All nine cited commits resolve
 close timestamps match the bead store to the second (02:07:01Z, 02:07:02Z,
 03:21:52Z, 05:37:51Z, 05:42:49Z, 02:33:11Z, 03:28:12Z, 03:06:08Z, 20:31:16Z,
 02:10:01Z); no commit message names irrevers-ffdc924b or irrevers-9007792b,
-as stated. All cited test names and code anchors resolve at HEAD
+as stated (re-scoped at re-verification 2026-09-11, irrevers-d364e844: the
+docs commit `8ae399c` carrying the second-pass note below names 9007792b in
+its body, so the unscoped phrasing is not literally true at HEAD — no commit
+from the beads' own 2026-08-21 work window names either ID). All cited test names and code anchors resolve at HEAD
 (`tests/fail_closed_runtime_tests.rs:151/328/406/486/553`,
 `src/main.rs:2539`, `src/state_store.rs` `record_guard_crash` +
 `ICG_STATE_PATH`, `src/denial_log.rs` `operational_log_path`, the
@@ -312,7 +315,9 @@ commit bodies carry everything attributed to them; `Cargo.toml` is 0.1.5 at
 `c38b0cd`; `859e19e` is the immediate graph child of `3f0f00d` and parent of
 `a750033`; `-p`/`--state-store-path`/`--trust-pointer-path` exist on
 `PolicySubcommand::Reconcile`; no commit message names irrevers-ffdc924b or
-irrevers-9007792b. Two corrections in this pass: `collect_snapshot` is
+irrevers-9007792b (written before this note's own commit existed — `8ae399c`
+is the one message naming 9007792b; see the scope note in the first-pass
+audit above). Two corrections in this pass: `collect_snapshot` is
 `src/monitoring.rs:145`, not `src/main.rs` (only `run_monitor` is), and the
 1517a263 re-baseline archive is on **codinghome** (the bead's "this host",
 where `/var/cache/icg/denials.jsonl.pre-rebaseline-20260907` exists), not
