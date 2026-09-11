@@ -30,8 +30,8 @@ Welcome to the irreversible command gate (icg)! This guide provides a structured
 If you haven't installed icg yet, follow the Quick Start Guide:
 
 ```bash
-# Release binary and packs (v0.1.28, linux x86_64)
-BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.28
+# Release binary and packs (v0.1.29, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.29
 curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
 sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
