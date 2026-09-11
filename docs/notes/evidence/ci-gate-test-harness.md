@@ -19,7 +19,9 @@ corrections came out of the audit and are applied in place: the
 `regression_suite_scope_tests` name-to-line mapping.
 
 Second independent pass (irrevers-423f1be6, 2026-09-11): the same
-re-resolution re-run — all 11 SHAs (8 this repo, 3 declarative-config), all
+re-resolution re-run — all 12 SHAs (9 this repo, 3 declarative-config; the
+original "11 SHAs (8 this repo)" undercounted by one and was corrected in
+place by the pass below), all
 close-timestamp deltas, and all 16 test/line citations verified exact; five
 suites re-run green (27/27, exit 0) and both repros re-executed with
 identical output (8 cases, 5 command-mode / 3 content-mode; exit 2 + REQUIRED
@@ -27,6 +29,24 @@ identical output (8 cases, 5 command-mode / 3 content-mode; exit 2 + REQUIRED
 applied in place: the `e1aab5a` skip-category parenthetical — only two of the
 13 rules that cannot yield a deny case actually ship a non-deny channel; the
 other 11 are predicate checks or the secrets pack's unconditional match.
+
+Third independent pass (irrevers-67412329, 2026-09-11, at HEAD f35591a):
+every citation re-resolved once more — all 12 distinct SHAs (9 this repo,
+3 declarative-config, after a fresh declarative-config fetch), all
+close-timestamp deltas (b4b37bf0 03:40:26.586Z, b0a453b2 13:33:59.747Z,
+f61efd80 04:05:57.004Z, 29a9131c 13:48:19.481Z, ed77224f 19:07:41.978Z, plus
+the 7684fa60/69594753/55c1914e children), and all 16 test/line citations
+exact. The five focused suites re-run green (27/27, exit 0) and both live
+gate reproductions re-executed with identical results (8 cases, 5
+command-mode / 3 content-mode; deny→additional_context mutation exits 0 with
+the reasoned skip; coverage-diff exit 2 + REQUIRED → exit 0 justified;
+channel flip → `no_regressions`). The 13-of-26 skip-category arithmetic was
+recounted from `packs/*.json` against `out_of_scope_for_a_deny_suite`: 2
+non-deny-channel + 5 predicate + 6 unconditional (the whole secrets pack —
+it has no `tool_keywords`) = 13 of 26, so the `e1aab5a` parenthetical and
+the correction prose above are both accurate as written. One correction
+applied in place: the second-pass paragraph's SHA count (11 → 12; 8 → 9 in
+this repo). Per-ID verdicts: all five CONFIRMED.
 
 All five beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction. Timestamps are UTC unless
