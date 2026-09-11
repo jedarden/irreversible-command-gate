@@ -281,3 +281,117 @@ fn evaluate_content_denies_every_guarded_path_form_for_both_tools() {
         }
     }
 }
+
+/// The tool_input a Codex `apply_patch` PreToolUse event carries: the patch
+/// text itself, in `command`.
+fn apply_patch_input_for(patch: &str) -> Value {
+    json!({ "command": patch })
+}
+
+/// A multi-file Codex patch that touches `.github/workflows/**` among
+/// ordinary files must deny at the hook boundary, and the `path=` segment
+/// must name the guarded file -- not one of the benign files the same patch
+/// also touches (here including the shared `src/workflows/` lookalike).
+#[test]
+fn hook_denies_multi_file_patch_touching_a_guarded_path() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let patch = "*** Begin Patch\n\
+                 *** Add File: README.md\n\
+                 +hello\n\
+                 *** Update File: src/workflows/foo.yml\n\
+                 @@\n\
+                 -key: old\n\
+                 +key: new\n\
+                 *** Add File: .github/workflows/deploy.yml\n\
+                 +on: push\n\
+                 *** End Patch";
+    let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+    assert_hook_deny(&denied, ".github/workflows/deploy.yml");
+}
+
+/// A multi-file patch of only unguarded paths -- benign files plus the
+/// `src/workflows/` lookalike -- must allow silently at the hook boundary.
+#[test]
+fn hook_allows_multi_file_patch_with_only_unguarded_paths() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let patch = "*** Begin Patch\n\
+                 *** Add File: README.md\n\
+                 +hello\n\
+                 *** Add File: src/workflows/foo.yml\n\
+                 +steps: []\n\
+                 *** Update File: .github/workflows-extra/other.yml\n\
+                 @@\n\
+                 -key: old\n\
+                 +key: new\n\
+                 *** End Patch";
+    let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+    assert_hook_allow(&allowed, "a multi-file unguarded patch");
+}
+
+/// A truncated patch (Begin marker present, End marker lost to a cut-off
+/// generation) is parsed as far as it goes: the guarded header already seen
+/// names a file the patch was about to touch, so it still denies. This pins
+/// the defensive-parse contract at the hook boundary -- partial input is
+/// salvaged, never a silent pass for the guarded path.
+#[test]
+fn hook_denies_truncated_patch_whose_parsed_header_is_guarded() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let truncated = "*** Begin Patch\n*** Update File: .github/workflows/ci.yml\n@@\n-on: push\n";
+    let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(truncated));
+    assert_hook_deny(&denied, ".github/workflows/ci.yml");
+}
+
+/// Input that cannot be parsed as a patch at all must neither panic nor
+/// block: the hook exits successfully with a plain allow, leaving the
+/// unparseable case to the guard's fail-open handling. (`run_hook_for_tool`
+/// asserts the process itself exited with status 0 -- a panic would fail
+/// here before the allow is even checked.)
+#[test]
+fn hook_fails_open_on_unparseable_patch_input() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let allowed = run_hook_for_tool(
+        &pack_path,
+        "apply_patch",
+        apply_patch_input_for("totally not a patch"),
+    );
+    assert_hook_allow(&allowed, "an unparseable patch");
+}
+
+/// Deleting a workflow definition is a touch like editing one: a
+/// `*** Delete File:` header with no hunks still denies.
+#[test]
+fn hook_denies_delete_only_patch_of_a_guarded_file() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let patch = "*** Begin Patch\n*** Delete File: .github/workflows/ci.yml\n*** End Patch";
+    let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+    assert_hook_deny(&denied, ".github/workflows/ci.yml");
+}
+
+/// Moving a workflow file to an unguarded path must not smuggle it past the
+/// guard: the move's source path is checked alongside the destination, so
+/// the deny names the guarded path it abandons.
+#[test]
+fn hook_denies_patch_moving_a_guarded_file_out_of_workflows() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let patch = "*** Begin Patch\n\
+                 *** Update File: .github/workflows/ci.yml\n\
+                 *** Move to: ci-backup.yml\n\
+                 @@\n\
+                 -on: push\n\
+                 +on: pull_request\n\
+                 *** End Patch";
+    let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+    assert_hook_deny(&denied, ".github/workflows/ci.yml");
+}

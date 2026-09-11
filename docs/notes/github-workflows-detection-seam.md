@@ -23,6 +23,19 @@ front-end reaches it via stdin JSON → `input_source_from_pre_tool_use` →
 `evaluate_content`; `tests/github_workflows_hook_integration_tests.rs` drives
 that exact path through the compiled binary.
 
+Codex `apply_patch` events reach the same `detect` call. `normalize_apply_patch`
+extracts one content source per file the patch touches — every `*** Add File:` /
+`*** Update File:` / `*** Delete File:` header, and both ends of a `*** Move to:`
+(the source path stays its own entry, so moving a workflow file to an unguarded
+path cannot smuggle it past the guard). A single-file patch evaluates as one
+`Content`; a multi-file patch becomes a `ContentBatch` that
+`evaluate_content_batch` runs file-by-file through the same
+`evaluate_content_inner`, so a guarded path anywhere in the patch denies with the
+same payload. Parsing is defensive: a truncated patch (Begin marker seen, End
+marker lost) is salvaged as far as it parsed and its headers are still checked,
+while input with no Begin marker or no file header stays `InvalidInput` — the
+hook front-end treats that as unmatched and allows, which is its fail-open path.
+
 ## What the deny payload carries
 
 In-process — the shape a code-level redirect step actually receives — a

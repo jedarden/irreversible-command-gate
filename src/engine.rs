@@ -182,9 +182,18 @@ impl ContentSource {
 /// patch can be checked without applying it or mutating the workspace. A
 /// single patch may contain multiple file headers; callers should evaluate
 /// every returned source.
+///
+/// Parsing is defensive and never panics. Every header form that touches a
+/// file (`*** Add File:`, `*** Update File:`, `*** Delete File:`, and
+/// `*** Move to:`, whose source path is kept as its own entry) contributes a
+/// source, so a patch that touches a guarded path anywhere among many files
+/// is checked on that file. A truncated patch -- `*** Begin Patch` present,
+/// `*** End Patch` lost to a cut-off generation -- is salvaged as far as it
+/// parsed; only input with no Begin marker at all, or with no file header,
+/// is rejected as [`PreToolUseError::InvalidInput`], which callers treat as
+/// unmatched and route to their fail-open handling.
 pub fn normalize_apply_patch(command: &str) -> PreToolUseResult<Vec<ContentSource>> {
     let mut saw_begin = false;
-    let mut saw_end = false;
     let mut files = Vec::new();
     let mut current: Option<(String, String)> = None;
 
@@ -205,7 +214,6 @@ pub fn normalize_apply_patch(command: &str) -> PreToolUseResult<Vec<ContentSourc
 
         if trimmed == "*** End Patch" {
             flush_patch_file(&mut current, &mut files);
-            saw_end = true;
             break;
         }
 
@@ -235,9 +243,19 @@ pub fn normalize_apply_patch(command: &str) -> PreToolUseResult<Vec<ContentSourc
 
         // A move header follows an update header. The destination is the
         // file that Codex will write, so use it for applies_to dispatch.
+        // The source path is still touched too -- after the move it no
+        // longer exists -- so it is flushed as its own entry and checked
+        // like any other header, rather than being overwritten here and
+        // letting a move out of a guarded directory escape the guard.
         if let Some(path) = line.strip_prefix("*** Move to: ") {
-            if let Some((current_path, _)) = current.as_mut() {
-                *current_path = path.trim().to_string();
+            let destination = path.trim().to_string();
+            if let Some((current_path, content)) = current.take() {
+                if current_path == destination {
+                    current = Some((current_path, content));
+                } else {
+                    files.push((current_path, content));
+                    current = Some((destination, String::new()));
+                }
             }
             continue;
         }
@@ -265,7 +283,18 @@ pub fn normalize_apply_patch(command: &str) -> PreToolUseResult<Vec<ContentSourc
         }
     }
 
-    if !saw_begin || !saw_end {
+    // Malformed input is parsed defensively: a patch with no `*** Begin
+    // Patch` marker at all is not patch text, so it stays InvalidInput and
+    // the caller's fail-open handling applies. A *truncated* patch (Begin
+    // seen, End lost to a cut-off generation or stream) is salvageable --
+    // every file header already seen names a file the patch was about to
+    // touch, so those entries are returned and checked like any complete
+    // patch rather than discarded into the fail-open path. The final flush
+    // is what salvages the header still open when the End marker never
+    // arrives; for a complete patch it is a no-op (End already flushed).
+    flush_patch_file(&mut current, &mut files);
+
+    if !saw_begin {
         return Err(PreToolUseError::InvalidInput {
             tool: "apply_patch".to_string(),
             reason: "patch must contain *** Begin Patch and *** End Patch".to_string(),
@@ -3935,6 +3964,307 @@ mod tests {
                 engine.evaluate_content(&source),
                 CheckResult::Allowed,
                 "expected Allowed for {file_path}"
+            );
+        }
+    }
+
+    /// Build the PreToolUse payload a Codex `apply_patch` call sends.
+    fn apply_patch_input(patch: &str) -> PreToolUseInput {
+        PreToolUseInput {
+            tool_name: "apply_patch".to_string(),
+            tool_input: ToolInput {
+                command: Some(patch.to_string()),
+                file_path: None,
+                content: None,
+                old_string: None,
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        }
+    }
+
+    /// Pin the full structured workflows denial: the shared PROTECTED_REASON
+    /// wording, the guard's pack/pattern attribution, and the exact guarded
+    /// path as matched_path.
+    fn assert_workflows_denial(result: CheckResult, expected_path: &str) {
+        match result {
+            CheckResult::Denied {
+                reason,
+                pack_id,
+                pattern_id,
+                matched_path,
+            } => {
+                assert_eq!(pack_id, "github-workflows");
+                assert_eq!(pattern_id, "github-workflows-protected");
+                assert_eq!(reason, crate::github_workflows::PROTECTED_REASON);
+                assert_eq!(
+                    matched_path.as_deref(),
+                    Some(expected_path),
+                    "denial should carry matched_path {expected_path:?}"
+                );
+            }
+            other => {
+                panic!("expected a github-workflows denial for {expected_path}, got {other:?}")
+            }
+        }
+    }
+
+    /// Every header form that touches a file must contribute a checked path:
+    /// Add, Update, Delete, and both ends of a Move. In particular the move's
+    /// source path stays its own entry -- it stops existing after the patch,
+    /// so narrowing the entry to the destination would hide it from the
+    /// guard.
+    #[test]
+    fn apply_patch_normalization_extracts_every_touched_path() {
+        let patch = "*** Begin Patch\n\
+                     *** Add File: docs/notes.md\n\
+                     +hello\n\
+                     *** Update File: src/app.yaml\n\
+                     @@\n\
+                     -key: old\n\
+                     +key: new\n\
+                     *** Delete File: .github/workflows/old-ci.yml\n\
+                     *** Update File: .github/workflows/ci.yml\n\
+                     *** Move to: .github/workflows/renamed-ci.yml\n\
+                     @@\n\
+                     -on: push\n\
+                     +on: pull_request\n\
+                     *** End Patch";
+
+        let sources = normalize_apply_patch(patch).expect("multi-file patch should normalize");
+
+        let paths: Vec<_> = sources.iter().map(|source| source.file_path()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "docs/notes.md",
+                "src/app.yaml",
+                ".github/workflows/old-ci.yml",
+                ".github/workflows/ci.yml",
+                ".github/workflows/renamed-ci.yml",
+            ]
+        );
+        // The move destination carries the hunk content added after the
+        // move header; the abandoned source path carries none.
+        let destination = sources
+            .iter()
+            .find(|source| source.file_path() == ".github/workflows/renamed-ci.yml")
+            .expect("move destination should be extracted");
+        assert_eq!(destination.new_content(), "on: pull_request\n");
+    }
+
+    /// A patch touching `.github/workflows/**` anywhere among multiple files
+    /// is flagged, even though every other file in the same patch -- including
+    /// the shared lookalike `src/workflows/foo.yml` -- is ordinary writable
+    /// content.
+    #[test]
+    fn multi_file_apply_patch_flags_a_guarded_file_among_benign_ones() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: README.md\n\
+                     +hello\n\
+                     *** Update File: src/workflows/foo.yml\n\
+                     @@\n\
+                     -key: old\n\
+                     +key: new\n\
+                     *** Add File: .github/workflows/deploy.yml\n\
+                     +on: push\n\
+                     *** End Patch";
+
+        let source = Engine::input_source_from_pre_tool_use(apply_patch_input(patch))
+            .expect("patch should normalize")
+            .expect("patch should produce a checkable input");
+        let InputSource::ContentBatch(sources) = source else {
+            panic!("multi-file patch should normalize to a batch, got {source:?}");
+        };
+        assert_eq!(sources.len(), 3);
+
+        assert_workflows_denial(
+            engine.evaluate_content_batch(&sources),
+            ".github/workflows/deploy.yml",
+        );
+    }
+
+    /// The same batch shape with no guarded path anywhere must stay allowed:
+    /// lookalikes (a `workflows` directory outside `.github`, a
+    /// `.github/workflows*` sibling) must not trip the guard.
+    #[test]
+    fn multi_file_apply_patch_of_only_unguarded_paths_is_allowed() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: README.md\n\
+                     +hello\n\
+                     *** Add File: src/workflows/foo.yml\n\
+                     +steps: []\n\
+                     *** Update File: .github/workflows-extra/other.yml\n\
+                     @@\n\
+                     -key: old\n\
+                     +key: new\n\
+                     *** End Patch";
+
+        let source = Engine::input_source_from_pre_tool_use(apply_patch_input(patch))
+            .expect("patch should normalize")
+            .expect("patch should produce a checkable input");
+        let InputSource::ContentBatch(sources) = source else {
+            panic!("multi-file patch should normalize to a batch, got {source:?}");
+        };
+
+        assert_eq!(
+            engine.evaluate_content_batch(&sources),
+            CheckResult::Allowed,
+            "a patch with no .github/workflows target must stay allowed"
+        );
+    }
+
+    /// A single-file patch (the shape Codex sends for one file) denies
+    /// through the same normalization: one source, evaluated as Content.
+    #[test]
+    fn single_file_apply_patch_touching_a_guarded_path_is_flagged() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Update File: .github/workflows/ci.yml\n\
+                     @@\n\
+                     -on: push\n\
+                     +on: pull_request\n\
+                     *** End Patch";
+
+        let source = Engine::input_source_from_pre_tool_use(apply_patch_input(patch))
+            .expect("patch should normalize")
+            .expect("patch should produce a checkable input");
+        let InputSource::Content(content) = source else {
+            panic!("single-file patch should normalize to one source, got {source:?}");
+        };
+
+        assert_workflows_denial(
+            engine.evaluate_content(&content),
+            ".github/workflows/ci.yml",
+        );
+    }
+
+    /// A `*** Delete File:` header with no hunks at all is still a touch: the
+    /// path is extracted (with empty content) and checked, so deleting a
+    /// workflow definition is flagged like editing one.
+    #[test]
+    fn delete_only_apply_patch_of_a_guarded_file_is_flagged() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n*** Delete File: .github/workflows/ci.yml\n*** End Patch";
+
+        let sources = normalize_apply_patch(patch).expect("delete patch should normalize");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].file_path(), ".github/workflows/ci.yml");
+
+        assert_workflows_denial(
+            engine.evaluate_content_batch(&sources),
+            ".github/workflows/ci.yml",
+        );
+    }
+
+    /// Moving a workflow file to an unguarded path must not smuggle it past
+    /// the guard: the move's source path is checked too, so the denial names
+    /// the guarded path even though the file that will exist afterwards
+    /// (`ci-backup.yml`) is writable.
+    #[test]
+    fn apply_patch_move_out_of_a_guarded_directory_is_flagged() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Update File: .github/workflows/ci.yml\n\
+                     *** Move to: ci-backup.yml\n\
+                     @@\n\
+                     -on: push\n\
+                     +on: pull_request\n\
+                     *** End Patch";
+
+        let sources = normalize_apply_patch(patch).expect("move patch should normalize");
+        assert_eq!(sources.len(), 2);
+
+        assert_workflows_denial(
+            engine.evaluate_content_batch(&sources),
+            ".github/workflows/ci.yml",
+        );
+    }
+
+    /// The move destination is a real write target as well: moving a file
+    /// *into* `.github/workflows/` is flagged on the destination.
+    #[test]
+    fn apply_patch_move_into_a_guarded_directory_is_flagged() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Update File: legacy.yml\n\
+                     *** Move to: .github/workflows/ci.yml\n\
+                     @@\n\
+                     -on: push\n\
+                     +on: pull_request\n\
+                     *** End Patch";
+
+        let sources = normalize_apply_patch(patch).expect("move patch should normalize");
+        assert_workflows_denial(
+            engine.evaluate_content_batch(&sources),
+            ".github/workflows/ci.yml",
+        );
+    }
+
+    /// A truncated patch -- Begin marker present, End marker lost to a
+    /// cut-off generation -- is parsed as far as it goes instead of erroring:
+    /// the file header already seen is a real target, so it is checked and
+    /// flagged. This is the malformed-input path staying defensive: no panic,
+    /// no discarded guarded write.
+    #[test]
+    fn truncated_apply_patch_is_salvaged_and_guarded_header_still_checked() {
+        let engine = default_engine();
+        let truncated =
+            "*** Begin Patch\n*** Update File: .github/workflows/ci.yml\n@@\n-on: push\n";
+
+        let sources =
+            normalize_apply_patch(truncated).expect("truncated patch should salvage its headers");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].file_path(), ".github/workflows/ci.yml");
+
+        assert_workflows_denial(
+            engine.evaluate_content_batch(&sources),
+            ".github/workflows/ci.yml",
+        );
+    }
+
+    /// The benign counterpart: a truncated patch over writable files salvages
+    /// cleanly and stays allowed. Together with the guarded variant above this
+    /// pins the salvage semantics both ways.
+    #[test]
+    fn truncated_benign_apply_patch_salvages_without_error() {
+        let engine = default_engine();
+        let truncated =
+            "*** Begin Patch\n*** Update File: deploy/app.yaml\n@@\n-image: app:latest\n";
+
+        let sources =
+            normalize_apply_patch(truncated).expect("truncated patch should salvage its headers");
+        assert_eq!(sources[0].file_path(), "deploy/app.yaml");
+
+        assert_eq!(
+            engine.evaluate_content_batch(&sources),
+            CheckResult::Allowed
+        );
+    }
+
+    /// Input that cannot be parsed as a patch at all stays InvalidInput --
+    /// the caller treats that as unmatched and routes it to its fail-open
+    /// handling. No panic, and no fabricated match from non-patch text:
+    /// garbage, a bare git-style diff (no Begin marker), and a doubled Begin
+    /// marker are all rejected without consulting the matcher.
+    #[test]
+    fn unparseable_apply_patch_input_stays_invalid_input() {
+        for fixture in [
+            "totally not a patch",
+            "--- a/.github/workflows/ci.yml\n+++ b/.github/workflows/ci.yml\n@@\n-on: push\n",
+            "*** Begin Patch\n*** Add File: a.yaml\n+x\n*** Begin Patch\n*** End Patch",
+        ] {
+            let error = normalize_apply_patch(fixture)
+                .expect_err("unparseable input should stay InvalidInput");
+            assert!(
+                matches!(error, PreToolUseError::InvalidInput { ref tool, .. } if tool == "apply_patch"),
+                "expected InvalidInput for apply_patch, got {error:?}"
             );
         }
     }
