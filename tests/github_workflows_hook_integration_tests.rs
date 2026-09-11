@@ -12,7 +12,7 @@
 //! false positives through `Engine::evaluate_content` in-process.
 
 use icg::engine::{CheckResult, ContentSource, Engine};
-use icg::github_workflows::{GUARDED_PATHS, UNGUARDED_PATHS};
+use icg::github_workflows::{GUARDED_PATHS, PROTECTED_REASON, UNGUARDED_PATHS};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -85,9 +85,12 @@ fn edit_input_for(file_path: &str) -> Value {
     })
 }
 
-/// Assert a hook response denies `file_path` and that the deny reason quotes
-/// the exact path the tool call targeted, with the guard's pack/pattern
-/// attribution unchanged.
+/// Assert a hook response denies `file_path` and pin the full deny payload:
+/// `permissionDecisionReason` must be exactly the shared `PROTECTED_REASON`
+/// wording followed by the pack/pattern attribution with the targeted path
+/// rendered as the `path=` segment -- the rendered form of
+/// `CheckResult::Denied { reason, matched_path, .. }` the redirect-message
+/// step's field contract is documented against.
 fn assert_hook_deny(response: &Value, file_path: &str) {
     assert_eq!(
         response["hookSpecificOutput"]["permissionDecision"], "deny",
@@ -96,19 +99,14 @@ fn assert_hook_deny(response: &Value, file_path: &str) {
     let reason = response["hookSpecificOutput"]["permissionDecisionReason"]
         .as_str()
         .expect("deny reason should be a string");
-    // The protected reason (Detection::Matched's `reason`) is carried verbatim.
-    assert!(
-        reason.contains("must not be modified by an automated write/edit"),
-        "deny reason should carry the protected reason, got: {reason}"
-    );
-    // ...and so is the exact path the Write or Edit targeted
-    // (Detection::Matched's `matched_path`), rendered as the `path=` segment
-    // with pack/pattern unchanged.
-    assert!(
-        reason.contains(&format!(
-            "[pack=github-workflows, pattern=github-workflows-protected, path={file_path}]"
-        )),
-        "deny reason should quote the targeted path with unchanged pack/pattern, got: {reason}"
+    // The structured denial fields, rendered: Detection::Matched's `reason`
+    // (the shared PROTECTED_REASON) verbatim, then pack/pattern unchanged,
+    // then Detection::Matched's `matched_path` as the exact path the Write or
+    // Edit targeted.
+    assert_eq!(
+        reason,
+        format!("{PROTECTED_REASON} [pack=github-workflows, pattern=github-workflows-protected, path={file_path}]"),
+        "deny payload should quote the protected reason and the targeted path with unchanged pack/pattern"
     );
     // The guard denies rather than rewrites, so no updatedInput channel.
     assert!(
@@ -242,9 +240,10 @@ fn evaluate_content_allows_every_lookalike_for_both_tools() {
 }
 
 /// The guarded counterpart at the same mid-layer: every shared path form
-/// must deny through `evaluate_content` for both Write and Edit, carrying
-/// the exact input path back as `matched_path` -- the contract the hook
-/// boundary's `path=` reason segment above is rendered from.
+/// must deny through `evaluate_content` for both Write and Edit, and the
+/// denial must carry the full structured payload the redirect-message step
+/// consumes -- the shared `PROTECTED_REASON` wording, the exact input path
+/// back as `matched_path`, and the guard's pack/pattern attribution.
 #[test]
 fn evaluate_content_denies_every_guarded_path_form_for_both_tools() {
     let engine = Engine::new();
@@ -263,11 +262,12 @@ fn evaluate_content_denies_every_guarded_path_form_for_both_tools() {
         ] {
             match engine.evaluate_content(&source) {
                 CheckResult::Denied {
+                    reason,
                     pack_id,
                     pattern_id,
                     matched_path,
-                    ..
                 } => {
+                    assert_eq!(reason, PROTECTED_REASON);
                     assert_eq!(pack_id, "github-workflows");
                     assert_eq!(pattern_id, "github-workflows-protected");
                     assert_eq!(

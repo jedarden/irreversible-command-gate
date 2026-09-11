@@ -3904,7 +3904,9 @@ mod tests {
                     } => {
                         assert_eq!(pack_id, "github-workflows");
                         assert_eq!(pattern_id, "github-workflows-protected");
-                        assert!(!reason.is_empty());
+                        // The shared PROTECTED_REASON wording, carried through
+                        // Detection::Matched verbatim into the denial.
+                        assert_eq!(reason, crate::github_workflows::PROTECTED_REASON);
                         // The denial must carry the exact path the Write or
                         // Edit targeted, verbatim, so a redirect message can
                         // quote it back.

@@ -60,6 +60,11 @@ The two structured fields survive into the wire format only inside this
 denial's own `matched_path` (`file=` is the caller-context fallback for
 denials that carry none) — see `denial_path_segment` in `src/main.rs`. The
 guard denies rather than rewrites, so the response carries no `updatedInput`.
+That exact rendered string is pinned for both Write and Edit by
+`assert_hook_deny` in `tests/github_workflows_hook_integration_tests.rs`
+(and the `CheckResult` fields by
+`evaluate_content_denies_every_guarded_path_form_for_both_tools` beside it),
+so a change to either shape fails a test rather than drifting silently.
 
 One place the fields deliberately do *not* reach: the operational denial log
 drops `matched_path` and records the target from the input source itself
