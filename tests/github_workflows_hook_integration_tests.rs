@@ -11,7 +11,7 @@
 //! `src/github_workflows.rs` rather than redefined here -- and re-checks the
 //! false positives through `Engine::evaluate_content` in-process.
 
-use icg::engine::{CheckResult, ContentSource, Engine};
+use icg::engine::{normalize_apply_patch, CheckResult, ContentSource, Engine};
 use icg::github_workflows::{GUARDED_PATHS, PROTECTED_REASON, UNGUARDED_PATHS};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -128,6 +128,31 @@ fn assert_hook_allow(response: &Value, file_path: &str) {
             .is_none(),
         "allow for {file_path} should carry no permissionDecisionReason, got {response:?}"
     );
+}
+
+/// Assert a mid-layer `CheckResult` is the full structured `.github/workflows`
+/// denial for `file_path`: the shared `PROTECTED_REASON` wording, the guard's
+/// pack/pattern attribution, and the exact input path back as `matched_path`
+/// -- the payload the redirect-message step consumes.
+fn assert_workflows_denial(result: CheckResult, file_path: &str) {
+    match result {
+        CheckResult::Denied {
+            reason,
+            pack_id,
+            pattern_id,
+            matched_path,
+        } => {
+            assert_eq!(reason, PROTECTED_REASON);
+            assert_eq!(pack_id, "github-workflows");
+            assert_eq!(pattern_id, "github-workflows-protected");
+            assert_eq!(
+                matched_path.as_deref(),
+                Some(file_path),
+                "denial should carry matched_path {file_path:?}"
+            );
+        }
+        other => panic!("expected Denied for {file_path}, got {other:?}"),
+    }
 }
 
 /// Every guarded fixture -- plain relative, checkout-prefixed relative,
@@ -260,24 +285,7 @@ fn evaluate_content_denies_every_guarded_path_form_for_both_tools() {
                 new_content: "on: pull_request".to_string(),
             },
         ] {
-            match engine.evaluate_content(&source) {
-                CheckResult::Denied {
-                    reason,
-                    pack_id,
-                    pattern_id,
-                    matched_path,
-                } => {
-                    assert_eq!(reason, PROTECTED_REASON);
-                    assert_eq!(pack_id, "github-workflows");
-                    assert_eq!(pattern_id, "github-workflows-protected");
-                    assert_eq!(
-                        matched_path.as_deref(),
-                        Some(*file_path),
-                        "denial should carry matched_path {file_path:?}"
-                    );
-                }
-                other => panic!("expected Denied for {file_path}, got {other:?}"),
-            }
+            assert_workflows_denial(engine.evaluate_content(&source), file_path);
         }
     }
 }
@@ -394,4 +402,207 @@ fn hook_denies_patch_moving_a_guarded_file_out_of_workflows() {
                  *** End Patch";
     let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
     assert_hook_deny(&denied, ".github/workflows/ci.yml");
+}
+
+// --- apply_patch section types (irrevers-4b806bf1) ---
+//
+// Every section type a multi-file patch can carry, exercised where the guard
+// actually runs: the compiled `icg hook` binary. Each entry is the minimal
+// patch that touches `.github/workflows/**` through that section type,
+// paired with the path the denial must name -- Add File and Update File name
+// the guarded file directly; Delete File carries no hunks but is still a
+// touch; a Move into the directory names the destination; a Move out of it
+// names the abandoned source, the file the patch removes from the guarded
+// directory.
+const GUARDED_SECTION_TYPE_PATCHES: &[(&str, &str, &str)] = &[
+    (
+        "Add File",
+        "*** Begin Patch\n\
+         *** Add File: .github/workflows/deploy.yml\n\
+         +on: push\n\
+         *** End Patch",
+        ".github/workflows/deploy.yml",
+    ),
+    (
+        "Update File",
+        "*** Begin Patch\n\
+         *** Update File: .github/workflows/ci.yml\n\
+         @@\n\
+         -on: push\n\
+         +on: pull_request\n\
+         *** End Patch",
+        ".github/workflows/ci.yml",
+    ),
+    (
+        "Delete File",
+        "*** Begin Patch\n\
+         *** Delete File: .github/workflows/old-ci.yml\n\
+         *** End Patch",
+        ".github/workflows/old-ci.yml",
+    ),
+    (
+        "Move to (into)",
+        "*** Begin Patch\n\
+         *** Update File: legacy.yml\n\
+         *** Move to: .github/workflows/ci.yml\n\
+         @@\n\
+         -on: push\n\
+         +on: pull_request\n\
+         *** End Patch",
+        ".github/workflows/ci.yml",
+    ),
+    (
+        "Move to (out of)",
+        "*** Begin Patch\n\
+         *** Update File: .github/workflows/ci.yml\n\
+         *** Move to: ci-backup.yml\n\
+         @@\n\
+         -on: push\n\
+         +on: pull_request\n\
+         *** End Patch",
+        ".github/workflows/ci.yml",
+    ),
+];
+
+/// Every apply_patch section type must deny at the hook boundary when it is
+/// the thing touching `.github/workflows/**` -- including both directions of
+/// a rename, where the denial names the guarded path whichever end of the
+/// move it is.
+#[test]
+fn hook_denies_every_apply_patch_section_type_touching_a_guarded_path() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    for (section, patch, expected_path) in GUARDED_SECTION_TYPE_PATCHES {
+        let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+        assert_hook_deny(&denied, expected_path);
+        let _ = section;
+    }
+}
+
+/// The normalized sources an apply_patch produces are checked by the exact
+/// same predicate a Claude Code Write goes through, so each section type's
+/// guarded entry must deny identically to a hand-built Write at the same
+/// path -- same reason, same pack/pattern attribution, same matched_path.
+/// This also pins, at the integration layer, that each section type's
+/// normalization extracts the path the hook denial quoted above.
+#[test]
+fn apply_patch_section_types_meet_the_same_predicate_as_claude_code_writes() {
+    let engine = Engine::new();
+
+    for (section, patch, expected_path) in GUARDED_SECTION_TYPE_PATCHES {
+        let sources = normalize_apply_patch(patch)
+            .unwrap_or_else(|error| panic!("{section} patch should normalize, got {error:?}"));
+        let from_patch = sources
+            .iter()
+            .find(|source| source.file_path() == *expected_path)
+            .unwrap_or_else(|| {
+                panic!("{section} normalization should extract {expected_path:?}, got {sources:?}")
+            });
+
+        // The batch evaluation the hook front-end runs denies naming the
+        // guarded path from whichever section type introduced it.
+        assert_workflows_denial(engine.evaluate_content_batch(&sources), expected_path);
+
+        // Parity with the Claude Code shape: a Write at the same path
+        // produces the identical denial through the shared predicate.
+        let from_write = ContentSource::Write {
+            file_path: (*expected_path).to_string(),
+            content: "on: push\n".to_string(),
+        };
+        assert_eq!(
+            engine.evaluate_content(from_patch),
+            engine.evaluate_content(&from_write),
+            "{section} source for {expected_path} should deny exactly like a Write at it"
+        );
+    }
+}
+
+/// Renaming a benign file into `.github/workflows/` inside a larger patch
+/// must not slip through as one of many files: the move's destination is a
+/// real write target the batch check reaches, and the denial names it --
+/// not one of the benign files the same patch also touches.
+#[test]
+fn hook_denies_multi_file_patch_renaming_into_workflows_among_benign_files() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let patch = "*** Begin Patch\n\
+                 *** Add File: README.md\n\
+                 +hello\n\
+                 *** Update File: src/workflows/foo.yml\n\
+                 @@\n\
+                 -key: old\n\
+                 +key: new\n\
+                 *** Update File: legacy.yml\n\
+                 *** Move to: .github/workflows/deploy.yml\n\
+                 @@\n\
+                 -on: push\n\
+                 +on: pull_request\n\
+                 *** End Patch";
+    let denied = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+    assert_hook_deny(&denied, ".github/workflows/deploy.yml");
+}
+
+/// A patch cut off *inside a header's path text* is handled deterministically
+/// at the hook boundary. When the guarded prefix survived the cut, the
+/// partial path still resolves under the protected pair and denies; when the
+/// cut path is unguarded, nothing is fabricated to block. (`run_hook_for_tool`
+/// asserts exit status 0 for both -- no panic on the partial input.)
+#[test]
+fn hook_handles_patch_truncated_mid_header_deterministically() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let guarded = run_hook_for_tool(
+        &pack_path,
+        "apply_patch",
+        apply_patch_input_for("*** Begin Patch\n*** Add File: .github/workflows/ci"),
+    );
+    assert_hook_deny(&guarded, ".github/workflows/ci");
+
+    let unguarded = run_hook_for_tool(
+        &pack_path,
+        "apply_patch",
+        apply_patch_input_for("*** Begin Patch\n*** Update File: src/workflows/fo"),
+    );
+    assert_hook_allow(&unguarded, "a mid-header cut over an unguarded path");
+}
+
+/// A patch cut off mid-section -- header and partial hunks seen, End marker
+/// never arrives -- salvages what parsed, and with only unguarded paths in
+/// it must allow silently rather than block on the truncated shape.
+#[test]
+fn hook_allows_patch_truncated_mid_section_with_only_unguarded_paths() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let truncated = "*** Begin Patch\n\
+                     *** Update File: README.md\n\
+                     @@\n\
+                     -key: old\n\
+                     +key: ne";
+    let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(truncated));
+    assert_hook_allow(&allowed, "a mid-section cut over unguarded paths");
+}
+
+/// A patch with no file section at all -- Begin and End around an empty
+/// body, or a Begin cut off before any header -- names no file, so there is
+/// nothing to guard: the hook must allow it without panicking, the same
+/// fail-open route unparseable input takes.
+#[test]
+fn hook_fails_open_on_empty_patch_body() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    for (shape, patch) in [
+        (
+            "Begin and End around an empty body",
+            "*** Begin Patch\n*** End Patch",
+        ),
+        ("Begin with nothing after it", "*** Begin Patch\n"),
+    ] {
+        let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+        assert_hook_allow(&allowed, shape);
+    }
 }
