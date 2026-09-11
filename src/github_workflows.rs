@@ -323,4 +323,210 @@ mod tests {
             "reason should point at where CI templates actually live: {PROTECTED_REASON}"
         );
     }
+
+    // --- path-normalization hardening (irrevers-77594fb1) ---
+    //
+    // Every accepted spelling of parent irrevers-e58ddf25 bullet 1 gets its
+    // own named test, and `normalized_components` -- the private helper the
+    // predicate leans on -- gets direct assertions, so a normalization
+    // regression names the exact form that broke instead of surfacing only as
+    // a failure somewhere inside the shared fixture loops above.
+
+    /// Plain relative paths, with and without a file part.
+    #[test]
+    fn accepts_plain_relative_paths() {
+        assert!(is_github_workflows_path(".github/workflows/ci.yml"));
+        assert!(is_github_workflows_path(".github/workflows"));
+        assert!(detect(".github/workflows/ci.yml").is_match());
+    }
+
+    /// Absolute paths as a Write/Edit call reports them against a real
+    /// checkout, including a nested-checkout prefix and the bare absolute
+    /// directory.
+    #[test]
+    fn accepts_absolute_paths_into_a_real_checkout() {
+        assert!(is_github_workflows_path(
+            "/home/coding/irreversible-command-gate/.github/workflows/ci.yml"
+        ));
+        assert!(is_github_workflows_path(
+            "/home/user/project/.github/workflows/deploy.yml"
+        ));
+        assert!(is_github_workflows_path("/opt/ci/repo/.github/workflows"));
+    }
+
+    /// A leading `./` must not stop the match: `Path::components()` yields it
+    /// as a `CurDir` component that normalization drops.
+    #[test]
+    fn accepts_dot_slash_prefixed_paths() {
+        assert!(is_github_workflows_path("./.github/workflows/ci.yml"));
+        assert!(is_github_workflows_path("./.github/workflows/"));
+    }
+
+    /// Trailing separators normalize away, so the protected directory itself
+    /// and directories beneath it still match when written with one.
+    #[test]
+    fn accepts_trailing_separator_forms() {
+        assert!(is_github_workflows_path(".github/workflows/"));
+        assert!(is_github_workflows_path("repo/.github/workflows/"));
+        assert!(is_github_workflows_path(".github/workflows/actions/"));
+    }
+
+    /// Runs of separators collapse in any position: around the protected
+    /// pair, after it, and before it.
+    #[test]
+    fn accepts_repeated_separator_forms() {
+        assert!(is_github_workflows_path(".github//workflows//ci.yml"));
+        assert!(is_github_workflows_path(".github/workflows//ci.yml"));
+        assert!(is_github_workflows_path("repo//.github/workflows/ci.yml"));
+    }
+
+    /// `..` segments that resolve *into* the protected pair match: interior
+    /// traversal popping back to the pair, and leading `..` with nothing to
+    /// pop (bounded -- an unmatched `..` is ignored, never an error).
+    #[test]
+    fn accepts_dot_dot_traversal_resolving_into_the_pair() {
+        assert!(is_github_workflows_path("src/../.github/workflows/ci.yml"));
+        assert!(is_github_workflows_path(
+            ".github/workflows/../workflows/ci.yml"
+        ));
+        assert!(is_github_workflows_path(
+            "a/b/../../.github/workflows/ci.yml"
+        ));
+        assert!(is_github_workflows_path("../../.github/workflows/ci.yml"));
+        assert!(is_github_workflows_path(
+            "../foo/../../.github/workflows/ci.yml"
+        ));
+    }
+
+    /// Case must follow the native filesystem per component, not wholesale:
+    /// each spelling here differs in exactly one component's case, and on a
+    /// case-sensitive filesystem (Linux) none of them resolve to
+    /// `.github/workflows`.
+    #[test]
+    fn case_sensitivity_applies_to_each_component_independently() {
+        let expected = cfg!(any(target_os = "windows", target_os = "macos"));
+        for path in [
+            ".github/Workflows/ci.yml",
+            ".GitHub/workflows/ci.yml",
+            ".GITHUB/workflows/ci.yml",
+            ".github/WORKFLOWS/ci.yml",
+        ] {
+            assert_eq!(
+                is_github_workflows_path(path),
+                expected,
+                "{path:?} should match iff the native filesystem is case-insensitive"
+            );
+        }
+    }
+
+    /// A `workflows` directory, or a file whose stem is `workflows`, anywhere
+    /// outside `.github` is ordinary writable content.
+    #[test]
+    fn does_not_match_workflows_dirs_or_stems_outside_dot_github() {
+        assert!(!is_github_workflows_path("docs/workflows/notes.md"));
+        assert!(!is_github_workflows_path("docs/workflows/"));
+        assert!(!is_github_workflows_path("src/workflows.rs"));
+        assert!(!is_github_workflows_path("src/workflows/mod.rs"));
+    }
+
+    /// Siblings of the protected directory that differ by one suffix stay
+    /// writable: the singular `workflow`, hyphenated variants, and a
+    /// `workflows.`-prefixed *file* under `.github`.
+    #[test]
+    fn does_not_match_workflow_sibling_dirs_under_dot_github() {
+        assert!(!is_github_workflows_path(".github/workflow/ci.yml"));
+        assert!(!is_github_workflows_path(
+            ".github/workflows-old/deploy.yml"
+        ));
+        assert!(!is_github_workflows_path(".github/workflows.yml"));
+    }
+
+    /// The guard judges the path argument only. A write to an ordinary path
+    /// whose *content* would mention or contain workflow YAML must never trip
+    /// it -- the predicate has no content channel, and these are exactly the
+    /// docs and tooling writes that must keep working.
+    #[test]
+    fn judges_the_path_not_the_file_content() {
+        // A doc that quotes `.github/workflows/ci.yml` in its body.
+        assert!(!is_github_workflows_path("docs/ci-notes.md"));
+        // `.github` prose whose content references the workflows directory.
+        assert!(!is_github_workflows_path(".github/README.md"));
+        // A generator whose *output* is workflow YAML.
+        assert!(!is_github_workflows_path("tools/generate-workflow.py"));
+        assert_eq!(detect("docs/ci-notes.md"), Detection::NoMatch);
+    }
+
+    /// Every accepted normalization form is also a structured
+    /// `Detection::Matched` through `detect`, carrying the caller's exact
+    /// spelling in `matched_path` -- normalization must not rewrite what a
+    /// redirect message quotes back.
+    #[test]
+    fn detect_covers_every_accepted_normalization_form() {
+        let accepted_forms: &[&str] = &[
+            // plain relative
+            ".github/workflows/ci.yml",
+            // absolute into a real checkout
+            "/home/coding/irreversible-command-gate/.github/workflows/ci.yml",
+            // `./`-prefixed
+            "./.github/workflows/ci.yml",
+            // trailing separator
+            ".github/workflows/",
+            // repeated separators
+            ".github//workflows//ci.yml",
+            // `..` traversal resolving into the pair
+            "src/../.github/workflows/ci.yml",
+        ];
+        for path in accepted_forms {
+            match detect(path) {
+                Detection::Matched { matched_path, .. } => {
+                    assert_eq!(matched_path.as_str(), *path);
+                }
+                Detection::NoMatch => panic!("expected Matched for {path:?}"),
+            }
+        }
+    }
+
+    /// `normalized_components` drops `.` segments and anchoring components
+    /// (`RootDir`, prefixes) -- they carry no name to compare against the
+    /// protected pair.
+    #[test]
+    fn normalized_components_drops_curdir_and_anchor_components() {
+        assert_eq!(
+            normalized_components("./.github/workflows"),
+            vec![".github", "workflows"]
+        );
+        assert_eq!(
+            normalized_components("/a/./b/.github/workflows"),
+            vec!["a", "b", ".github", "workflows"]
+        );
+    }
+
+    /// `..` pops the preceding component and is bounded at the root: an
+    /// unmatched `..` is silently ignored, never kept as a segment.
+    #[test]
+    fn normalized_components_pops_parents_bounded_at_the_root() {
+        assert_eq!(
+            normalized_components("src/../.github/workflows"),
+            vec![".github", "workflows"]
+        );
+        assert_eq!(
+            normalized_components("../../../workflows"),
+            vec!["workflows"]
+        );
+        assert!(normalized_components("../..").is_empty());
+    }
+
+    /// Repeated and trailing separators normalize away entirely -- no empty
+    /// components survive.
+    #[test]
+    fn normalized_components_collapses_repeated_and_trailing_separators() {
+        assert_eq!(
+            normalized_components(".github//workflows//"),
+            vec![".github", "workflows"]
+        );
+        assert_eq!(
+            normalized_components("repo//.github///workflows/ci.yml//"),
+            vec!["repo", ".github", "workflows", "ci.yml"]
+        );
+    }
 }
