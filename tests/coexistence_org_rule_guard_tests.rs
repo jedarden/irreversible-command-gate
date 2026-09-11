@@ -17,6 +17,7 @@
 //! coexistence_scope_limited_to_rule_3_overlap_only).
 
 use icg::engine::{CheckResult, ContentSource, Engine, InputSource, PreToolUseInput, ToolInput};
+use icg::github_workflows::UNGUARDED_PATHS as WORKFLOWS_LOOKALIKE_PATHS;
 use icg::rule_pack::load_pack;
 
 fn load_image_tag_engine() -> Engine {
@@ -404,27 +405,15 @@ fn coexistence_edit_tool_use_does_not_flag_non_workflows_path() {
     );
 }
 
-/// False-positive fixtures from irrevers-61a08562's path-matcher test table:
-/// paths that merely contain the substring "workflows" outside `.github`,
-/// sibling directories under `.github` that look like but are not
+/// False-positive fixtures, shared from `src/github_workflows.rs`'s
+/// `UNGUARDED_PATHS` (irrevers-61a08562's path-matcher test table): paths
+/// that merely contain the substring "workflows" outside `.github`, sibling
+/// directories under `.github` that look like but are not
 /// `.github/workflows`, and the bare `.github` directory itself. These must
 /// never be flagged by the hook detection,
 /// through the same PreToolUse front-door used by the matching-path tests
 /// above (coexistence_write_tool_use_flags_github_workflows_path and
 /// coexistence_edit_tool_use_flags_github_workflows_path).
-const WORKFLOWS_LOOKALIKE_PATHS: &[&str] = &[
-    "src/workflows/foo.yml",
-    "workflows/foo.yml",
-    ".github/workflows-extra/foo.yml",
-    ".github/workflows-archive/old.yml",
-    ".github/workflows2/foo.yml",
-    "docs/my-workflows-notes.md",
-    "scripts/workflows_helper.py",
-    ".github/ISSUE_TEMPLATE/bug.md",
-    ".github/dependabot.yml",
-    // the .github directory itself (unit fn does_not_match_dot_github_alone)
-    ".github",
-];
 
 #[test]
 fn coexistence_write_tool_use_does_not_flag_workflows_lookalike_paths() {

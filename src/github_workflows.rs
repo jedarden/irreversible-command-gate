@@ -47,6 +47,59 @@ pub const PROTECTED_REASON: &str = "Writes to .github/workflows/ are blocked: wo
     write/edit. Ask a human maintainer to make this change via a reviewed pull request \
     instead.";
 
+/// Path fixtures that must trip the guard, shared by this module's tests and
+/// the hook-level integration tests
+/// (`tests/github_workflows_hook_integration_tests.rs`), which drive the same
+/// table through the compiled `icg hook` binary. Keeping one table means a
+/// spelling accepted here is by construction also proven at the hook
+/// boundary. Entries are commented with the spelling each one exercises.
+pub const GUARDED_PATHS: &[&str] = &[
+    // plain relative form
+    ".github/workflows/ci.yml",
+    // relative form under a checkout/repo prefix
+    "repo/.github/workflows/deploy.yml",
+    // `./`-prefixed relative form
+    "./.github/workflows/ci.yml",
+    // absolute form
+    "/home/user/project/.github/workflows/ci.yml",
+    // the workflows directory itself, no file part
+    ".github/workflows",
+    // trailing slash on the workflows directory
+    ".github/workflows/",
+    // `..` segments that normalize into the protected pair
+    "src/../.github/workflows/ci.yml",
+    // leading `..` with nothing to pop
+    "../../.github/workflows/ci.yml",
+    // repeated separators around the protected pair
+    ".github//workflows//ci.yml",
+    // deeply nested file under workflows
+    ".github/workflows/actions/composite/action.yml",
+];
+
+/// Lookalike path fixtures that must never trip the guard, shared by this
+/// module's tests and the hook-level integration tests. From
+/// irrevers-61a08562: matching is on whole path components, so a
+/// "workflows" substring outside `.github`, a `.github/workflows*` sibling
+/// directory, and other `.github` content are all ordinary writable paths.
+pub const UNGUARDED_PATHS: &[&str] = &[
+    // `workflows` component outside .github
+    "src/workflows/foo.yml",
+    // `workflows` as a top-level directory
+    "workflows/foo.yml",
+    // `workflows` substring inside unrelated components
+    "docs/my-workflows-notes.md",
+    "scripts/workflows_helper.py",
+    // `.github` siblings that merely start with `workflows`
+    ".github/workflows-extra/foo.yml",
+    ".github/workflows-archive/old.yml",
+    ".github/workflows2/foo.yml",
+    // other `.github` content that is not workflows
+    ".github/ISSUE_TEMPLATE/bug.md",
+    ".github/dependabot.yml",
+    // the `.github` directory itself
+    ".github",
+];
+
 /// Structured outcome of checking a Write/Edit target path against the
 /// `.github/workflows/**` guard.
 ///
@@ -135,80 +188,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_relative_path() {
-        assert!(is_github_workflows_path(".github/workflows/ci.yml"));
+    fn every_shared_guarded_fixture_matches() {
+        for path in GUARDED_PATHS {
+            assert!(
+                is_github_workflows_path(path),
+                "expected {path:?} to be guarded"
+            );
+        }
     }
 
     #[test]
-    fn matches_nested_relative_path() {
-        assert!(is_github_workflows_path(
-            "repo/.github/workflows/deploy.yml"
-        ));
-    }
-
-    #[test]
-    fn matches_absolute_path() {
-        assert!(is_github_workflows_path(
-            "/home/user/project/.github/workflows/ci.yml"
-        ));
-    }
-
-    #[test]
-    fn matches_dot_slash_prefixed_path() {
-        assert!(is_github_workflows_path("./.github/workflows/ci.yml"));
-    }
-
-    #[test]
-    fn matches_the_workflows_directory_itself() {
-        assert!(is_github_workflows_path(".github/workflows"));
-    }
-
-    #[test]
-    fn matches_path_with_parent_dir_segment_that_normalizes_into_it() {
-        assert!(is_github_workflows_path("src/../.github/workflows/ci.yml"));
-    }
-
-    #[test]
-    fn matches_deeply_nested_file_under_workflows() {
-        assert!(is_github_workflows_path(
-            ".github/workflows/actions/composite/action.yml"
-        ));
-    }
-
-    #[test]
-    fn does_not_match_substring_outside_dot_github() {
-        assert!(!is_github_workflows_path("src/workflows/foo.yml"));
-    }
-
-    #[test]
-    fn does_not_match_workflows_as_a_top_level_dir() {
-        assert!(!is_github_workflows_path("workflows/foo.yml"));
-    }
-
-    #[test]
-    fn does_not_match_sibling_directory_with_similar_name() {
-        assert!(!is_github_workflows_path(".github/workflows-extra/foo.yml"));
-        assert!(!is_github_workflows_path(
-            ".github/workflows-archive/old.yml"
-        ));
-        assert!(!is_github_workflows_path(".github/workflows2/foo.yml"));
-    }
-
-    #[test]
-    fn does_not_match_workflows_substring_in_unrelated_path() {
-        assert!(!is_github_workflows_path("docs/my-workflows-notes.md"));
-        assert!(!is_github_workflows_path("scripts/workflows_helper.py"));
-    }
-
-    #[test]
-    fn does_not_match_other_dot_github_subdirectories() {
-        assert!(!is_github_workflows_path(".github/ISSUE_TEMPLATE/bug.md"));
-        assert!(!is_github_workflows_path(".github/dependabot.yml"));
-    }
-
-    #[test]
-    fn does_not_match_dot_github_alone() {
-        assert!(!is_github_workflows_path(".github"));
+    fn every_shared_unguarded_fixture_is_ignored() {
+        for path in UNGUARDED_PATHS {
+            assert!(
+                !is_github_workflows_path(path),
+                "expected {path:?} to stay writable"
+            );
+        }
     }
 
     #[test]
@@ -233,23 +229,8 @@ mod tests {
     }
 
     #[test]
-    fn matches_after_leading_parent_dirs_with_nothing_to_pop() {
-        assert!(is_github_workflows_path("../../.github/workflows/ci.yml"));
-    }
-
-    #[test]
     fn does_not_match_repeated_separators_between_unrelated_components() {
         assert!(!is_github_workflows_path("a//b//c"));
-    }
-
-    #[test]
-    fn matches_with_repeated_separators_around_the_pair() {
-        assert!(is_github_workflows_path(".github//workflows//ci.yml"));
-    }
-
-    #[test]
-    fn matches_trailing_slash_on_workflows_directory() {
-        assert!(is_github_workflows_path(".github/workflows/"));
     }
 
     #[test]
