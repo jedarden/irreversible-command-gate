@@ -103,7 +103,8 @@ already shipped by the child beads' work.
 
 **Verifiable.** Commit `3f0f00d` (2026-08-20, "feat: audit fail-closed
 graduation transitions") landed 16 seconds before close (02:53:01Z commit,
-02:53:17Z close); it extends `src/fail_closed.rs` by 234 lines and adds the
+02:53:17Z close); it extends `src/fail_closed.rs` by 234 lines (+213 -21) and
+adds the
 manual-override acceptance item verbatim —
 `operator_force_graduate_and_force_revert_are_durable` in
 `tests/fail_closed_policy_tests.rs`. The read-only integration with poison-pill
@@ -133,7 +134,7 @@ delivered, just under the two successors.
 
 ## irrevers-ff4f17da — Poison-pill auto-rollback: revert the trust pointer on a deny-rate spike
 
-**Verifiable.** Implementing commit `d653ade` (2026-08-20, "feat: conservative
+**Verifiable.** Implementing commit `d653ade` (2026-08-20, "feat: add conservative
 poison-pill auto-rollback") landed 20 seconds before close (01:05:23Z commit,
 01:05:43Z close). It adds `src/rollback.rs` (371 lines, `check_and_rollback`)
 and runbook updates (`docs/runbooks/rollback.md`). The "conservative trigger"
@@ -153,7 +154,7 @@ bypass to enforcement frontends") landed 18 seconds before close (02:19:19Z
 commit, 02:19:37Z close), with compile fix `9ec6848` ("restore_emergency_bypasses
 compilation error", `src/telemetry.rs`) one minute earlier. `20808e9` adds
 `src/emergency_bypass.rs` and routes Hook and the argv[0] wrapper through the
-bypass in `src/main.rs` (92 lines), each emitting
+bypass in `src/main.rs` (+84 -8 lines), each emitting
 `icg_emergency_bypass event=activated front_end=...` telemetry without command
 data. Both verification requirements from the bead description have named
 tests in `tests/emergency_response_tests.rs`: the hook JSON path
