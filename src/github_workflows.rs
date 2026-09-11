@@ -103,6 +103,10 @@ pub const UNGUARDED_PATHS: &[&str] = &[
     ".github/workflows-extra/foo.yml",
     ".github/workflows-archive/old.yml",
     ".github/workflows2/foo.yml",
+    ".github/workflows-internal/provision.yml",
+    // a sibling of `.github` that merely ends in `.github`; its `workflows`
+    // child is ordinary content
+    "my.github/workflows/ci.yml",
     // other `.github` content that is not workflows
     ".github/ISSUE_TEMPLATE/bug.md",
     ".github/dependabot.yml",
@@ -220,6 +224,23 @@ mod tests {
     #[test]
     fn does_not_match_empty_string() {
         assert!(!is_github_workflows_path(""));
+    }
+
+    /// Case handling must follow the native filesystem, not a fixed rule:
+    /// a mixed-case spelling matches exactly where the OS would resolve it
+    /// to `.github/workflows` (macOS, Windows) and nowhere else. Asserting
+    /// the `cfg!` expectation keeps this test portable across the OSes CI
+    /// and dev boxes actually run.
+    #[test]
+    fn case_handling_follows_the_native_filesystem() {
+        let mixed_case = ".GitHub/Workflows/ci.yml";
+        let expected = cfg!(any(target_os = "windows", target_os = "macos"));
+        assert_eq!(
+            is_github_workflows_path(mixed_case),
+            expected,
+            "mixed-case .GitHub/Workflows/ should match iff the native \
+             filesystem is case-insensitive"
+        );
     }
 
     #[test]
