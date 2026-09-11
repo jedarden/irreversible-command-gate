@@ -32,8 +32,8 @@ This document provides realistic, step-by-step scenarios demonstrating how icg w
 #### Step 1: Download and Install
 
 ```bash
-# Release binary and packs (v0.1.39, linux x86_64)
-BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.39
+# Release binary and packs (v0.1.40, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.40
 curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
 sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
