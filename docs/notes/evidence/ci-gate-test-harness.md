@@ -10,6 +10,14 @@ commits live in declarative-config and were verified in a local
 reproduced live against the current tree on 2026-09-10. Evidence gathering
 only — no plan edits.
 
+Audit pass (irrevers-58a52917, 2026-09-10): every commit SHA, close-timestamp
+delta, test name, and line citation below was re-resolved against the repos
+and beads; the five focused test suites were re-run green (27/27, exit 0) and
+both live gate reproductions re-executed with identical results. Two
+corrections came out of the audit and are applied in place: the
+`48d5a60` test count (12 → 11 at that commit) and the
+`regression_suite_scope_tests` name-to-line mapping.
+
 All five beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction. Timestamps are UTC unless
 a `-0400` offset is shown; bead timestamps are UTC.
@@ -71,9 +79,9 @@ checkout untouched):
 - Enforcement for the shipped packs moved into the repo's own test suite,
   which icg-ci also runs build-failing:
   `the_release_gate_corpus_is_unchanged` (pins the ten-case release-gate
-  corpus by ID), `no_deny_regex_rule_is_ever_skipped`, and
-  `every_enabled_rule_is_either_a_case_or_a_reasoned_skip`
-  (`tests/regression_suite_scope_tests.rs:43,83,139`), plus
+  corpus by ID, `tests/regression_suite_scope_tests.rs:139`),
+  `no_deny_regex_rule_is_ever_skipped` (:83), and
+  `every_enabled_rule_is_either_a_case_or_a_reasoned_skip` (:43), plus
   `assert_denies_generated_cases` executing the suite against the engine
   (`tests/icg_ci_integration_tests.rs:43`). All green today: the five
   focused suites (`regression_suite_tests`, `regression_suite_scope_tests`,
@@ -97,8 +105,9 @@ explicit justification field — did **not** exist at close (`git show
 ~9.6 hours later in `48d5a60` (09:41:38 -0400 = 13:41:38Z, "feat(coverage):
 add review report and justification tracking") with
 `COVERAGE_DIFF_REPORT_FORMAT = "coverage-diff/v1"`,
-`has_explicit_justification`, the Layer 2 report renderer, and 12 tests in
-`tests/coverage_diff_tests.rs`. CI wiring: declarative-config `d11a6472`
+`has_explicit_justification`, the Layer 2 report renderer, and 11 tests in
+`tests/coverage_diff_tests.rs` (12 in the current tree after later
+additions). CI wiring: declarative-config `d11a6472`
 (09:44:29 -0400 = 13:44:29Z, "ci(icg): add coverage diff gate"). The only
 commit in this repo whose message cites the bead is the follow-up naming
 reconciliation `1fe1a56` ("docs(plan, notes): reconcile destructive_patterns
