@@ -171,8 +171,8 @@ dashboards — `monitoring/grafana/icg-overview.json` (+ `monitoring/README.md`)
 (2) alerting rules — `monitoring/prometheus/alerts.yml` (+104 lines) with
 `monitoring/prometheus/scrape.yml`; (3) log aggregation —
 `monitoring/promtail/config.yml`; (4) operational health checks — the monitor
-loop and snapshot collection in `src/main.rs` (+182, `run_monitor`,
-`collect_snapshot`) and `src/health_server.rs` (+75); (5) integration with
+loop in `src/main.rs` (+182, `run_monitor`) with snapshot collection in
+`src/monitoring.rs` (`collect_snapshot`), plus `src/health_server.rs` (+75); (5) integration with
 existing systems — Prometheus exposition via `src/monitoring.rs` (+547,
 `export_prometheus`, `MonitoringConfig::from_environment`) wiring into the
 existing `src/metrics.rs` (+30/−5) and `src/telemetry.rs` (+72), with
@@ -232,7 +232,7 @@ proving the guard cannot have quietly broken logging) at HEAD. The bead's
 notes record the manual verification and the re-baseline: the negative control
 against the unguarded library reproduced the leak (one probe record landed in
 the live log, test failed); with the fix the full suite appended zero records
-and did not create the file; ex44's `/var/cache/icg/denials.jsonl` (77 records,
+and did not create the file; codinghome's `/var/cache/icg/denials.jsonl` (77 records,
 15 fixture/probe ids) was archived to `denials.jsonl.pre-rebaseline-20260907`
 rather than deleted, so the trial window starts clean.
 
@@ -297,3 +297,24 @@ corrected — `859e19e` precedes `a750033`, it does not follow it;
 corrected — the parent carries the pointer note, the full reproduction lives
 on the bead; `c6dcc3c` health.rs "+7/−" → +6/−1. No bead moved to
 no-evidence: all ten carry verifiable ties.
+
+Second pass (2026-09-10, irrevers-d8ee88ce), independent re-check of every
+citation: all 14 SHAs (9 implementing + `21a6853`, `e759254`, `bb362fb`,
+`17971b7`, `3f0f00d`) resolve with the subjects and UTC times claimed; all ten
+close timestamps re-read from the bead store match to the second; every bare
+"+N" file count equals at-commit added+deleted churn and every "+X/−Y" matches
+numstat; all code anchors re-confirmed byte-for-byte at HEAD
+(`src/main.rs:835-839/1239-1241/2539` — `reconcile_release_health` has no
+other call site in `main.rs`; test fns at
+`tests/fail_closed_runtime_tests.rs:151/328/406/486/553`, `0o555` applied at
+358/432); all 16 named tests/functions present at HEAD in the files claimed;
+commit bodies carry everything attributed to them; `Cargo.toml` is 0.1.5 at
+`c38b0cd`; `859e19e` is the immediate graph child of `3f0f00d` and parent of
+`a750033`; `-p`/`--state-store-path`/`--trust-pointer-path` exist on
+`PolicySubcommand::Reconcile`; no commit message names irrevers-ffdc924b or
+irrevers-9007792b. Two corrections in this pass: `collect_snapshot` is
+`src/monitoring.rs:145`, not `src/main.rs` (only `run_monitor` is), and the
+1517a263 re-baseline archive is on **codinghome** (the bead's "this host",
+where `/var/cache/icg/denials.jsonl.pre-rebaseline-20260907` exists), not
+ex44 — ex44 was decommissioned 2026-08-30, a week before that close. No other
+citation required change; no bead moved to no-evidence.
