@@ -39,13 +39,23 @@ pub fn is_github_workflows_path(path: &str) -> bool {
         .any(|pair| component_eq(&pair[0], ".github") && component_eq(&pair[1], "workflows"))
 }
 
-/// Human-readable explanation for why a `.github/workflows/**` path is
-/// protected, shared by [`detect`] and any caller that needs the same wording
-/// without going through the detection call.
+/// The redirect shown when a `.github/workflows/**` write is denied.
+///
+/// Per the project's redirect policy (`docs/notes/redirect-not-just-block.md`)
+/// a denial must be actionable, not just a block: the reason states *why* the
+/// write is refused and *what to do instead* concretely enough that the next
+/// step needs no research. The sanctioned alternative here is the reviewed
+/// channel -- a human maintainer making the change in a reviewed pull request,
+/// with CI-pipeline changes landing in the `declarative-config` repository
+/// where the Argo Workflows templates live -- not a different spelling of the
+/// same direct write.
 pub const PROTECTED_REASON: &str = "Writes to .github/workflows/ are blocked: workflow \
-    definitions grant arbitrary CI privileges and must not be modified by an automated \
-    write/edit. Ask a human maintainer to make this change via a reviewed pull request \
-    instead.";
+    definitions grant arbitrary CI privileges, so an automated write/edit must not \
+    modify them. Do not re-attempt this write. Route the change through the reviewed \
+    channel instead: a human maintainer makes workflow changes in a reviewed pull \
+    request, and CI pipelines run on Argo Workflows in the iad-ci cluster with their \
+    templates in the declarative-config repository (k8s/iad-ci/argo-workflows/), so \
+    propose the change there rather than writing the file directly.";
 
 /// Path fixtures that must trip the guard, shared by this module's tests and
 /// the hook-level integration tests
@@ -261,5 +271,35 @@ mod tests {
     fn detect_is_match_reflects_variant() {
         assert!(detect(".github/workflows/ci.yml").is_match());
         assert!(!detect("README.md").is_match());
+    }
+
+    /// The denial reason is a redirect, not just a block: it must state why
+    /// the write is refused and name the sanctioned alternative concretely
+    /// enough that the next step needs no research -- the reviewed pull
+    /// request channel and the repository where CI templates actually live.
+    #[test]
+    fn protected_reason_is_an_actionable_redirect_not_just_a_block() {
+        // Why the write is blocked.
+        assert!(
+            PROTECTED_REASON.contains("blocked"),
+            "reason should state that the write is blocked: {PROTECTED_REASON}"
+        );
+        assert!(
+            PROTECTED_REASON.contains("CI privileges"),
+            "reason should state why the path is protected: {PROTECTED_REASON}"
+        );
+        // What to do instead.
+        assert!(
+            PROTECTED_REASON.contains("instead"),
+            "reason should mark the alternative with \"instead\": {PROTECTED_REASON}"
+        );
+        assert!(
+            PROTECTED_REASON.contains("reviewed pull request"),
+            "reason should name the reviewed channel: {PROTECTED_REASON}"
+        );
+        assert!(
+            PROTECTED_REASON.contains("declarative-config"),
+            "reason should point at where CI templates actually live: {PROTECTED_REASON}"
+        );
     }
 }

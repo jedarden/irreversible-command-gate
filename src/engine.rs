@@ -1182,20 +1182,58 @@ impl Engine {
             return Ok(None);
         };
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            Self::input_source_from_pre_tool_use(input)
-        }));
-        match result {
-            Ok(Ok(input)) => Ok(input),
+        Ok(self.input_source_from_pre_tool_use_fail_open(input))
+    }
+
+    /// Top-level fail-open boundary for one stage of the hook detection
+    /// pipeline.
+    ///
+    /// Runs `pipeline` and collapses every in-process failure into `None` --
+    /// the value every hook caller routes to a plain allow. A structured
+    /// [`PreToolUseError`] (input that never parsed) and a panic from inside
+    /// the patch parser or the path matcher (input they did not anticipate)
+    /// are treated identically: the fault is reported and the write is never
+    /// blocked by the guard's own failure. Evaluation-stage failures have
+    /// their own `catch_unwind` boundary in [`Self::evaluate_content`], which
+    /// additionally honors an operator's fail-closed policy; the stages this
+    /// wraps run before any decision exists, so there is nothing to preserve.
+    fn fail_open_boundary<T>(
+        &self,
+        stage: &str,
+        pipeline: impl FnOnce() -> PreToolUseResult<T>,
+    ) -> Option<T> {
+        match catch_unwind(AssertUnwindSafe(pipeline)) {
+            Ok(Ok(value)) => Some(value),
             Ok(Err(error)) => {
-                report_failure(self.fail_closed, &format!("stdin input failure: {error}"));
-                Ok(None)
+                report_failure(self.fail_closed, &format!("{stage} failed: {error}"));
+                None
             }
             Err(_) => {
-                report_failure(self.fail_closed, "stdin input conversion panicked");
-                Ok(None)
+                report_failure(self.fail_closed, &format!("{stage} panicked"));
+                None
             }
         }
+    }
+
+    /// Convert a validated PreToolUse input into an [`InputSource`], failing
+    /// open.
+    ///
+    /// This is the boundary the `icg hook` front-end wraps its whole
+    /// predicate+detection pipeline in after the stdin read: any error or
+    /// panic inside `apply_patch` normalization or the `.github/workflows`
+    /// path matcher on input they did not anticipate yields `None` -- which
+    /// the hook front-end renders as a plain allow -- instead of crashing the
+    /// hook or blocking the write. Only a genuinely parsed
+    /// Write/Edit/Bash/apply_patch call returns `Some`; an unrecognized tool
+    /// name is also fail-open by contract and returns `None`.
+    pub fn input_source_from_pre_tool_use_fail_open(
+        &self,
+        input: PreToolUseInput,
+    ) -> Option<InputSource> {
+        self.fail_open_boundary("hook input conversion", || {
+            Self::input_source_from_pre_tool_use(input)
+        })
+        .flatten()
     }
 
     /// Read the validated PreToolUse input together with its original JSON
@@ -4267,6 +4305,67 @@ mod tests {
                 "expected InvalidInput for apply_patch, got {error:?}"
             );
         }
+    }
+
+    /// The top-level fail-open boundary must turn an internal pipeline fault
+    /// into fail-open, never into a crash or a denial: a stub that panics --
+    /// standing in for any unexpected exception in the patch parser or the
+    /// path matcher on input they did not anticipate -- collapses to `None`,
+    /// which the `icg hook` front-end renders as a plain allow. The same
+    /// boundary must pass a healthy stage through untouched, so the fault
+    /// handling cannot silently swallow real input.
+    #[test]
+    fn fail_open_boundary_turns_an_injected_pipeline_fault_into_an_allow() {
+        let engine = default_engine();
+
+        let outcome: Option<Option<InputSource>> =
+            engine.fail_open_boundary("injected fault", || {
+                panic!("injected detection-pipeline fault");
+            });
+        assert_eq!(
+            outcome, None,
+            "an internal pipeline fault must fail open to no input, never propagate"
+        );
+
+        let healthy: Option<Option<InputSource>> =
+            engine.fail_open_boundary("healthy stage", || {
+                Engine::input_source_from_pre_tool_use(apply_patch_input(
+                    "*** Begin Patch\n*** Add File: notes.md\n+hello\n*** End Patch",
+                ))
+            });
+        assert!(
+            healthy.is_some(),
+            "a stage that did not fault must pass through the boundary unchanged"
+        );
+    }
+
+    /// The full fail-open chain for a Write the pipeline cannot process:
+    /// unparseable `apply_patch` input through the public conversion boundary
+    /// yields `None` -- the value the hook front-end maps to a plain allow --
+    /// while a well-formed patch touching a guarded path through the same
+    /// boundary still converts and still denies. The boundary swallows
+    /// failures only, never real detections.
+    #[test]
+    fn fail_open_conversion_allows_unparseable_patches_and_keeps_real_detections() {
+        let engine = default_engine();
+
+        let unparseable = engine
+            .input_source_from_pre_tool_use_fail_open(apply_patch_input("totally not a patch"));
+        assert_eq!(
+            unparseable, None,
+            "unparseable patch input must fail open to the hook's allow path"
+        );
+
+        let guarded = engine
+            .input_source_from_pre_tool_use_fail_open(apply_patch_input(
+                "*** Begin Patch\n*** Add File: .github/workflows/ci.yml\n+on: push\n*** End Patch",
+            ))
+            .expect("a well-formed patch should still convert under the fail-open boundary");
+        let result = match guarded {
+            InputSource::Content(content) => engine.evaluate_content(&content),
+            other => panic!("expected a single-file Content source, got {other:?}"),
+        };
+        assert_workflows_denial(result, ".github/workflows/ci.yml");
     }
 
     #[test]

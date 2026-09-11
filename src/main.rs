@@ -1680,13 +1680,11 @@ fn main() -> Result<()> {
                 original_input.as_ref(),
             );
             let input_source = match hook_input {
-                Some(input) => match Engine::input_source_from_pre_tool_use(input) {
-                    Ok(source) => source,
-                    Err(error) => {
-                        eprintln!("Engine: invalid hook input: {error}");
-                        None
-                    }
-                },
+                // The whole predicate+detection pipeline sits behind the
+                // engine's fail-open boundary: an unparseable tool call or an
+                // unexpected panic in the patch parser / path matcher yields
+                // None, which the None branch below renders as a plain allow.
+                Some(input) => engine.input_source_from_pre_tool_use_fail_open(input),
                 None => None,
             };
 
