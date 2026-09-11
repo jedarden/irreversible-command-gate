@@ -1,8 +1,28 @@
 # Closed beads: release verification / fail-closed harness behavior
 
-Plain enumeration only (per irrevers-622aae24). No evidence gathering, no
-analysis, no edits to docs/plan/plan.md. Dates are the bead's `updated_at`
-timestamp at close (bead-rs does not track a separate close timestamp).
+Plain enumeration only. No evidence gathering, no analysis, no edits to
+docs/plan/plan.md. Second pass, superseding the 2026-09-10 pass (irrevers-622aae24,
+41 IDs); the one change is the addition of irrevers-49dbb095 (closed 2026-09-11,
+after the first pass froze its snapshot).
+
+## Enumeration method (this pass: irrevers-5dfe499e, 2026-09-11)
+
+- Universe: `bead list --status closed --limit 1000 --json` → **359 closed beads**
+  (JSONL; the flag needs an explicit `--limit`, the default page is smaller).
+- Broad candidate filter, case-insensitive over title+description:
+  `releas | verif | verify | fail-closed | fail-open | harness | gate | gating |
+  integrit | icg-ci | self-updat | icg update | trust pointer | canary | rollout |
+  rule pack | poison-pill | runbook | regression | coverage-diff | enforcement |
+  bypass | ICG_DISABLED | updater | artifact | WorkflowTemplate`
+  → 215 matches, curated by hand. The 144 non-matching titles were scanned
+  separately for regex misses; none were relevant (they are starvation alerts,
+  workflows-guard detection fixtures, engine internals, pack rule beads).
+- Close dates are the **last `closed` event per bead in
+  `.beads/checkpoint/forensic.jsonl`**, not `updated_at`: the evidence-extraction
+  pass on 2026-09-11T08:34 bulk-touched every inventory bead, so `updated_at` no
+  longer reflects closure for any of them. Four beads were close→reopen→close
+  (irrevers-84b36e47 three times; irrevers-e77615c8, irrevers-96594031,
+  irrevers-ca79d63a twice); the last close is the operative date.
 
 Anchor bead confirmed present: **irrevers-84b36e47**.
 
@@ -51,6 +71,14 @@ Anchor bead confirmed present: **irrevers-84b36e47**.
 | irrevers-0d710c9a | Write activation documentation and operational runbooks | 2026-08-21T03:06:08Z |
 | irrevers-1517a263 | cargo test writes into the production denial log on an instrumented host | 2026-09-07T20:31:16Z |
 | irrevers-0aa08f4e | Routine run_started lifecycle telemetry prints to stderr on every guarded invocation | 2026-09-08T02:10:01Z |
+| irrevers-49dbb095 | Wire fail-open boundary around the hook predicate pipeline | 2026-09-11T17:31:27Z |
+
+New since the first pass: **irrevers-49dbb095** — the hook predicate pipeline's
+fail-open boundary (`catch_unwind` around stdin read and evaluate_content/_batch,
+the latter still honoring the operator fail-closed policy; any upstream fault
+collapses to allow). This is the fail-open/fail-closed mechanism itself, not
+detection coverage, so it qualifies under the same rule that admitted
+irrevers-8d2d4a73.
 
 ## CI gate / test-harness infrastructure (regression-suite, coverage-diff gates in icg-ci)
 
@@ -58,13 +86,48 @@ Anchor bead confirmed present: **irrevers-84b36e47**.
 |---|---|---|
 | irrevers-b4b37bf0 | Layer 1: regression-suite CI gate | 2026-08-15T03:40:26Z |
 | irrevers-b0a453b2 | Layer 1: verify the regression-suite gate actually fails the build | 2026-08-15T13:33:59Z |
-| irrevers-f61efd80 | Layer 1: coverage-diff CI gate | 2026-08-15T04:05:57Z |
+| irrevers-f61efd80 | Layer 1: coverage-diff CI gate | 2026-08-15T03:40:26Z |
 | irrevers-29a9131c | Layer 1: verify the coverage-diff gate actually blocks an unjustified change | 2026-08-15T13:48:19Z |
 | irrevers-ed77224f | End-to-end integration testing for icg-ci workflow | 2026-08-16T19:07:41Z |
 
-Excluded as noise: bot-generated "Starvation alert" / "[Unravel]" beads, duplicate
-"Genesis: irreversible-command-gate Implementation" beads, generic scenario/example
-coverage housekeeping, and one-off test/smoke beads unrelated to release or
-fail-closed behavior (full closed-bead JSON dump used for this pass is at
-`/tmp/claude-1000/-home-coding-irreversible-command-gate/8dc8251b-caf0-4c28-b112-7a857916e7e5/scratchpad/closed_beads.jsonl`,
-session-scoped and not committed).
+## Borderline beads — explicit exclusion reasoning
+
+- **irrevers-f0e0f9db** (Add actionable redirect message and fail-open error
+  handling for the workflows-write guard, 2026-09-11T16:27:13Z) — half qualifies:
+  its acceptance included a top-level fail-open error boundary. Excluded because
+  that boundary was superseded by irrevers-49dbb095 (which owns the boundary and
+  explicitly consumes this bead's children); the remaining scope (redirect
+  message text) is detection UX, not fail-closed behavior.
+- **irrevers-63e6ab04 / irrevers-69594753 / irrevers-248fca69** (wire
+  coverage-diff / regression suite into icg-ci) — real harness-verification
+  content, but duplicate lineages of beads already listed (irrevers-e00a5381
+  created the template; irrevers-b4b37bf0 / irrevers-f61efd80 are the gates;
+  irrevers-ed77224f the e2e). Listed once under their canonical IDs to keep the
+  evidence roll-up single-counted.
+- **irrevers-0e11e6e6** (icg backup create and verify commands) — matches
+  "verify" but is backup/restore tooling, not release distribution integrity or
+  fail-closed behavior.
+- **irrevers-63087cdd** (install.sh created the telemetry cache root-only) —
+  telemetry availability indirectly feeds poison-pill deny-rate signals, but it
+  is ops plumbing on the install path, not the fail-closed mechanism; kept out
+  to stay consistent with the first pass and the completed evidence chain.
+- **irrevers-705b9ef1** (hook mode cannot load unconditional packs in
+  production) — pack-loading reliability in production, not the fail-open /
+  fail-closed transition or its policy.
+- **irrevers-be464cd7** ("Run the CI gate on the workflows-guard hardening") —
+  "CI gate" here means running CI on a change, not the Layer-1 regression-suite /
+  coverage-diff gates that this inventory tracks.
+- **Workflows-guard family, ~30 beads closed 2026-09-10/11** (irrevers-61a08562,
+  irrevers-869917ad, irrevers-f4075f89, irrevers-a1d7192b, irrevers-ad6f8324,
+  irrevers-4ba9a6b6, fixtures/tests through irrevers-a39bdf35) — enforcement
+  *coverage* (a new deny rule and its detection), not release verification or
+  the fail-closed mechanism. Tracked by its own umbrella, irrevers-e58ddf25.
+- **Evidence-pipeline meta-beads, ~35 closed 2026-09-10/11** (irrevers-e942e828
+  through irrevers-fa1b03f9, incl. first-pass bead irrevers-622aae24 and final
+  inventory bead irrevers-f7a52307) — process beads about summarizing and
+  verifying evidence for the inventory, not about the product's behavior.
+- **Noise**: bot-generated "Starvation alert" / "[Unravel]" beads (some matched
+  the filter via "integrity"/"verification" in boilerplate), duplicate "Genesis:
+  irreversible-command-gate Implementation" beads, duplicate-title batch beads
+  (coverage-diff fixtures, regression generation), generic scenario/coverage
+  housekeeping, and engine/detection internals (lexer, tokenization, pack rules).
