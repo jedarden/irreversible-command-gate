@@ -31,6 +31,16 @@ precisely — they had quoted total-churn numbers as insertions: `+78` →
 irrevers-96594031, and `+731`/`+283`/`+119` → `+642 −89`/`+236 −47`/
 `+66 −53` under irrevers-075634b8. No citation required retraction.
 
+Verified again 2026-09-11 (irrevers-552eca96): all 13 in-repo commit SHAs and
+the 4 `~/declarative-config` SHAs, every named test, every line reference
+(workflowtemplate lines 130, 117/121/156/162, 202–224; test lines 330/436,
+28/104/183/236, 404/450, 19/47, 967, 127), and the diffstats were re-resolved
+against git history, the current tree, `bead show` for all eight beads, and
+live iad-ci (`icg-ci` template present). All verify. One precision fix: the
+a03a7e6 Cargo diffstat under irrevers-96594031 is now stated as +8 −123 across
+both files — the earlier "+8 −122" was Cargo.lock's delta alone (its re-audit
+restatement had again quoted the single-file churn shape it was correcting).
+
 ---
 
 ## irrevers-2cb3dbd2 — Gate the actual modular release packs in icg-ci instead of static fixtures
@@ -159,7 +169,9 @@ superseded by the archive-deploying updater of irrevers-075634b8 (`409ca42`).
    system paths for all artifacts" — runtime state
    (`denial_log.rs`, `health.rs`, `state_store.rs`) moved from user-writable
    `dirs::state_dir()`/`dirs::cache_dir()` to `/var/cache/icg/`, and the
-   `dirs` dependency was removed (Cargo.toml, Cargo.lock +8 −122).
+   `dirs` dependency was removed (Cargo.toml, Cargo.lock together +8 −123 —
+   Cargo.lock +8 −122, Cargo.toml −1; restated precisely by irrevers-552eca96,
+   which found the earlier "+8 −122" was Cargo.lock's delta alone).
 
 The scoped check exists as described: `verify_artifact_directory_security()`
 (`src/trust_pointer.rs:127`, introduced `4d5c1a5`, 2026-08-15) fails on a

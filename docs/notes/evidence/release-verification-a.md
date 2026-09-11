@@ -32,6 +32,17 @@ hardcodes 0.1.0), and refreshes of two volatile live-state claims (iad-ci
 workflow retention under irrevers-84b36e47; the release/tag ceiling under
 irrevers-eff8909f).
 
+Verified again 2026-09-11 (irrevers-552eca96): all 11 commit SHAs, the three
+example tag targets, every named test and line reference, and both image pins
+were re-resolved against git history and the current tree, and the live checks
+were re-run (v0.1.1 still a non-draft four-asset release, published
+2026-09-06T13:06:02Z; v0.1.16 — current Latest — carries the same four assets;
+`icg-ci` still applied on iad-ci). All verify. Two in-place updates: a
+refreshed release/tag ceiling under irrevers-eff8909f (origin tags now
+`v0.1.7`–`v0.1.17`, GitHub releases v0.1.1–v0.1.16), and a note under
+irrevers-340ae322 recording an uncommitted working-tree VERSION bump to 0.1.1
+in flight at verification time.
+
 ---
 
 ## irrevers-84b36e47 — Verify icg-ci produces a real, complete GitHub release
@@ -108,7 +119,11 @@ hardcoded verbatim in the `icg-ci-guarded-workflowtemplate.yml` image
 references (`ronaldraygun/argo-guarded-builder:0.1.0` at both `image:` lines).
 (Corrected by the irrevers-61ad3e1e re-audit: no committed bump has landed —
 the VERSION file's only commit is e759254 — so the earlier "since bumped"
-parenthetical was removed.)
+parenthetical was removed. Still true at the irrevers-552eca96 verification
+later the same day: HEAD pins 0.1.0 in VERSION and at both `image:` lines —
+though a working-tree VERSION bump to 0.1.1 was sitting uncommitted in the
+shared checkout at that time, so a committed bump is the first thing to
+re-check if this citation stops verifying.)
 
 ## irrevers-e2bb8fbf — Add --channel to icg trust to match icg update (canary rollout)
 
@@ -175,8 +190,10 @@ the bead's stated range now exist — `v0.1.7`–`v0.1.9` tags and releases
 `v0.1.7`–`v0.1.10` as of the irrevers-8176471b audit; refreshed by
 irrevers-61ad3e1e 2026-09-11: origin now carries tags `v0.1.7`–`v0.1.14` and
 the GitHub mirror has releases v0.1.1–v0.1.14 (v0.1.14 Latest, all four
-assets); (2) the bead's "zero GitHub Releases
+assets); refreshed again by irrevers-552eca96 2026-09-11: origin tags now run
+`v0.1.7`–`v0.1.17` and the GitHub mirror has releases v0.1.1–v0.1.16
+(v0.1.16 Latest, all four assets); (2) the bead's "zero GitHub Releases
 exist" line was true only against origin (Forgejo `git.ardenone.com`, no
 GitHub host configured there) — the GitHub mirror does have releases v0.1.1
 through v0.1.10, verified live 2026-09-11 (v0.1.1–v0.1.7 verified in the
-original 2026-09-10 pass; the live ceiling is now v0.1.14, see (1)).
+original 2026-09-10 pass; the live ceiling is now v0.1.16, see (1)).
