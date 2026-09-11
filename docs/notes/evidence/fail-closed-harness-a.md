@@ -73,6 +73,16 @@ fail-open baseline (`recovered_guard_crash_is_fail_open_by_default_and_persisted
 restarts. The mode store itself and policy-level unit tests came from
 `bb362fb` (`engine_uses_fail_closed_mode_for_guard_load_failure`).
 
+Audit note (2026-09-10): the baseline test above no longer resolves by its
+original name at HEAD — `0e669f2` (2026-09-08, irrevers-3e6c6fde) renamed it to
+`recovered_guard_crash_records_evidence_and_reconciles_into_policy` when crash
+recovery was reworked to record evidence instead of policy writes. The successor
+still asserts the fail-open default (hook exits success with a
+`"permissionDecision":"allow"` body), so the guarantee the bead required is
+intact under the new name; `recovered_guard_crash_denies_in_fail_closed_mode`
+and `lifecycle_reports_recovered_crash_once` are unchanged at HEAD
+(`tests/fail_closed_runtime_tests.rs:240` and `:298`).
+
 ## irrevers-019c36d3 — Implement fail-closed policy transition mechanism
 
 **Verifiable — strongest record in this batch.** The bead's own close notes name
