@@ -17,6 +17,23 @@ close" correspondences below account for. Three of the ten (the 2026-08-21
 batch) carry no bead ID in any commit message — their commits were located by
 per-file history and commit/second-level close-time correspondence instead.
 
+Git-evidence pass 2026-09-11 (irrevers-f574a666, third child of
+irrevers-c52de1f2, following irrevers-2f2c25b5's identical pass over the
+release-verification section): for every bead below, `git log --all --grep`
+was run for the bead ID (fixed-string, subject+body) and for distinctive title
+keywords, and each matching commit's numstat was inspected for test files. All
+12 unique commit hashes cited in this file were re-resolved with
+`git cat-file -e` at HEAD `cb2d4e1` — all resolve with the subjects claimed.
+No commit has touched `src/` or `tests/` since the irrevers-d364e844
+re-verification (`9f404dd`), so every line anchor re-checked this pass sits in
+an unchanged tree. A per-bead search record is appended to each entry. New
+facts this pass: test files are named for every implementing commit —
+including the explicit "no test files" findings for `c38b0cd` (Dockerfile-only)
+and the docs-only commits under irrevers-0d710c9a, and the inline-module-only
+shape of the irrevers-ffdc924b/irrevers-9007792b commits; the adjacent keyword
+hits that belong to other beads (`d88da13`, `2699ca7`, `2e61ac4`, `d7b84c9`)
+are recorded and attributed where they belong.
+
 ---
 
 ## irrevers-edb5c4ca — Stop reconciling the fail-closed policy from the hook and wrapper paths
@@ -40,6 +57,10 @@ lock. `src/main.rs` is +14/−46 lines in the commit (the guarded reconcile
 plumbing removed); `cargo test` green (216 unit + all integration suites) is
 recorded in the same body.
 
+Git searches (irrevers-f574a666): ID grep → `0a5faa9` (named in the subject,
+shared changeset); no other hits. Test files:
+`tests/fail_closed_runtime_tests.rs` (+170 −5).
+
 ## irrevers-9eb4de16 — Add regression tests for a root-owned policy directory on the hook path
 
 **Verifiable.** Same commit `0a5faa9` (02:06:25Z; bead closed 02:07:02Z), which
@@ -60,6 +81,11 @@ markdown "**Mode:** FailOpen"). One subsequent refinement is part of the
 record: the test originally filtered `icg_health_event` lines out of the
 stderr assertion (deliberately, pointing at irrevers-0aa08f4e), and commit
 `c6dcc3c` removed that filter once the run_started print was gone.
+
+Git searches (irrevers-f574a666): ID grep → `0a5faa9` (named in the subject,
+shared changeset); no other hits. Test files:
+`tests/fail_closed_runtime_tests.rs` (+170 −5), plus the later refinement
+`c6dcc3c` to the same file (+32 −15).
 
 ## irrevers-93baa29a — Verify icg policy status and reconcile as root on an installed host layout
 
@@ -88,6 +114,12 @@ working invocation is `/run/wrappers/bin/sudo -n /usr/local/bin/icg …`. Only
 exit codes, outcome variants, and transition names are recorded — no policy
 value or file content, per the bead's own redaction criterion.
 
+Git searches (irrevers-f574a666): ID grep → no hits; keywords "policy
+reconcile" / "policy status" → only other beads' commits (`0a5faa9`,
+`0e669f2`, `2699ca7` — all body mentions). **No git evidence found**, which
+is the expected shape for a verification-only bead: the evidence is the
+recorded manual verification on the bead itself, as the entry states.
+
 ## irrevers-3e6c6fde — Hook and wrapper guarded paths take the fail-closed policy lock via crash recovery
 
 **Verifiable — strongest record in this batch.** The bead is the defect report
@@ -115,6 +147,11 @@ same commit (`docs/operators/fail-closed-mode.md` +23,
 `docs/notes/fail-closed-policy.md` +13): reconciliation is operator-only, and
 crash evidence flows through the state store.
 
+Git searches (irrevers-f574a666): ID grep → `0e669f2`; keyword "crash
+recovery records" → the same commit. Test files:
+`tests/fail_closed_runtime_tests.rs` (+196 −7) and
+`tests/fail_closed_policy_tests.rs` (+55).
+
 ## irrevers-50077acb — Set explicit root-owned 0755 modes on the icg trust directories in argo-guarded-builder
 
 **Verifiable.** Commit `c38b0cd` (2026-09-08 05:26:43Z, "fix: pin root-owned
@@ -136,6 +173,14 @@ also ships the semver-shape check replacing the exact `ICG_VERSION` match
 records the in-build assertion RUN as the standing verification; the image
 itself is built by kaniko in iad-ci at release time, so no local image build
 is part of the record.
+
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "0755" →
+`c38b0cd` plus three adjacent fixes that belong to other beads, recorded and
+attributed elsewhere: `d88da13` (irrevers-f839b213, `src/trust_pointer.rs`
++276 −30), `2699ca7` and `2e61ac4` (irrevers-beee1069,
+`tests/fail_closed_runtime_tests.rs`). **`c38b0cd` touched no test files** —
+`containers/argo-guarded-builder/Dockerfile` (+40 −2) is the entire diff;
+its standing verification is the build-time assertion RUN, not a test.
 
 ## irrevers-ffdc924b — Add guard health tracking and crash monitoring infrastructure
 
@@ -161,6 +206,19 @@ the inline modules of the files that carry them (`src/health.rs`, plus
 `src/metrics.rs` for `test_guard_metrics_from_persisted_health` and
 `src/telemetry.rs` for `health_snapshot_round_trips_with_telemetry`).
 
+Git searches (irrevers-f574a666): ID grep → `9f404dd` only — the
+irrevers-d364e844 evidence re-verification commit, which names this ID and
+irrevers-9007792b in its body; no work commit names the ID, as the entry
+states. Keyword "guard health tracking" → `a525523`. Test files: none as
+separate files — the tests ship inline in the same commit's modules
+(`src/health.rs` test module: `stale_run_marker_is_recorded_as_a_crash_on_
+next_start` :1438, `clean_exit_clears_durable_run_marker` :1458,
+`exit_status_classifies_signals_and_oom_separately` :1475,
+`cgroup_oom_counter_provides_evidence_for_sigkill` :1499, with helpers
+`read_oom_kill_count` :313 and `with_oom_events_path` :274; `src/metrics.rs`
+:868; `src/telemetry.rs` :906) — all present at HEAD, line numbers
+re-checked this pass.
+
 ## irrevers-9007792b — Operational monitoring and alerting infrastructure
 
 **Verifiable.** Again no bead ID in any message; the implementing commit is
@@ -185,6 +243,19 @@ operational_metrics` and `malformed_pack_is_visible_as_a_metric` (rule-pack
 loading errors visible as a metric — the bead's "rule pack loading errors"
 alerting input). The whole `monitoring/` tree is present at HEAD, so the
 config artifacts cannot silently disappear.
+
+Git searches (irrevers-f574a666): ID grep → `9f404dd` (body mention), and
+`8ae399c` names the ID bare — `(9007792b)` in its body — exactly as the
+re-scoped audit note below records; no work commit names the ID. Keyword
+"operational monitoring" → `a750033`. An adjacent keyword hit, `d7b84c9`
+("checkpoint health monitoring and auto-repair", body says "monitoring
+integration"), is a different feature (`src/checkpoint_monitor.rs`,
+2026-08-26) and is not this bead's commit. Test files: none as separate
+files — inline, added by `a750033` and present at HEAD
+(`collects_durable_inputs_and_emits_operational_metrics` at
+`src/monitoring.rs:470`, `malformed_pack_is_visible_as_a_metric` at :545,
+`redacts_payloads_when_full_content_logging_is_disabled` at
+`src/denial_log.rs:1153`; line numbers re-checked this pass).
 
 ## irrevers-0d710c9a — Write activation documentation and operational runbooks
 
@@ -212,6 +283,13 @@ commits (`bb362fb`, `17971b7`, `3f0f00d`, `a525523`) — immediately after
 commit and the irrevers-9007792b close (03:28:12Z) both postdate this docs
 commit.
 
+Git searches (irrevers-f574a666): ID grep → no hits; keywords "runbooks" →
+`21a6853`, "document fail-closed" → `859e19e`. **No test files** — both
+commits are docs-only (`859e19e`'s ten docs files; `21a6853`'s five
+runbooks), and `e759254` created
+`docs/monitoring-deployment-guide.md` (+283) among its builder-image tree.
+Consistent with the documentation-only scope.
+
 ## irrevers-1517a263 — cargo test writes into the production denial log on an instrumented host
 
 **Verifiable.** Fix commit `0c062e3` (2026-09-07 20:29:35Z, "fix(
@@ -235,6 +313,14 @@ the live log, test failed); with the fix the full suite appended zero records
 and did not create the file; codinghome's `/var/cache/icg/denials.jsonl` (77 records,
 15 fixture/probe ids) was archived to `denials.jsonl.pre-rebaseline-20260907`
 rather than deleted, so the trial window starts clean.
+
+Git searches (irrevers-f574a666): ID grep → `0c062e3`; keyword "denial log"
+→ the same commit plus adjacent surface commits — `7a3f37f` ("isolate
+duplicate-id scenario from host denial log", 2026-08-25), `eae4b99` ("chown
+the cache CONTENTS", 2026-09-06), and body mentions in `0a5faa9`/`c6dcc3c`.
+Test files: `tests/denial_log_pollution_guard_tests.rs` (+241, new — both
+named tests, `an_in_process_denial_never_reaches_the_live_log` at :185 and
+`guard_is_not_bypassed_by_an_exported_sink` at :65 at HEAD).
 
 ## irrevers-0aa08f4e — Routine run_started lifecycle telemetry prints to stderr on every guarded invocation
 
@@ -260,6 +346,14 @@ guarded invocation's stderr is zero bytes with the allow decision unchanged,
 while deployed v0.1.3 emits two lines on the identical input; `cargo test`
 green (60 suites), clippy `-D warnings` clean, and the suite appended nothing
 to the live denial log.
+
+Git searches (irrevers-f574a666): ID grep → `c6dcc3c` (subject) and
+`0a5faa9` — whose body names this ID as the reason the stderr filter
+existed, matching the refinement account in irrevers-9eb4de16's entry;
+keyword "starting a run" → `c6dcc3c`. Test files:
+`tests/fail_closed_runtime_tests.rs` (+32 −15 — the filter removal in
+`hook_invocation_leaves_administrator_owned_policy_untouched` and the new
+`a_recovered_crash_still_announces_itself_on_stderr`).
 
 ---
 

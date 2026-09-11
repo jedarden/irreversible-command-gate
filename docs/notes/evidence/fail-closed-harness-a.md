@@ -14,6 +14,22 @@ is closing evidence, not a status correction. Commit and close timestamps are
 UTC; the repo's commits carry -0400 offsets, so the "seconds before close"
 correspondences below account for that offset.
 
+Git-evidence pass 2026-09-11 (irrevers-f574a666, third child of
+irrevers-c52de1f2, following irrevers-2f2c25b5's identical pass over the
+release-verification section): for every bead below, `git log --all --grep`
+was run for the bead ID (fixed-string, subject+body) and for distinctive title
+keywords, and each matching commit's numstat was inspected for test files. All
+12 unique in-repo commit hashes cited in this file were re-resolved with
+`git cat-file -e` at HEAD `cb2d4e1` — all resolve with the subjects claimed.
+No commit has touched `src/` or `tests/` since the irrevers-d364e844
+re-verification (`9f404dd`), so every line anchor re-checked this pass sits in
+an unchanged tree. A per-bead search record is appended to each entry. New
+facts this pass: test files are now named for every implementing commit,
+including the fixture files under irrevers-8d2d4a73 and the explicit
+"no test files" findings for the docs-only commits (`16f84c1`, `859e19e`) and
+`9ec6848`; the poison-pill/rollback keyword family also surfaces six
+planning-phase body mentions, recorded under irrevers-0f49129d.
+
 ---
 
 ## irrevers-8d2d4a73 — Engine: unconditional fail-open on parse failure or exception
@@ -28,6 +44,12 @@ in the new `tests/fail_open_tests.rs` — `layer_one_malformed_stdin_fails_open`
 and `layer_one_corrupt_rule_pack_fails_open`, both asserting an allow exit and
 neither a crash nor a deny. Both tests and fixtures are still present at HEAD,
 so the guarantee cannot silently regress.
+
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "fail open on
+in-process" → `48acfc1`. Test files: `tests/fail_open_tests.rs` (+57, new —
+both layer-one tests) plus the two acceptance fixtures
+`tests/fixtures/malformed-stdin.json` and
+`tests/fixtures/corrupt-rule-pack.json` (+1 each, new).
 
 ## irrevers-aab3854c — Design fail-closed transition state machine and graduation criteria
 
@@ -44,6 +66,11 @@ close was a verification pass over the already-committed design ("verified
 existing docs/design/fail-closed-transition.md meets all acceptance criteria").
 No code changes in the commit — consistent with the design-only scope.
 
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "transition
+state machine" → `16f84c1` alone. **No test files** — docs only
+(`docs/design/fail-closed-transition.md` +342, new), as the design-only
+scope requires.
+
 ## irrevers-cd3f4c44 — Graduated fail-open to fail-closed policy for guard crashes
 
 **Verifiable.** Parent feature bead for the graduation mechanism. Commit
@@ -58,6 +85,16 @@ commits also named by child bead irrevers-019c36d3's close notes: `bb362fb`,
 of 3 consecutive eligible clean releases (`DEFAULT_GRADUATION_THRESHOLD`,
 `src/fail_closed.rs:34`) is the "exact threshold TBD at implementation time"
 resolved.
+
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "graduate guard
+crash policy" → `bb362fb`; the chain's other three surface by keyword, not by
+ID ("enforce configured guard crash policy" → `17971b7`, "graduation
+transitions" → `3f0f00d`, "document fail-closed" → `859e19e`). Test files:
+`bb362fb` → `tests/fail_closed_policy_tests.rs` (+167, new —
+`policy_reconciles_unique_clean_releases_and_graduates`, now at :50);
+`17971b7` → `tests/fail_closed_runtime_tests.rs` (+132, new); `3f0f00d` →
+the policy test file again (+59 −1); `859e19e` → docs only, **no test
+files**.
 
 ## irrevers-8a24ad8d — Implement fail-open baseline and fail-closed enforcement modes
 
@@ -83,6 +120,14 @@ intact under the new name; `recovered_guard_crash_denies_in_fail_closed_mode`
 and `lifecycle_reports_recovered_crash_once` are unchanged at HEAD
 (`tests/fail_closed_runtime_tests.rs:240` and `:298`).
 
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "enforce
+configured guard crash policy" → `17971b7`; "graduate guard crash policy" →
+`bb362fb`. Test files: `17971b7` → `tests/fail_closed_runtime_tests.rs`
+(+132, new — the acceptance matrix named above);
+`bb362fb` → `tests/fail_closed_policy_tests.rs` (+167, new — carrying
+`engine_uses_fail_closed_mode_for_guard_load_failure`, since relocated to
+`tests/fail_closed_policy_tests.rs:250`).
+
 ## irrevers-019c36d3 — Implement fail-closed policy transition mechanism
 
 **Verifiable — strongest record in this batch.** The bead's own close notes name
@@ -98,6 +143,14 @@ transitions" — transition audit + `operator_force_graduate_and_force_revert_ar
 updates). `859e19e` landed 3 minutes before the 03:08:53Z close. The close notes
 also record that no additional source changes were needed — the mechanism was
 already shipped by the child beads' work.
+
+Git searches (irrevers-f574a666): ID grep → no hits — the close notes name
+the commits, the commits do not name the bead. Keywords: "graduate guard
+crash policy" → `bb362fb`, "enforce configured guard crash policy" →
+`17971b7`, "graduation transitions" → `3f0f00d`, "document fail-closed" →
+`859e19e`. Test files: `bb362fb` → `tests/fail_closed_policy_tests.rs`
+(+167), `17971b7` → `tests/fail_closed_runtime_tests.rs` (+132), `3f0f00d`
+→ `tests/fail_closed_policy_tests.rs` (+59 −1); `859e19e` docs only.
 
 ## irrevers-fffef435 — Integrate with poison-pill mechanism for automatic graduation
 
@@ -117,6 +170,16 @@ integration never writes telemetry. Threshold is configurable with the required
 default: serde-defaulted `graduation_threshold` field =
 `DEFAULT_GRADUATION_THRESHOLD = 3`.
 
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "poison-pill"
+→ `d653ade`, `721f3d9`, and six planning-phase body mentions (`864a6ba`,
+`bc148e8`, `41bb377`, `7e064c2`, `6f8573f`, `e97f98e`); "graduation
+transitions" narrows to `3f0f00d`. Test files: `bb362fb` →
+`tests/fail_closed_policy_tests.rs` (+167 —
+`policy_reconciles_unique_clean_releases_and_graduates` at :50 and
+`poison_pill_resets_open_policy_without_editing_telemetry` at :109);
+`3f0f00d` → same file (+59 −1 —
+`operator_force_graduate_and_force_revert_are_durable` at :214).
+
 ## irrevers-0f49129d — Poison-pill auto-rollback
 
 **Closed by split, not by implementation — and the successor carries the
@@ -132,6 +195,12 @@ ff4f17da, and the measurement half as deny-rate telemetry under b6579270. No
 commit lands directly under this bead ID; the original bundled scope is fully
 delivered, just under the two successors.
 
+Git searches (irrevers-f574a666): ID grep → no hits — consistent with the
+split record, **no git evidence found under this bead ID itself**. Keywords
+"poison-pill" and "auto-rollback" → only the successors' commits (`d653ade`
+reaction, `721f3d9` measurement — `tests/release_telemetry_tests.rs` +68 −1)
+plus the six planning-phase body mentions listed under irrevers-fffef435.
+
 ## irrevers-ff4f17da — Poison-pill auto-rollback: revert the trust pointer on a deny-rate spike
 
 **Verifiable.** Implementing commit `d653ade` (2026-08-20, "feat: add conservative
@@ -146,6 +215,16 @@ must not read as a bad release), `anomaly_after_early_window_does_not_rollback`,
 and `no_previous_pointer_is_not_guessed`. The asymmetry the bead required
 (revert automatic, adopt manual) is preserved in the design doc's transition
 table.
+
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "conservative
+poison-pill auto-rollback" → `d653ade`. Test files: none as separate files —
+`d653ade` adds `src/rollback.rs` (+371) with the inline test module carrying
+`release_is_fresh` (:212, the helper) and the four named tests
+`qualifying_fresh_release_rolls_back_to_exact_prior_pointer` (:294),
+`small_sample_does_not_rollback_even_with_all_denials` (:322),
+`anomaly_after_early_window_does_not_rollback` (:341),
+`no_previous_pointer_is_not_guessed` (:362) — all present at HEAD, line
+numbers re-checked this pass.
 
 ## irrevers-3fc4bdde — Apply the documented ICG_DISABLED emergency bypass to hook and PATH-wrapper enforcement
 
@@ -170,6 +249,13 @@ fail-open/fail-closed interaction to be defined; that is documented in
 `docs/operators/fail-closed-mode.md` (touched by the same commit) and
 `docs/runbooks/emergency-bypass.md` (+22 lines in the same commit).
 
+Git searches (irrevers-f574a666): ID grep → no hits; keyword "emergency
+bypass" → `20808e9` and `9ec6848` ("restore_emergency_bypasses compilation
+error"). Test files: `20808e9` → `tests/emergency_response_tests.rs`
+(+136 −8 — both named tests, including the un-ignored
+`emergency_scenario_3_bypass_guard_with_disabled_flag`, now at :68);
+`9ec6848` → `src/telemetry.rs` only (+57), **no test files**.
+
 ## irrevers-f891f555 — Make the fail-closed policy read path lock-free for guarded invocations
 
 **Verifiable.** Implementing commit `0a5faa9` (2026-09-07, "fix(irrevers-f891f555,
@@ -189,3 +275,10 @@ test: `hook_invocation_leaves_administrator_owned_policy_untouched` (plus
 `operator_policy_commands_manage_the_durable_policy` for the mutating path) in
 `tests/fail_closed_runtime_tests.rs`; mutating paths keep the exclusive lock,
 and the commit records `cargo test` green (216 unit + integration suites).
+
+Git searches (irrevers-f574a666): ID grep → `0a5faa9` (named in the subject,
+shared with irrevers-edb5c4ca and irrevers-9eb4de16); keyword "lock it
+cannot hold" → the same commit. Test files:
+`tests/fail_closed_runtime_tests.rs` (+170 −5 —
+`hook_invocation_leaves_administrator_owned_policy_untouched` and
+`operator_policy_commands_manage_the_durable_policy`).
