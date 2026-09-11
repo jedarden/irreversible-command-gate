@@ -48,6 +48,27 @@ the correction prose above are both accurate as written. One correction
 applied in place: the second-pass paragraph's SHA count (11 → 12; 8 → 9 in
 this repo). Per-ID verdicts: all five CONFIRMED.
 
+Git-evidence pass 2026-09-11 (irrevers-2e6ddeb3, fourth child of
+irrevers-c52de1f2, following irrevers-f574a666's identical pass over the
+fail-closed-harness files): for every bead below, `git log --all -F --grep`
+was run for the bead ID (fixed-string, subject+body) and for distinctive
+title keywords, and each hit's numstat was inspected for test files;
+commits invisible to message grep were recovered with `git log --all
+--diff-filter=A -- <file>`. All 18 unique in-repo commit hashes now cited
+in this file re-resolve with `git cat-file -e` at HEAD `a59a4a7`; the
+declarative-config checkout was re-fetched (HEAD `ade350d5`) and its three
+cited hashes (`0f3f5faf`, `083fd82e`, `d11a6472`) re-resolve there. The ID
+greps hit in exactly one place — `f61efd80` → `1fe1a56`, still the only
+commit in either repo naming any of the five IDs. `src/`, `tests/` and
+`containers/` are unchanged since the third pass (`f35591a..a59a4a7` is
+empty on those paths), so every line anchor above still sits in an
+unchanged tree. A per-bead search record is appended to each entry. New
+facts this pass: `97b8eba` is invisible to every message grep (file-history
+only); the close-time verifications of irrevers-b0a453b2 and
+irrevers-29a9131c are marked notes-only (no matching commits exist);
+`c096a1e` is fixture-only; and the workflow-level trigger commits under
+irrevers-ed77224f are README-only.
+
 All five beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction. Timestamps are UTC unless
 a `-0400` offset is shown; bead timestamps are UTC.
@@ -78,6 +99,19 @@ The gate still runs in CI today:
 invokes `regression-suite` on the merged release pack ("This now gates the
 ACTUAL packs being released, not static fixtures" — switched from static
 fixtures by `6eaeb70`/declarative-config `083fd82e`, 2026-08-26).
+
+Git searches (irrevers-2e6ddeb3): ID grep → no hits in this repo or
+declarative-config. Keyword "deny suite" → `0970190` alone; "regression" →
+`0970190` ("feat(regression): generate fixed deny suite", 2026-08-15) plus
+later same-family commits belonging to other beads: `cfb6dc9`/`da4c2aa`
+(2026-08-20, denial-recording corpus — a different feature; its test file
+`tests/auto_denial_regression_tests.rs` +130 new / +96 −1 respectively),
+`6eaeb70`, `e1aab5a` and `b8aed51` (recorded under b0a453b2, f61efd80 and
+the 2cb3dbd2 entry in release-verification-b). Test files: `0970190` →
+`tests/regression_suite_tests.rs` (+60, new) alongside `src/regression.rs`
+(+614, new), `src/main.rs` (+25) and `src/lib.rs` (+1) wiring the CLI. The
+CI wiring itself is declarative-config `0f3f5faf` ("ci(icg): run deny
+regression suite"), template-only — no test file can exist there.
 
 ## irrevers-b0a453b2 — Layer 1: verify the regression-suite gate actually fails the build
 
@@ -124,6 +158,20 @@ The verification the bead describes was real and reproducible when performed;
 the fail-on-weakening edge it exercised was consciously relaxed six weeks
 later and replaced with the pinned-corpus invariant above.
 
+Git searches (irrevers-2e6ddeb3): ID grep → no hits in either repo.
+Keyword "fails the build" → `e1aab5a` (body-only hit — the deliberate
+relaxation; tests `tests/regression_suite_scope_tests.rs` +164, new, and
+`tests/icg_ci_integration_tests.rs` +1) and `c38b0cd` (body-only hit,
+unrelated — that is the irrevers-50077acb trust-directory commit);
+"regression suite" → `6eaeb70` (body mention; tests
+`tests/release_gate_integrity_tests.rs` +284, new, and
+`tests/icg_ci_integration_tests.rs` +110), `1b6f6a6` (release notes) and
+`e904690` (planning docs). **No close-time git evidence**: the mutation
+experiment this bead closed on exists only in its close notes — no
+2026-08-15 commit implements or records it — so the bead is notes-only at
+close, with `e1aab5a` and `6eaeb70` the later commits that changed what it
+had verified.
+
 ## irrevers-f61efd80 — Layer 1: coverage-diff CI gate
 
 **Verifiable, with a closure-timing caveat.** The parent closed
@@ -145,6 +193,26 @@ commit in this repo whose message cites the bead is the follow-up naming
 reconciliation `1fe1a56` ("docs(plan, notes): reconcile destructive_patterns
 vs guarded_patterns naming") — the correction the bead's close notes
 describe. The gate still runs in CI today: template line 156.
+
+Git searches (irrevers-2e6ddeb3): ID grep → `1fe1a56` alone (docs-only:
+`docs/notes/release-integrity-verification.md` ±2, `docs/plan/plan.md` ±1 —
+**no test files**). Keyword "coverage" → `48d5a60` ("feat(coverage): add
+review report and justification tracking"; `tests/coverage_diff_tests.rs`
++96 −12) and `953b69c` ("test(engine): add command-mode safe_patterns
+precedence test"; the same test file +31 −7 plus
+`tests/fixtures/current-release-clean.json` +74 −8); "coverage diff" →
+`c096a1e`, `6eaeb70`; "coverage-diff" → `d866e61` ("docs: define
+coverage-diff review procedure", docs-only, **no test files**). **The
+origin commit is grep-invisible**: `97b8eba` ("feat(trust-pointer):
+implement Layer 4 minimal form trust pointer mechanism") never mentions
+coverage in subject or body and surfaced only via `git log --all
+--diff-filter=A -- src/coverage.rs`. Its test files:
+`tests/coverage_diff_tests.rs` (+112, new) and the three fixtures
+`tests/fixtures/previous-release.json` (+51),
+`tests/fixtures/current-release-clean.json` (+63),
+`tests/fixtures/current-release-regression.json` (+31), all new. CI
+wiring: declarative-config `d11a6472` ("ci(icg): add coverage diff gate"),
+template-only.
 
 ## irrevers-29a9131c — Layer 1: verify the coverage-diff gate actually blocks an unjustified change
 
@@ -185,6 +253,17 @@ not channels (verified live: `no_regressions`, exit 0 against the mutated
 copy described under irrevers-b0a453b2). Channel-weakening enforcement for
 shipped packs rests on the pinned regression corpus instead.
 
+Git searches (irrevers-2e6ddeb3): ID grep → no hits in either repo;
+keywords "unjustified" and "coverage gate" → **no hits at all**;
+"coverage-diff" → only planning/docs commits (`d866e61`, `b1b7fa0`,
+`e97f98e`, `e904690`). **No git evidence for the verification itself** —
+the block-then-pass experiment lives only in the bead's close notes. The
+one git trace of its aftermath is `c096a1e` ("test: add comprehensive
+coverage diff fixtures", 2026-08-16, found via "coverage diff"), which is
+**fixture-only** (`tests/fixtures/current-release-regression.json` +60 −3,
+`tests/fixtures/previous-release.json` +74 −8) — no `.rs` test files,
+matching the entry's claim that it fixed fixture data, not test code.
+
 ## irrevers-ed77224f — End-to-end integration testing for icg-ci workflow
 
 **Verifiable.** Implementing commit `287b866` (2026-08-16 15:07:24 -0400 =
@@ -213,6 +292,18 @@ bead closed (19:07:41Z). Mapping to the five areas the description listed:
   (see `release-verification-a.md`, irrevers-84b36e47).
 
 All four integration tests pass in the current tree (2026-09-10 run above).
+
+Git searches (irrevers-2e6ddeb3): ID grep → no hits in either repo.
+Keyword "end-to-end" → `287b866` ("test: add icg-ci end-to-end integration
+coverage") plus `e47419a` and `1994187` (both 2026-08-26, README-only — +2
+and +1 lines; the closest in-repo record of actually triggering the
+workflow, i.e. area (1)'s operational proof) and `0e669f2` (body-only hit,
+unrelated crash-recovery commit); "integration coverage" → `287b866` and
+`e9951d9` (2026-09-10, hook front-end guard — unrelated area). Test files:
+`287b866` → `tests/icg_ci_integration_tests.rs` (+397, new) with
+`src/update.rs` (+22 −4); the later hardening `409ca42` rewrites the same
+test file (+236 −47); `6eaeb70` extends it (+110) and adds
+`tests/release_gate_integrity_tests.rs` (+284, new).
 
 ---
 
