@@ -21,6 +21,17 @@ irrevers-340ae322, and the release-count refresh under irrevers-eff8909f.
 All eight beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction.
 
+Re-audited 2026-09-11 (irrevers-61ad3e1e): all 12 unique commit SHAs, the
+three example tag targets, and every test name and line reference below were
+re-resolved against git history and the current tree, and the quoted bead
+notes against `bead show`. All verify. Three in-place updates: the `1b6f6a6`
+quotation under irrevers-37eb1100 (the phrase quoted was neither the commit's
+subject nor an exact body quote), the VERSION "since bumped" parenthetical
+under irrevers-340ae322 (no committed bump has landed; the template still
+hardcodes 0.1.0), and refreshes of two volatile live-state claims (iad-ci
+workflow retention under irrevers-84b36e47; the release/tag ceiling under
+irrevers-eff8909f).
+
 ---
 
 ## irrevers-84b36e47 — Verify icg-ci produces a real, complete GitHub release
@@ -40,9 +51,10 @@ status tests from the CI image's /etc/icg state"). v0.1.2 and later releases
 carry the same four assets, confirming the result reproduces.
 
 Caveat: the Argo Workflow object for the green run is no longer recoverable —
-iad-ci retains only 5 icg-ci workflows and none from Sep 5–7 (TTL-reaped), so
-the workflow name for the v0.1.1 run cannot be cited. The surviving GitHub
-release object is the evidence.
+iad-ci retains only a handful of recent icg-ci workflows (5 at the
+irrevers-8176471b audit, 3 at the irrevers-61ad3e1e re-audit, all from Sep 11)
+and none from Sep 5–7 (TTL-reaped), so the workflow name for the v0.1.1 run
+cannot be cited. The surviving GitHub release object is the evidence.
 
 ## irrevers-e77615c8 — icg-ci: publish the rule-pack artifact as a release asset
 
@@ -66,8 +78,11 @@ succeeds on every run.
 runbook") added `docs/runbooks/release-cutting.md` (108 lines) and linked it
 from `docs/notes/self-update-and-release-gating.md` — exactly matching the
 close notes. The runbook is still present (7.5KB) and was deliberately revised
-by the v0.1.2 release commit `1b6f6a6` ("icg-ci template cuts releases itself
-now"), i.e. it has been maintained, not just written.
+by the v0.1.2 release commit `1b6f6a6` ("chore: release v0.1.2", whose body
+notes "the `icg-ci` template has been doing that itself since it gained a
+release step"), i.e. it has been maintained, not just written. (Corrected by
+the irrevers-61ad3e1e re-audit: the earlier quotation here was neither the
+commit's subject nor an exact body quote.)
 
 ## irrevers-340ae322 — Prove ronaldraygun/argo-guarded-builder:0.1.0 is published and pullable by icg-ci
 
@@ -78,16 +93,22 @@ ronaldraygun/argo-guarded-builder:0.1.0` succeeded with manifest digest
 `sha256:dd3a46c3f85c1d6f52e55b4ad9a62cc06d6341b5055fdd5eb3e8bdd883d98ef5`, and
 workflow `icg-ci-rg9n7`'s `codex-hook-compatibility` pods reached `Running`
 (not ImagePullBackOff) while using the pinned image. Live re-check 2026-09-11
-(this audit): pod `icg-ci-f8crj-build-and-release-30640588` (created
-2026-09-11T00:06:52Z, iad-ci) is `Running` on
-`ronaldraygun/argo-guarded-builder:0.1.0` — the same tag still published and
-successfully pulled by icg-ci today. (The registry now answers anonymous
+(irrevers-8176471b): pod `icg-ci-f8crj-build-and-release-30640588` (created
+2026-09-11T00:06:52Z, iad-ci; since TTL-reaped) was `Running` on
+`ronaldraygun/argo-guarded-builder:0.1.0` — and the irrevers-61ad3e1e
+re-audit confirmed the same fact with pod
+`icg-ci-cjhgt-build-and-release-1498950909` (created 2026-09-11T01:30:57Z,
+`Running` on the same tag) — the tag is still published and successfully
+pulled by icg-ci today. (The registry now answers anonymous
 manifest requests with 401 — the repo is not anonymously pullable — so
 in-cluster pulls remain the only observable pullability proof from here.)
 In-repo corroboration:
-`containers/argo-guarded-builder/VERSION` pins the version that the
-`icg-ci-guarded-workflowtemplate.yml` image references resolve against (0.1.0
-at verification time; since bumped in a separate version-bump bead).
+`containers/argo-guarded-builder/VERSION` reads 0.1.0, matching the tag
+hardcoded verbatim in the `icg-ci-guarded-workflowtemplate.yml` image
+references (`ronaldraygun/argo-guarded-builder:0.1.0` at both `image:` lines).
+(Corrected by the irrevers-61ad3e1e re-audit: no committed bump has landed —
+the VERSION file's only commit is e759254 — so the earlier "since bumped"
+parenthetical was removed.)
 
 ## irrevers-e2bb8fbf — Add --channel to icg trust to match icg update (canary rollout)
 
@@ -149,10 +170,13 @@ and the reproducible source commands — is recorded verbatim in the bead's note
 (closed 2026-09-10T10:30Z). Spot-checked against local git: all seven tags
 exist, are lightweight, and point at the recorded SHAs (e.g. v0.1.0 →
 `f0fe556`, v0.1.2 → `1b6f6a6`, v0.1.6 → `aab687d`). Two nuances for downstream
-reconciliation (refreshed by the 2026-09-11 audit): (1) tags/releases beyond
+reconciliation (refreshed by the 2026-09-11 audits): (1) tags/releases beyond
 the bead's stated range now exist — `v0.1.7`–`v0.1.9` tags and releases
-`v0.1.7`–`v0.1.10` as of 2026-09-11; (2) the bead's "zero GitHub Releases
+`v0.1.7`–`v0.1.10` as of the irrevers-8176471b audit; refreshed by
+irrevers-61ad3e1e 2026-09-11: origin now carries tags `v0.1.7`–`v0.1.14` and
+the GitHub mirror has releases v0.1.1–v0.1.14 (v0.1.14 Latest, all four
+assets); (2) the bead's "zero GitHub Releases
 exist" line was true only against origin (Forgejo `git.ardenone.com`, no
 GitHub host configured there) — the GitHub mirror does have releases v0.1.1
 through v0.1.10, verified live 2026-09-11 (v0.1.1–v0.1.7 verified in the
-original 2026-09-10 pass).
+original 2026-09-10 pass; the live ceiling is now v0.1.14, see (1)).

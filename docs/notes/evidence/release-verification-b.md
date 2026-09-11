@@ -22,6 +22,15 @@ below is closing evidence, not a status correction. Timestamps are UTC unless
 a `-0400` offset is shown (commit timestamps are recorded in the repo's local
 zone); bead timestamps are UTC.
 
+Re-audited 2026-09-11 (irrevers-61ad3e1e): every commit SHA (13 in this repo,
+4 in `~/declarative-config`), every named test, every line reference, and the
+close-timestamp arithmetic below were re-resolved against git history, the
+current tree, and `bead show`. All verify. Four diffstat counts were restated
+precisely — they had quoted total-churn numbers as insertions: `+78` →
+`+72 −6` under irrevers-2cb3dbd2, `−130` → `+8 −122` under
+irrevers-96594031, and `+731`/`+283`/`+119` → `+642 −89`/`+236 −47`/
+`+66 −53` under irrevers-075634b8. No citation required retraction.
+
 ---
 
 ## irrevers-2cb3dbd2 — Gate the actual modular release packs in icg-ci instead of static fixtures
@@ -36,7 +45,7 @@ zone); bead timestamps are UTC.
   manifest-verification pair `pack_manifest_provides_cryptographic_verification`
   and `mutating_pack_after_manifest_causes_verification_failure`.
 - +110 lines in `tests/icg_ci_integration_tests.rs`.
-- +78 lines to the icg-ci workflow template switching the release stage from
+- 78 changed lines (+72 −6) in the icg-ci workflow template switching the release stage from
   static fixtures to the real bytes: `build-pack --pack-dir packs`,
   `pack-manifest --pack-dir packs`, `coverage-diff` and `redos-check` over the
   released packs, with the archive produced from the already-verified bytes.
@@ -150,7 +159,7 @@ superseded by the archive-deploying updater of irrevers-075634b8 (`409ca42`).
    system paths for all artifacts" — runtime state
    (`denial_log.rs`, `health.rs`, `state_store.rs`) moved from user-writable
    `dirs::state_dir()`/`dirs::cache_dir()` to `/var/cache/icg/`, and the
-   `dirs` dependency was removed (Cargo.toml, −130 lines of Cargo.lock).
+   `dirs` dependency was removed (Cargo.toml, Cargo.lock +8 −122).
 
 The scoped check exists as described: `verify_artifact_directory_security()`
 (`src/trust_pointer.rs:127`, introduced `4d5c1a5`, 2026-08-15) fails on a
@@ -204,7 +213,7 @@ today. The Argo-not-GitHub-Actions constraint is honored; this repo has no
 **Verifiable.** Implementing commit `409ca42` (2026-08-25 22:55:03 -0400 =
 2026-08-26T02:55:03Z) landed **10 seconds** before the bead closed
 (2026-08-26T02:55:13Z). "feat(update): atomically deploy modular pack
-archives" grew `src/update.rs` by +731 lines — modular-archive selection from
+archives" changed `src/update.rs` by 731 lines (+642 −89) — modular-archive selection from
 the trusted release, archive-layout and per-pack validation before
 activation, traversal/symlink hazard rejection, atomic swap of the whole
 root-owned pack directory with rollback preservation, channel-specific
@@ -212,12 +221,12 @@ directories — and wired it through `src/main.rs`, exactly the scope the
 description enumerates.
 
 The description's two demanded end-to-end tests are present in
-`tests/icg_ci_integration_tests.rs` (+283 lines in the same commit):
+`tests/icg_ci_integration_tests.rs` (+236 −47 in the same commit):
 `trusted_release_update_replaces_complete_pack_directory_and_preserves_enforcement`
 (line 330 — enforcement of secrets/image-tag/storage-class after update) and
 `malformed_release_archive_cannot_partially_deploy_or_escape_the_pack_root`
 (line 436 — a malformed archive cannot partially deploy or escape the pack
 root). Operator docs were updated in the same commit
-(`docs/operators/deployment-guide.md` +119, `docs/runbooks/rule-pack-updates.md`,
+(`docs/operators/deployment-guide.md` +66 −53, `docs/runbooks/rule-pack-updates.md`,
 `docs/notes/self-update-and-release-gating.md`), closing the "deployment docs
 say the production directory remains manual" gap the description called out.
