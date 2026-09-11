@@ -13,12 +13,16 @@ end state, stated precisely rather than aspirationally**: not full
 removal. Two things keep it alive under the plan's *current*, actually
 scheduled scope: (1) its kubectl-mutation rule is **permanently** excluded
 from absorption ("Explicitly not attempted" — zero-I/O determinism
-reasons that don't go away), and (2) its `.github/workflows` and `kind:
-Job`/`CronJob` rules aren't excluded on principle, just **not yet
-scheduled** by any phase (see
-`docs/notes/existing-enforcement-infrastructure.md`). So today's accurate
+reasons that don't go away), and (2) its `kind: Job`/`CronJob` rule isn't
+excluded on principle, just **not yet scheduled** by any phase (see
+`docs/notes/existing-enforcement-infrastructure.md`). Its
+`.github/workflows` rule once sat in category (2) beside it; it has since
+been absorbed — a built-in engine guard (pack attribution
+`github-workflows`) denies workflow-definition writes on Write/Edit and
+Codex `apply_patch` (2026-09), redundantly with the hook during
+coexistence. So today's accurate
 claim is "shrinks to at least a kubectl-only rump, plus whichever of the
-workflows/Job-CronJob rules remain unscheduled" — not "kubectl-only,"
+Job-CronJob rules remain unscheduled" — not "kubectl-only,"
 until a future phase actually picks up (2). "Deprecated" means
 "superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is

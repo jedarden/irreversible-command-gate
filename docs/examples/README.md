@@ -929,8 +929,9 @@ icg coverage --list
 # ✓ misc (deprecated tools, needle cleanup)
 # ✓ tmux (bare NATO sessions)
 #
+# Also built in (not a pack): .github/workflows/ write denial
+#
 # ❌ NOT COVERED:
-#   - .github/workflows/
 #   - kind: Job/CronJob
 #   - mutating kubectl verbs
 ```
@@ -955,9 +956,11 @@ cat > migration-plan.md <<'EOF'
 - Test thoroughly
 
 ## Phase 3: Keep org-rule-guard.py for Uncovered Rules (Ongoing)
-- .github/workflows/ (no icg equivalent planned)
 - kind: Job/CronJob (no icg equivalent planned)
 - mutating kubectl (permanent exclusion)
+
+Already absorbed (both hooks deny during coexistence):
+- .github/workflows/ (icg built-in guard, not a pack)
 EOF
 ```
 

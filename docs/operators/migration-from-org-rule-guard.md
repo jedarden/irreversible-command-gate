@@ -21,7 +21,7 @@ icg supersedes most of these rules and adds new coverage:
 
 | org-rule-guard.py Rule | icg Equivalent | Status |
 |------------------------|----------------|--------|
-| No `.github/workflows/*` | Not yet implemented (Phase 4) | Remains with org-rule-guard.py |
+| No `.github/workflows/*` | Built-in `github-workflows` guard (shipped) | **Covered by both** — redundant double-deny |
 | No `kind: Job`/`CronJob` | Not yet implemented (Phase 4) | Remains with org-rule-guard.py |
 | No `:latest` image tags | `image-tag` pack (includes bare-SHA) | **MIGRATED** |
 | No mutating `kubectl` | Explicitly not implemented | Remains with org-rule-guard.py |
@@ -39,12 +39,16 @@ icg supersedes most of these rules and adds new coverage:
 - icg handles new rules (openbao, git, beads, secrets in Bash)
 - org-rule-guard.py handles its original 5 rules
 
-**Phase 2: Gradual Transition** (Future)
-- Migrate `:latest` rule to icg
-- Keep org-rule-guard.py for kubectl, workflows, and credential rules
+**Phase 2: Gradual Transition** (In progress)
+- `:latest` rule migrated to icg (image-tag pack)
+- `.github/workflows/*` absorbed by icg's built-in `github-workflows` guard
+  (both hooks deny during coexistence)
+- org-rule-guard.py still owns kubectl, `kind: Job`/`CronJob`, and
+  Write/Edit credential rules
 
 **Phase 3: Deprecation** (Future)
-- org-rule-guard.py reduced to kubectl-only
+- org-rule-guard.py reduced to kubectl and `kind: Job`/`CronJob` (plus the
+  Write/Edit credential rule until icg covers that channel)
 - icg handles all other rules
 
 ## Pre-Migration Checklist
@@ -84,7 +88,8 @@ cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
 ### Review Known Limitations
 
 - [ ] Understood that `kubectl` mutations remain with org-rule-guard.py
-- [ ] Understood that `.github/workflows` rules remain with org-rule-guard.py
+- [ ] Understood that `.github/workflows` writes are denied by both icg
+      (built-in guard) and org-rule-guard.py during coexistence
 - [ ] Understood that double denials are expected during coexistence
 - [ ] Understood that icg does not defend against adversarial agents
 

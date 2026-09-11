@@ -90,12 +90,13 @@ assumed indefinite coexistence with `org-rule-guard.py`. That's stale: per
 `docs/plan/plan.md`'s Overview (2026-08-13 direction, since refined), that
 hook is expected to shrink toward deprecation as this project's coverage
 supersedes it — but not to full removal. Its kubectl-mutation rule is
-*permanently* excluded from absorption, and its `.github/workflows`/`kind:
-Job`/`CronJob` rules (1–2 below) aren't excluded on principle, just not yet
-scheduled by any phase — see plan.md's Overview for the precise current
-wording, which this note only paraphrases and shouldn't be treated as a
-substitute for. Coexistence is an interim state for whichever rules *do*
-get scheduled, not a permanent policy for all five. The plan already
+*permanently* excluded from absorption; its `kind: Job`/`CronJob` rule
+(2 below) isn't excluded on principle, just not yet scheduled by any
+phase; and its `.github/workflows` rule (1 below) has since been scheduled
+and absorbed — see plan.md's Overview for the precise current wording,
+which this note only paraphrases and shouldn't be treated as a substitute
+for. Coexistence is an interim state for whichever rules *do* get
+scheduled, not a permanent policy for all five. The plan already
 absorbs pieces of the five rules above rather than avoiding them:
 
 - **Rule 3 (`:latest` image tags)** — Phase 1's `image-tag` pack extends the
@@ -118,10 +119,17 @@ absorbs pieces of the five rules above rather than avoiding them:
   accurately needs live cluster state that would break this project's
   zero-I/O determinism. This rule stays `org-rule-guard.py`'s alone even
   after the others are absorbed.
-- **Rules 1–2 (`.github/workflows`, `kind: Job`/`CronJob`)** — no phase in
-  plan.md picks these up yet. They remain solely `org-rule-guard.py`'s job
-  for now — not because of a standing "don't duplicate" policy, but simply
-  because nothing has scheduled the absorption.
+- **Rule 1 (`.github/workflows`)** — absorbed 2026-09: a built-in guard in
+  the engine (pack attribution `github-workflows` /
+  `github-workflows-protected`, not a pack file) denies workflow-definition
+  writes on Claude Code Write/Edit and Codex `apply_patch`, redundantly
+  with the hook for as long as both run
+  (`tests/coexistence_org_rule_guard_tests.rs`;
+  `docs/notes/github-workflows-detection-seam.md`).
+- **Rule 2 (`kind: Job`/`CronJob`)** — no phase in plan.md picks this up
+  yet. It remains solely `org-rule-guard.py`'s job for now — not because of
+  a standing "don't duplicate" policy, but simply because nothing has
+  scheduled the absorption.
 
 `irrevers-62c6f748` (Phase 5) is the concrete marker of the trajectory: an
 install-time smoke test against `org-rule-guard.py`, explicitly framed as

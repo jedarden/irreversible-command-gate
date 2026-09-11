@@ -31,8 +31,11 @@ process. Keep the harness's own approval and sandbox controls enabled.
   "Explicitly not attempted" decision. `icg check --command "kubectl delete
   pvc data-volume"` returns `ALLOW: no configured rule matched` — that is
   expected, not a gap.
-- **`.github/workflows/*` creation and `kind: Job`/`CronJob` manifests** —
-  also owned by the org-level hook today.
+- **`kind: Job`/`CronJob` manifests** — also owned by the org-level hook
+  today. `.github/workflows/*` writes used to sit on this list beside them;
+  they no longer do — a built-in guard (pack attribution `github-workflows`,
+  not a pack file) denies them on Write/Edit and Codex `apply_patch`,
+  redundantly with the org-level hook for as long as both run.
 - **Cloud-hosted agent sessions** (ChatGPT web, Claude.ai). Only local
   harnesses invoke local hooks.
 
@@ -360,8 +363,10 @@ authoring, but their deny text names conventions a visitor does not have.
 Nothing about the engine is fleet-specific: `icg new-pack` scaffolds your own.
 
 **Not covered by icg** (see [What icg does NOT cover](#what-icg-does-not-cover)):
-kubectl mutations, `.github/workflows/*` creation, and `kind: Job`/`CronJob`
-manifests remain the org-level hook's job.
+kubectl mutations and `kind: Job`/`CronJob` manifests remain the org-level
+hook's job. `.github/workflows/*` writes are covered twice over — by the
+built-in `github-workflows` guard and by the org-level hook — so both deny
+the same write during coexistence.
 
 **Safe operations** are not enumerated in a blocklist-facing doc — anything
 no pattern matches is allowed (`git status`, `kubectl get`, `bao kv get -field=…`
