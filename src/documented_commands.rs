@@ -374,9 +374,15 @@ fn print_check_result(result: &CheckResult, packs: &[Pack]) {
             reason,
             pack_id,
             pattern_id,
+            matched_path,
         } => {
             println!("DENIED by icg");
             println!("Reason: {reason}");
+            // The path the guard itself matched, when the denial is scoped to
+            // a Write/Edit target rather than to command text or content.
+            if let Some(path) = matched_path {
+                println!("Path: {path}");
+            }
             println!("Pack: {pack_id}");
             println!("Pattern: {pattern_id}");
             if let Some(pattern) = packs.iter().find_map(|pack| {

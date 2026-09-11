@@ -263,6 +263,7 @@ fn test_push_guard_returns_true_when_remote_head_has_moved() {
             reason,
             pack_id,
             pattern_id,
+            ..
         } => {
             assert_eq!(pack_id, "git");
             assert_eq!(pattern_id, "git-stale-remote-head-push");

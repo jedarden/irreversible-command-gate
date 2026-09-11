@@ -513,17 +513,30 @@ fn practice_denial_report(result: &engine::CheckResult, context: Option<&str>) -
         reason,
         pack_id,
         pattern_id,
+        matched_path,
     } = result
     else {
         return None;
     };
 
-    let suffix = context
-        .map(|value| format!(", file={value}"))
-        .unwrap_or_default();
+    let suffix = denial_path_segment(matched_path.as_deref(), context);
     Some(format!(
         "WOULD DENY: {reason} [pack={pack_id}, pattern={pattern_id}{suffix}]"
     ))
+}
+
+/// The `[pack=, pattern=…]` suffix segment naming the file a denial is about.
+///
+/// A path carried by the denial itself (from the guard's own detection) is the
+/// authoritative reference and is quoted as `path=`; the caller-supplied
+/// context is only a fallback (`file=`) for denials that carry no matched
+/// path -- command-mode packs and content patterns denied on content rather
+/// than on where the write was aimed.
+fn denial_path_segment(matched_path: Option<&str>, context: Option<&str>) -> String {
+    matched_path
+        .map(|path| format!(", path={path}"))
+        .or_else(|| context.map(|value| format!(", file={value}")))
+        .unwrap_or_default()
 }
 
 fn practice_response_result(
@@ -543,6 +556,10 @@ fn practice_response_result(
 /// Render the native Codex/Claude PreToolUse response envelope. Both hook
 /// protocols consume the hook-specific decision under `hookSpecificOutput`;
 /// Codex additionally requires `hookEventName` to identify the event.
+///
+/// A deny reason names the file the call was about via
+/// [`denial_path_segment`]: the denial's own `matched_path` when the guard
+/// carried one (`path=`), otherwise the caller-supplied `context` (`file=`).
 fn render_hook_response(
     result: engine::CheckResult,
     original_input: Option<&serde_json::Value>,
@@ -550,10 +567,8 @@ fn render_hook_response(
     context: Option<&str>,
     practice_mode: bool,
 ) -> serde_json::Value {
-    let details = |reason: &str, pack_id: &str, pattern_id: &str| {
-        let suffix = context
-            .map(|value| format!(", file={value}"))
-            .unwrap_or_default();
+    let details = |matched_path: Option<&str>, reason: &str, pack_id: &str, pattern_id: &str| {
+        let suffix = denial_path_segment(matched_path, context);
         format!("{reason} [pack={pack_id}, pattern={pattern_id}{suffix}]")
     };
 
@@ -582,6 +597,7 @@ fn render_hook_response(
             reason,
             pack_id,
             pattern_id,
+            matched_path,
         } => {
             hook_output.insert(
                 "permissionDecision".to_string(),
@@ -589,7 +605,12 @@ fn render_hook_response(
             );
             hook_output.insert(
                 "permissionDecisionReason".to_string(),
-                serde_json::Value::String(details(&reason, &pack_id, &pattern_id)),
+                serde_json::Value::String(details(
+                    matched_path.as_deref(),
+                    &reason,
+                    &pack_id,
+                    &pattern_id,
+                )),
             );
             serde_json::json!({"hookSpecificOutput": hook_output})
         }
@@ -617,7 +638,7 @@ fn render_hook_response(
             );
             hook_output.insert(
                 "additionalContext".to_string(),
-                serde_json::Value::String(details(&reason, &pack_id, &pattern_id)),
+                serde_json::Value::String(details(None, &reason, &pack_id, &pattern_id)),
             );
             serde_json::json!({"hookSpecificOutput": hook_output})
         }
@@ -632,7 +653,7 @@ fn render_hook_response(
             );
             hook_output.insert(
                 "additionalContext".to_string(),
-                serde_json::Value::String(details(&reason, &pack_id, &pattern_id)),
+                serde_json::Value::String(details(None, &reason, &pack_id, &pattern_id)),
             );
             serde_json::json!({"hookSpecificOutput": hook_output})
         }
@@ -957,6 +978,7 @@ fn guard_crash_result() -> engine::CheckResult {
         reason: "Guard crash in fail-closed mode - rejecting all operations".to_string(),
         pack_id: "fail-closed".to_string(),
         pattern_id: "guard-crash".to_string(),
+        matched_path: None,
     }
 }
 
@@ -1265,6 +1287,7 @@ fn run_shadowed_tool(
             reason,
             pack_id,
             pattern_id,
+            ..
         } => {
             if let Some(run) = lifecycle.as_deref_mut() {
                 let finish = if halt_for_recovered_crash || engine.has_guard_failure() {

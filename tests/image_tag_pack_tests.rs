@@ -88,6 +88,7 @@ fn denies_bare_sha_image_tags_in_yaml_and_yml_content() {
                     ref pack_id,
                     ref pattern_id,
                     ref reason,
+                    ..
                 } if pack_id == "image-tag"
                     && pattern_id == "image-tag-bare-sha"
                     && reason.contains("containers/<name>/VERSION")

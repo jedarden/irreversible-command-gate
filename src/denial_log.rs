@@ -951,6 +951,11 @@ pub fn record_operational_denial(source: &InputSource, result: &engine::CheckRes
         pack_id,
         pattern_id,
         reason,
+        // The log deliberately does not carry `matched_path`: what was
+        // targeted is recorded from the source itself (`DeniedInput`'s
+        // file_path/file_paths), which stays authoritative even when a
+        // denial carries no matched path at all.
+        matched_path: _,
     } = result
     else {
         return;

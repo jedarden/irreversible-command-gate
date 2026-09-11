@@ -219,6 +219,7 @@ fn coexistence_write_tool_use_flags_github_workflows_path() {
             pack_id,
             pattern_id,
             reason,
+            matched_path,
         } => {
             assert_eq!(
                 pack_id, "github-workflows",
@@ -228,6 +229,13 @@ fn coexistence_write_tool_use_flags_github_workflows_path() {
             assert!(
                 reason.contains(".github/workflows"),
                 "deny reason should mention .github/workflows, got: {reason}"
+            );
+            // The denial carries the exact path the tool call targeted,
+            // verbatim, for the redirect message to quote back.
+            assert_eq!(
+                matched_path.as_deref(),
+                Some(".github/workflows/deploy.yml"),
+                "denial should carry matched_path"
             );
         }
         other => panic!(
@@ -324,6 +332,7 @@ fn coexistence_edit_tool_use_flags_github_workflows_path() {
             pack_id,
             pattern_id,
             reason,
+            matched_path,
         } => {
             assert_eq!(
                 pack_id, "github-workflows",
@@ -333,6 +342,13 @@ fn coexistence_edit_tool_use_flags_github_workflows_path() {
             assert!(
                 reason.contains(".github/workflows"),
                 "deny reason should mention .github/workflows, got: {reason}"
+            );
+            // The denial carries the exact path the tool call targeted,
+            // verbatim, for the redirect message to quote back.
+            assert_eq!(
+                matched_path.as_deref(),
+                Some(".github/workflows/deploy.yml"),
+                "denial should carry matched_path"
             );
         }
         other => panic!(

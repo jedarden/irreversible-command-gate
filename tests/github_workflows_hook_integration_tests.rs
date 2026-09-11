@@ -83,9 +83,20 @@ fn hook_denies_write_to_github_workflows_path() {
     let reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
         .as_str()
         .expect("deny reason should be a string");
+    // The protected reason (Detection::Matched's `reason`) is carried verbatim.
     assert!(
-        reason.contains(".github/workflows"),
-        "deny reason should mention .github/workflows, got: {reason}"
+        reason.contains("must not be modified by an automated write/edit"),
+        "deny reason should carry the protected reason, got: {reason}"
+    );
+    // ...and so is the exact path the Write targeted (Detection::Matched's
+    // `matched_path`), rendered as the `path=` segment with pack/pattern
+    // unchanged.
+    assert!(
+        reason.contains(
+            "[pack=github-workflows, pattern=github-workflows-protected, \
+             path=.github/workflows/ci.yml]"
+        ),
+        "deny reason should quote the targeted path with unchanged pack/pattern, got: {reason}"
     );
 }
 
@@ -111,9 +122,20 @@ fn hook_denies_edit_to_github_workflows_path() {
     let reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
         .as_str()
         .expect("deny reason should be a string");
+    // The protected reason (Detection::Matched's `reason`) is carried verbatim.
     assert!(
-        reason.contains(".github/workflows"),
-        "deny reason should mention .github/workflows, got: {reason}"
+        reason.contains("must not be modified by an automated write/edit"),
+        "deny reason should carry the protected reason, got: {reason}"
+    );
+    // ...and so is the exact path the Edit targeted (Detection::Matched's
+    // `matched_path`), rendered as the `path=` segment with pack/pattern
+    // unchanged.
+    assert!(
+        reason.contains(
+            "[pack=github-workflows, pattern=github-workflows-protected, \
+             path=.github/workflows/ci.yml]"
+        ),
+        "deny reason should quote the targeted path with unchanged pack/pattern, got: {reason}"
     );
     // The guard denies rather than rewrites, so no updatedInput channel.
     assert!(denied["hookSpecificOutput"].get("updatedInput").is_none());
@@ -155,6 +177,14 @@ fn hook_allows_write_to_lookalike_paths_outside_dot_github_workflows() {
             allowed["hookSpecificOutput"]["permissionDecision"], "allow",
             "expected allow for {file_path}, got {allowed:?}"
         );
+        // Non-matching paths must emit no deny payload at all -- no reason
+        // line that could carry a path= segment.
+        assert!(
+            allowed["hookSpecificOutput"]
+                .get("permissionDecisionReason")
+                .is_none(),
+            "allow for {file_path} should carry no permissionDecisionReason, got {allowed:?}"
+        );
     }
 }
 
@@ -177,6 +207,14 @@ fn hook_allows_edit_to_lookalike_paths_outside_dot_github_workflows() {
         assert_eq!(
             allowed["hookSpecificOutput"]["permissionDecision"], "allow",
             "expected allow for {file_path}, got {allowed:?}"
+        );
+        // Non-matching paths must emit no deny payload at all -- no reason
+        // line that could carry a path= segment.
+        assert!(
+            allowed["hookSpecificOutput"]
+                .get("permissionDecisionReason")
+                .is_none(),
+            "allow for {file_path} should carry no permissionDecisionReason, got {allowed:?}"
         );
     }
 }

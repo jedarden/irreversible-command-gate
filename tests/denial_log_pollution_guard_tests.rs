@@ -194,6 +194,7 @@ fn an_in_process_denial_never_reaches_the_live_log() {
         reason: "pollution guard probe".to_string(),
         pack_id: "pollution-guard-test".to_string(),
         pattern_id: marker.clone(),
+        matched_path: None,
     };
     icg::denial_log::record_operational_denial(&source, &denied);
 

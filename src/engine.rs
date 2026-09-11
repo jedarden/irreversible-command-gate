@@ -583,6 +583,15 @@ pub enum CheckResult {
         reason: String,
         pack_id: String,
         pattern_id: String,
+        /// The exact path string a Write/Edit targeted when the denial comes
+        /// from a path guard, carried verbatim from the detection that
+        /// produced it (currently only the `.github/workflows` guard). It is
+        /// the caller-supplied path, not a canonicalized form, so a redirect
+        /// message can quote back exactly what the tool call aimed at.
+        /// `None` for command-mode denials and for content-pattern denials
+        /// that are not path-scoped -- those deny on command text or file
+        /// content, so there is no single path to attribute.
+        matched_path: Option<String>,
     },
     /// Command should be rewritten (updatedInput channel)
     Rewrite {
@@ -1635,6 +1644,7 @@ impl Engine {
                     reason: "Guard crash in fail-closed mode - rejecting all commands".to_string(),
                     pack_id: "fail-closed".to_string(),
                     pattern_id: "guard-crash".to_string(),
+                    matched_path: None,
                 }
             } else {
                 CheckResult::Allowed
@@ -1941,6 +1951,7 @@ impl Engine {
                     reason: "Guard crash in fail-closed mode - rejecting all commands".to_string(),
                     pack_id: "fail-closed".to_string(),
                     pattern_id: "guard-crash".to_string(),
+                    matched_path: None,
                 }
             } else {
                 CheckResult::Allowed
@@ -2169,6 +2180,7 @@ impl Engine {
                 reason: render_reason(&pattern.redirect.reason_template, None, None),
                 pack_id: pack_id.to_string(),
                 pattern_id: pattern.id.clone(),
+                matched_path: None,
             },
             crate::rule_pack::Channel::UpdatedInput => {
                 let rewrite = self
@@ -2344,13 +2356,16 @@ impl Engine {
     }
 
     fn evaluate_content_inner(&self, source: &ContentSource) -> CheckResult {
-        if let crate::github_workflows::Detection::Matched { reason, .. } =
-            crate::github_workflows::detect(source.file_path())
+        if let crate::github_workflows::Detection::Matched {
+            matched_path,
+            reason,
+        } = crate::github_workflows::detect(source.file_path())
         {
             return CheckResult::Denied {
                 reason,
                 pack_id: "github-workflows".to_string(),
                 pattern_id: "github-workflows-protected".to_string(),
+                matched_path: Some(matched_path),
             };
         }
 
@@ -2361,6 +2376,7 @@ impl Engine {
                         .to_string(),
                     pack_id: "fail-closed".to_string(),
                     pattern_id: "guard-crash".to_string(),
+                    matched_path: None,
                 }
             } else {
                 CheckResult::Allowed
@@ -2490,6 +2506,7 @@ impl Engine {
                 reason,
                 pack_id: pack_id.to_string(),
                 pattern_id: pattern.id.clone(),
+                matched_path: None,
             },
             crate::rule_pack::Channel::UpdatedInput => {
                 let rewrite = pattern
@@ -2569,6 +2586,7 @@ impl Engine {
                 reason: "Guard crash in fail-closed mode - rejecting all operations".to_string(),
                 pack_id: "fail-closed".to_string(),
                 pattern_id: "guard-crash".to_string(),
+                matched_path: None,
             }
         } else {
             CheckResult::Allowed
@@ -3490,6 +3508,7 @@ mod tests {
                 reason,
                 pack_id,
                 pattern_id,
+                ..
             } => {
                 assert_eq!(pack_id, "vault");
                 assert_eq!(pattern_id, "vault-kv-destroy");
@@ -3789,6 +3808,7 @@ mod tests {
             reason: "deny".to_string(),
             pack_id: "test".to_string(),
             pattern_id: "test".to_string(),
+            matched_path: None,
         };
         let rewrite = CheckResult::Rewrite {
             reason: "rewrite".to_string(),
@@ -3862,22 +3882,40 @@ mod tests {
             "/home/repo/.github/workflows/ci.yml",
             "./.github/workflows/ci.yml",
         ] {
-            let source = ContentSource::Write {
-                file_path: file_path.to_string(),
-                content: "name: ci".to_string(),
-            };
+            let sources = [
+                ContentSource::Write {
+                    file_path: file_path.to_string(),
+                    content: "name: ci".to_string(),
+                },
+                ContentSource::Edit {
+                    file_path: file_path.to_string(),
+                    old_content: "on: push".to_string(),
+                    new_content: "on: pull_request".to_string(),
+                },
+            ];
 
-            match engine.evaluate_content(&source) {
-                CheckResult::Denied {
-                    pack_id,
-                    pattern_id,
-                    reason,
-                } => {
-                    assert_eq!(pack_id, "github-workflows");
-                    assert_eq!(pattern_id, "github-workflows-protected");
-                    assert!(!reason.is_empty());
+            for source in sources {
+                match engine.evaluate_content(&source) {
+                    CheckResult::Denied {
+                        pack_id,
+                        pattern_id,
+                        reason,
+                        matched_path,
+                    } => {
+                        assert_eq!(pack_id, "github-workflows");
+                        assert_eq!(pattern_id, "github-workflows-protected");
+                        assert!(!reason.is_empty());
+                        // The denial must carry the exact path the Write or
+                        // Edit targeted, verbatim, so a redirect message can
+                        // quote it back.
+                        assert_eq!(
+                            matched_path.as_deref(),
+                            Some(file_path),
+                            "denial should carry matched_path {file_path:?}"
+                        );
+                    }
+                    other => panic!("expected Denied for {file_path}, got {other:?}"),
                 }
-                other => panic!("expected Denied for {file_path}, got {other:?}"),
             }
         }
     }
@@ -3968,6 +4006,7 @@ mod tests {
                 reason,
                 pack_id,
                 pattern_id,
+                ..
             } => {
                 assert_eq!(pack_id, "storage-class");
                 assert_eq!(pattern_id, "ssd-storage-class");
