@@ -11,8 +11,16 @@ irrevers-f574a666 → `fail-closed-harness-{a,b}.md`, irrevers-2e6ddeb3 →
 Ground truth at consolidation time: all 41 inventory beads confirmed
 **Closed** via `bead show`; every commit hash cited below re-resolves with
 `git cat-file -e` at HEAD; and `git diff --stat a59a4a7..HEAD` over
-`src/ tests/ containers/ packs/` is empty, so every test/line anchor the
-git-evidence passes verified still sits in an unchanged tree. Per-bead
+`src/ tests/ containers/ packs/` was empty at consolidation. Re-checked
+2026-09-11 at HEAD (post-v0.1.36): that diff is no longer empty — the
+post-consolidation `.github/workflows` hook-guard work touched
+`src/{denial_log,documented_commands,engine,github_workflows,main}.rs`
+and six `tests/` files (11 files, +1393 −239) — so line anchors inside
+those eleven files are as measured at the consolidation tree (`16f0d8c`)
+and are not re-verified against HEAD; every other cited `src/`/`tests/`
+file is unchanged since `a59a4a7`, and `containers/`/`packs/` are
+untouched, so the workflowtemplate line anchors and pack fixtures still
+hold. Per-bead
 detail lives in the four per-category files; this file is the one-summary-
 per-bead roll-up. The same summary (short form) is appended to each
 inventory bead's own notes, attributed to irrevers-e29e74b6.
@@ -115,7 +123,8 @@ exist as lightweight tags at the recorded SHAs (v0.1.0 `f0fe556` … v0.1.6
 `aab687d`). Nuance for reconciliation: the "zero GitHub Releases" line was
 true only against origin (Forgejo); the GitHub mirror has contiguous
 releases from v0.1.1 with the ceiling now far past the bead's stated range
-(v0.1.22 Latest at the irrevers-2f2c25b5 pass).
+(v0.1.22 Latest at the irrevers-2f2c25b5 pass; re-checked 2026-09-11 —
+v0.1.36 Latest, 30 releases, all four assets present on every one).
 
 ### irrevers-2cb3dbd2 — Gate the actual modular release packs in icg-ci
 **GIT-VERIFIED AT HEAD.** `6eaeb70` landed 10 s before close:
