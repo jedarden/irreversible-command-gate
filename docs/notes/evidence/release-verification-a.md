@@ -59,6 +59,19 @@ all `codex-hook-compatibility` pods green on the pinned 0.1.0 image. HEAD
 still pins 0.1.0 (VERSION and both `image:` lines); the working-tree VERSION
 bump to 0.1.1 remains uncommitted.
 
+Git-evidence pass 2026-09-11 (irrevers-2f2c25b5, second child of
+irrevers-c52de1f2): for every bead below, `git log --all --grep` was run for
+the bead ID and for distinctive title keywords, each matching commit's numstat
+was inspected for test files, and all 14 unique in-repo commit hashes cited in
+this file were re-resolved with `git cat-file -e` at HEAD `9db8ad7` — all
+resolve. Every named test below was re-located at its cited line in the
+current tree. No corrections, no retractions. A per-bead search record is
+appended to each entry. New facts this pass: the only commit whose message
+cites irrevers-84b36e47 (`9350f19`) is an empty CI-trigger commit; test files
+are now named for the `c5d391b`/`eec8e73` unblocking chain; later touches of
+the channel tests under irrevers-e2bb8fbf recorded; the release/tag ceiling
+under irrevers-eff8909f refreshed.
+
 ---
 
 ## irrevers-84b36e47 — Verify icg-ci produces a real, complete GitHub release
@@ -83,6 +96,21 @@ irrevers-8176471b audit, 3 at the irrevers-61ad3e1e re-audit, all from Sep 11)
 and none from Sep 5–7 (TTL-reaped), so the workflow name for the v0.1.1 run
 cannot be cited. The surviving GitHub release object is the evidence.
 
+Git searches (irrevers-2f2c25b5): `git log --all --grep irrevers-84b36e47`
+→ six hits, all bookkeeping — `e4472fb` (inventory enumeration),
+`3d7ed91` (plan-vs-built audit), `943b3ca` (reopen record), `dba5593` and
+`b84a369` (docs reconciliation), and `9350f19` ("test(ci): trigger icg-ci
+verification run", 2026-08-26), which is an **empty commit** — no file
+changes, purely a manual CI trigger; it is the only commit citing this bead
+ID in its message. The three unblocking commits surface by keyword, not by
+ID: "unblock rule-pack release gates" → `c5d391b`, "isolate status from
+installed trust state" → `3399989`, "status tests from the CI image" →
+`eec8e73` ("complete GitHub release" → no hits). Test files:
+`3399989` → `tests/installation_tests.rs` (+11 −2); `c5d391b` →
+`tests/icg_ci_integration_tests.rs` (+86 −65) plus the pack content
+`packs/{docker,git,misc,openbao}.json`; `eec8e73` →
+`tests/maintenance_tasks_tests.rs` (+20 −4).
+
 ## irrevers-e77615c8 — icg-ci: publish the rule-pack artifact as a release asset
 
 **Verifiable.** Implementing commit `2c541ec` (2026-08-22, "feat(icg-ci):
@@ -99,6 +127,12 @@ across releases — the coverage-diff gate runs `gh release download
 $PREVIOUS_VERSION --pattern rule-pack.json` (workflowtemplate line 130), which
 succeeds on every run.
 
+Git searches (irrevers-2f2c25b5): ID grep → `c2fcfd9` and the `943b3ca`
+reopen record; keyword "rule-pack artifact as release asset" → `2c541ec`.
+Neither commit touched a test file: `2c541ec` = `src/main.rs` (+64 −43),
+`src/rule_pack.rs` (+80, new), the workflowtemplate (+9 −2); `c2fcfd9` =
+`src/rule_pack.rs` (+92 −1) alone.
+
 ## irrevers-37eb1100 — Release-cutting runbook
 
 **Verifiable.** Commit `436bdce` (2026-08-15, "docs: add release-cutting
@@ -110,6 +144,15 @@ notes "the `icg-ci` template has been doing that itself since it gained a
 release step"), i.e. it has been maintained, not just written. (Corrected by
 the irrevers-61ad3e1e re-audit: the earlier quotation here was neither the
 commit's subject nor an exact body quote.)
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keyword "release-cutting
+runbook" → `436bdce`, `1b6f6a6`, and the planning commit `6f8573f`.
+`436bdce` touched docs only (`docs/runbooks/release-cutting.md` +108, plus
+the link line in `docs/notes/self-update-and-release-gating.md`) — no test
+files. `1b6f6a6` did touch tests, one line each of
+`tests/documentation_consistency_tests.rs` and `tests/operator_scenarios.rs`
+(plus the `tests/fixtures/operator-scenarios/installation.json` fixture), as
+release bookkeeping.
 
 ## irrevers-340ae322 — Prove ronaldraygun/argo-guarded-builder:0.1.0 is published and pullable by icg-ci
 
@@ -141,6 +184,15 @@ though a working-tree VERSION bump to 0.1.1 was sitting uncommitted in the
 shared checkout at that time, so a committed bump is the first thing to
 re-check if this citation stops verifying.)
 
+Git searches (irrevers-2f2c25b5): ID grep → `a83a326` only, an
+evidence-documentation commit; keyword "argo-guarded-builder:0.1.0" → the
+two evidence-audit commits plus the adjacent test-isolation fixes `2699ca7`,
+`ef0c0a3`, `eec8e73`. **No git evidence found for the publish/pull claim
+itself** — image publication and in-cluster pulling are registry and cluster
+events, not commits; the git-side corroboration is the VERSION/image-pin
+state above (HEAD still 0.1.0, working-tree 0.1.1 still uncommitted at this
+pass).
+
 ## irrevers-e2bb8fbf — Add --channel to icg trust to match icg update (canary rollout)
 
 **Verifiable.** Commit `c7e9df5` (2026-08-30, "feat: add --channel flag
@@ -155,6 +207,13 @@ canary` plus channel isolation). Pre-existing channel coverage it built on:
 `test_channel_isolation` (`src/trust_pointer.rs`), and
 `update_channels_get_isolated_default_paths` (`src/update.rs:967`). Closed
 2026-08-30T12:19Z.
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keyword "channel" →
+`c7e9df5` (test file: `tests/maintenance_tasks_tests.rs` +134, the roundtrip
+test named above) plus two later touches of the same surface, now recorded:
+`890429f` (2026-09-05, "fix(test): remove unused pack_dir variable in trust
+channel roundtrip test", −1 line in that test) and `0fb164d` (2026-08-27,
+assert stdout/stderr churn in `maintenance_scenario_trust_channel_support`).
 
 ## irrevers-6de781f4 — Canary rollout via NEEDLE --identifier
 
@@ -172,6 +231,14 @@ stated roll-out step) is a doc comment in `src/trust_pointer.rs` describing
 the intended mechanism ("// Canary channel worker (launched via NEEDLE
 --identifier canary-icg)") — no docs, manifests, or runbook record one
 actually being launched.
+
+Git searches (irrevers-2f2c25b5): ID grep → `90a9653` plus the
+evidence-documentation commit `90d3bf8`; keyword "canary rollout" →
+`90a9653`, `c7e9df5`, planning commit `864a6ba`. Tests: `90a9653` added the
+inline `test_for_channel_path` / `test_channel_isolation` unit tests inside
+`src/trust_pointer.rs` (+80). The doc comment survives at
+`src/trust_pointer.rs:102`; the operational half (a launched canary-icg
+worker) still has no git evidence — unchanged.
 
 ## irrevers-b6579270 — Per-release deny-rate telemetry and rolling baseline
 
@@ -191,6 +258,13 @@ Test evidence in the current tree:
 `engine_persists_per_release_evaluation_and_deny_counts` and
 `engine_telemetry_feeds_poison_pill_rollback`
 (`tests/release_telemetry_tests.rs:19` and `:47`).
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keywords
+"deny-rate telemetry" → `5b4d5df`, "rolling telemetry" → `721f3d9`.
+Test files: both commits touched `tests/release_telemetry_tests.rs`
+(+31 new, then +68 −1). Full deltas: `5b4d5df` = `src/engine.rs` (+23 −2),
+`src/state_store.rs` (+551 −1), `src/main.rs` (+20), plan and ideas-ledger
+docs; `721f3d9` = `src/main.rs` (+110 −4) plus the same test file.
 
 ## irrevers-eff8909f — Write inventory of shipped releases v0.1.0–v0.1.6 with dates and commits
 
@@ -216,3 +290,12 @@ exist" line was true only against origin (Forgejo `git.ardenone.com`, no
 GitHub host configured there) — the GitHub mirror does have releases v0.1.1
 through v0.1.10, verified live 2026-09-11 (v0.1.1–v0.1.7 verified in the
 original 2026-09-10 pass; the live ceiling is now v0.1.19, see (1)).
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keywords "inventory of
+shipped releases" and "shipped releases" → no hits. **No git evidence
+found** — as an evidence-only bead its findings live in the bead's notes,
+not in any commit; not even the evidence-documentation commits cite its ID.
+Ceiling refreshed at this pass: origin tags now reach `v0.1.22` and the
+GitHub mirror has releases through v0.1.22 — `v0.1.22` Latest, published
+2026-09-11T06:54:03Z, non-draft, all four assets; v0.1.18–v0.1.22 confirmed
+in the release list this pass.

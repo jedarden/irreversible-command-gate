@@ -54,6 +54,20 @@ re-checked verbatim. Live iad-ci re-confirmed (`icg-ci` template present;
 latest run `icg-ci-czdkx` 2026-09-11T04:27Z Succeeded). All verify — no
 corrections, no retractions.
 
+Git-evidence pass 2026-09-11 (irrevers-2f2c25b5, second child of
+irrevers-c52de1f2): for every bead below, `git log --all --grep` was run for
+the bead ID and for distinctive title keywords, each matching commit's
+numstat was inspected for test files, and all 14 unique in-repo commit
+hashes cited in this file were re-resolved with `git cat-file -e` at HEAD
+`9db8ad7` — all resolve. The four `~/declarative-config` SHAs
+(`122623ae`, `0f3f5faf`, `d11a6472`, `b2c2a0e5`) re-resolved in that
+checkout. Every named test re-located at its cited line; the workflowtemplate
+line citations (40/82, 117/121/130/136/156/162, 202–224) re-checked. No
+corrections, no retractions. A per-bead search record is appended to each
+entry. New facts this pass: same-day follow-up `b8aed51` recorded under
+irrevers-2cb3dbd2; the coverage-diff tests bundled into `97b8eba` named
+under irrevers-5fdc2e13.
+
 ---
 
 ## irrevers-2cb3dbd2 — Gate the actual modular release packs in icg-ci instead of static fixtures
@@ -91,6 +105,14 @@ regression checks but still verify[s] the current packs" for prior-release
 packs, so that one sub-clause is partially satisfied (coverage, manifest and
 ReDoS gates fully run; deny-regression runs on current packs).
 
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keyword "static
+fixtures" → `6eaeb70`. Tests: `tests/release_gate_integrity_tests.rs`
+(+284, new — the four tests named above) and
+`tests/icg_ci_integration_tests.rs` (+110). Same-day follow-up found by the
+"modular pack" search and now recorded: `b8aed51` (2026-08-26 03:21:01
+-0400 = 07:21:01Z, "fix(ci): gate release regressions from modular packs",
+`tests/icg_ci_integration_tests.rs` +61 −80) — ~3h after this bead's close.
+
 ## irrevers-c87a3c50 — Base self-updater and trust pointer (icg update)
 
 **No verifiable evidence found** for this bead itself — its closure predates
@@ -115,6 +137,13 @@ doc `docs/notes/self-update-and-release-gating.md` (added `32aa6bd`,
 of shipped work; it has the same false-closure shape commit `943b3ca`
 (2026-08-22) documented for sibling beads, but was never reopened.
 
+Git searches (irrevers-2f2c25b5): ID grep → the evidence-documentation
+commit `fca5785` only; keyword searches "self-updater" and "icg update" →
+planning commits (`6f8573f`, `200bb7e`, `16d6947`) and later feature work,
+nothing at or near the close timestamp. **No git evidence found for this
+bead itself** — the closure is the migration-rehydration bookkeeping event
+described above, and no commit implements it.
+
 ## irrevers-5fdc2e13 — Trust pointer mechanism
 
 **Verifiable.** The bead's own notes name the commit, and it checks out:
@@ -136,6 +165,13 @@ Caveat carried by history, not hidden by it: the shipped default path was
 then `XDG_CONFIG_HOME/icg/trust-pointer.json` (agent-writable); the
 root-owned `/etc/icg/` location came the next morning in `d1e2b38` — that
 defect is what irrevers-96594031 was created (and closed) to cover.
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keyword "trust pointer
+mechanism" → `97b8eba`. Test files named: `src/trust_pointer.rs` (+254,
+the six inline tests above) — and this pass adds that the same commit also
+bundled the Layer-1 coverage-diff work: `src/coverage.rs` (+228, new),
+`tests/coverage_diff_tests.rs` (+112, new), and the three fixtures
+`tests/fixtures/{current-release-clean,current-release-regression,previous-release}.json`.
 
 ## irrevers-f59f9313 — icg update: self-updater command
 
@@ -168,6 +204,14 @@ Test coverage followed in `287b866` (2026-08-16, "test: add icg-ci end-to-end
 integration coverage", `tests/icg_ci_integration_tests.rs`) and was later
 superseded by the archive-deploying updater of irrevers-075634b8 (`409ca42`).
 
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keyword "icg update" →
+no subject-level hit for the implementing pair (both carry bundled subjects,
+as flagged above) — they surface by scope, and this pass names their full
+deltas: `9c6951b` = `src/engine.rs` (+578, new) and `src/main.rs` (+117),
+no test files; `d1e2b38` = `src/update.rs` (+317, new),
+`src/trust_pointer.rs` (+3 −15), `docs/plan/plan.md` (+21 −8), no test
+files. Tests: `287b866` → `tests/icg_ci_integration_tests.rs` (+397, new).
+
 ## irrevers-96594031 — Migrate the shipped trust-pointer and rule-pack artifact paths off agent-writable locations
 
 **Verifiable.** The bead closed at 2026-08-26T01:39:15Z with notes stating
@@ -197,6 +241,14 @@ current (non-root) user. Current test surface around that check:
 `tests/maintenance_tasks_tests.rs` encode the check's invariants (0700, not
 world-writable) so the rest of the suite can run beside it.
 
+Git searches (irrevers-2f2c25b5): ID grep → the `943b3ca` reopen/notes
+record; keyword "agent-writable" → later fixes only (`0e669f2`, `0c062e3`,
+`dba5593`, planning `e97f98e`); "root-owned system paths" → `a03a7e6`;
+`d1e2b38` matched by scope. Neither implementing commit touched a test
+file: `a03a7e6` = `Cargo.lock` (+8 −122), `Cargo.toml` (−1),
+`src/denial_log.rs` (+13 −37), `src/health.rs` (+8 −10),
+`src/state_store.rs` (+7 −16); `d1e2b38` = plan + the two src files above.
+
 ## irrevers-ca79d63a — Deploy the binary, rule-pack artifact and trust pointer outside the guarded agent's writable filesystem
 
 **Verifiable.** Commit `a03a7e6` (2026-08-22 21:14:14 -0400 =
@@ -213,6 +265,12 @@ Cross-reference, not part of this closure: deployment-shape hardening
 continued after close — `c38b0cd` (2026-09-08, "pin root-owned 0755 modes on
 the icg trust directories") and the mode/detection fixes around it belong to
 irrevers-50077acb and irrevers-f839b213, which are outside this batch.
+
+Git searches (irrevers-2f2c25b5): ID grep → the `943b3ca` reopen record;
+keyword "writable filesystem" → no hits; "root-owned" → `a03a7e6` plus the
+post-close hardening `c38b0cd`, `d88da13`, `0e669f2`. `a03a7e6` touched no
+test file — it is the src-only path move plus the `dirs` removal, exactly
+as its close notes describe.
 
 ## irrevers-e00a5381 — icg-ci Argo WorkflowTemplate
 
@@ -232,6 +290,15 @@ workflowtemplates -n argo-workflows` lists `icg-ci` (alongside
 `icg-guarded-builder`) — the template exists and is applied on the cluster
 today. The Argo-not-GitHub-Actions constraint is honored; this repo has no
 `.github/workflows/`.
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keyword
+"WorkflowTemplate" in this repo → docs/planning commits only (`e759254`,
+`c06c496`, `294a17c`, `32aa6bd`) — **no git evidence for the artifact in
+this repo**, correctly, because it lives in declarative-config: all four
+cited SHAs re-resolved in `~/declarative-config`, and `122623ae` created
+`k8s/iad-ci/argo-workflows/icg-ci-workflowtemplate.yml` (+107 lines). The
+three same-week commits `0f3f5faf`, `d11a6472`, `b2c2a0e5` also re-resolve
+there with the subjects quoted above.
 
 ## irrevers-075634b8 — Make icg update atomically deploy the complete modular production pack directory
 
@@ -255,3 +322,10 @@ root). Operator docs were updated in the same commit
 (`docs/operators/deployment-guide.md` +66 −53, `docs/runbooks/rule-pack-updates.md`,
 `docs/notes/self-update-and-release-gating.md`), closing the "deployment docs
 say the production directory remains manual" gap the description called out.
+
+Git searches (irrevers-2f2c25b5): ID grep → no hits; keywords "atomically
+deploy" and "modular pack" → `409ca42` (plus the sibling gate commits
+`6eaeb70` and `b8aed51`). Tests: `tests/icg_ci_integration_tests.rs`
+(+236 −47) — the two end-to-end tests named above, at lines 330 and 436 of
+the current tree. Same-day follow-up `b8aed51` (+61 −80) touched the same
+test file.
