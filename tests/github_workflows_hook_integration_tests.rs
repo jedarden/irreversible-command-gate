@@ -108,6 +108,14 @@ fn hook_denies_edit_to_github_workflows_path() {
         denied["hookSpecificOutput"]["permissionDecision"], "deny",
         "expected deny for .github/workflows/ci.yml, got {denied:?}"
     );
+    let reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("deny reason should be a string");
+    assert!(
+        reason.contains(".github/workflows"),
+        "deny reason should mention .github/workflows, got: {reason}"
+    );
+    // The guard denies rather than rewrites, so no updatedInput channel.
     assert!(denied["hookSpecificOutput"].get("updatedInput").is_none());
 }
 
