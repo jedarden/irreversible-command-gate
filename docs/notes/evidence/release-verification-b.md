@@ -41,6 +41,19 @@ a03a7e6 Cargo diffstat under irrevers-96594031 is now stated as +8 −123 across
 both files — the earlier "+8 −122" was Cargo.lock's delta alone (its re-audit
 restatement had again quoted the single-file churn shape it was correcting).
 
+Re-verified 2026-09-11 (irrevers-083f4796, full 16-ID section audit): all 13
+in-repo commit SHAs and the 4 `~/declarative-config` SHAs (subjects, author
+dates, per-file numstats), every named test, every line reference
+(workflowtemplate lines 130, 117/121/156/162, 202–224, 136, 40/82 image pins;
+test lines 330/436, 28/104/183/236, 404/450, 19/47, 967, 127, 102), and the
+close-timestamp arithmetic were re-resolved against git history, the current
+tree, and `bead show` for all eight beads; the quoted bead notes and
+descriptions (eff8909f's tag table and "zero GitHub Releases" line,
+2cb3dbd2's handoff warnings, 075634b8's and 6de781f4's scope enumerations)
+re-checked verbatim. Live iad-ci re-confirmed (`icg-ci` template present;
+latest run `icg-ci-czdkx` 2026-09-11T04:27Z Succeeded). All verify — no
+corrections, no retractions.
+
 ---
 
 ## irrevers-2cb3dbd2 — Gate the actual modular release packs in icg-ci instead of static fixtures

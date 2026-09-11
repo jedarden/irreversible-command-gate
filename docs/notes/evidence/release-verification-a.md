@@ -43,6 +43,22 @@ refreshed release/tag ceiling under irrevers-eff8909f (origin tags now
 irrevers-340ae322 recording an uncommitted working-tree VERSION bump to 0.1.1
 in flight at verification time.
 
+Re-verified 2026-09-11 (irrevers-083f4796, full 16-ID section audit): all 13
+commit SHAs cited here (subjects, author dates, file deltas), the three
+example tag targets, every named test, every line reference, and both image
+pins were re-resolved against git history, the current tree, and `bead show`
+for all eight beads; live GitHub and live iad-ci re-checked. All verify — no
+corrections, no retractions. Live-state refreshes: the release/tag ceiling
+under irrevers-eff8909f (origin tags now `v0.1.7`–`v0.1.19`; GitHub releases
+v0.1.1–v0.1.19, 19 contiguous releases, `v0.1.19` Latest, all four assets),
+and the iad-ci retention count under irrevers-84b36e47 (now 2 retained
+icg-ci workflows, both from Sep 11 — still only a handful, still none from
+Sep 5–7). Fresh pullability proof under irrevers-340ae322: workflow
+`icg-ci-czdkx` (2026-09-11T04:27Z) Succeeded with its `build-and-release` and
+all `codex-hook-compatibility` pods green on the pinned 0.1.0 image. HEAD
+still pins 0.1.0 (VERSION and both `image:` lines); the working-tree VERSION
+bump to 0.1.1 remains uncommitted.
+
 ---
 
 ## irrevers-84b36e47 — Verify icg-ci produces a real, complete GitHub release
@@ -192,8 +208,11 @@ irrevers-61ad3e1e 2026-09-11: origin now carries tags `v0.1.7`–`v0.1.14` and
 the GitHub mirror has releases v0.1.1–v0.1.14 (v0.1.14 Latest, all four
 assets); refreshed again by irrevers-552eca96 2026-09-11: origin tags now run
 `v0.1.7`–`v0.1.17` and the GitHub mirror has releases v0.1.1–v0.1.16
-(v0.1.16 Latest, all four assets); (2) the bead's "zero GitHub Releases
+(v0.1.16 Latest, all four assets); refreshed once more by irrevers-083f4796
+2026-09-11: origin tags now run `v0.1.7`–`v0.1.19` and the GitHub mirror has
+releases v0.1.1–v0.1.19 (19 contiguous releases, `v0.1.19` Latest, all four
+assets, non-draft); (2) the bead's "zero GitHub Releases
 exist" line was true only against origin (Forgejo `git.ardenone.com`, no
 GitHub host configured there) — the GitHub mirror does have releases v0.1.1
 through v0.1.10, verified live 2026-09-11 (v0.1.1–v0.1.7 verified in the
-original 2026-09-10 pass; the live ceiling is now v0.1.16, see (1)).
+original 2026-09-10 pass; the live ceiling is now v0.1.19, see (1)).
