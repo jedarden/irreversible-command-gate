@@ -27,23 +27,23 @@ asking for a lock it cannot hold"), which shares one changeset with the
 lock-free read path (irrevers-f891f555) and the regression tests
 (irrevers-9eb4de16); this bead closed 36 seconds later (02:07:01Z). Both
 required call-site comments are at HEAD: the hook front-end
-(`src/main.rs:835`, "Graduation is an operator action: `icg policy
-reconcile`") and the wrapper path (`src/main.rs:1238`, "an operator runs
-`icg policy reconcile` instead"). The reconcile call itself now lives only in
+(`src/main.rs:835-839`, "Graduation is an operator action: `icg policy
+reconcile`" at 838-839) and the wrapper path (`src/main.rs:1239-1241`, "an
+operator runs `icg policy reconcile` instead" at 1241). The reconcile call itself now lives only in
 the operator command handler (`src/main.rs:2539`, inside `icg policy
 reconcile`, which prints the outcome). The commit body records the manual
 verification this bead's third criterion asks for: negative control against
 the deployed v0.1.3 binary with the policy directory at mode 0555 — v0.1.3
 emits "Failed to reconcile fail-closed graduation policy … Permission denied",
 the fixed build emits nothing on stderr, both allow, and neither creates the
-lock. `src/main.rs` is −60/+51 lines net in the commit (the guarded reconcile
+lock. `src/main.rs` is +14/−46 lines in the commit (the guarded reconcile
 plumbing removed); `cargo test` green (216 unit + all integration suites) is
 recorded in the same body.
 
 ## irrevers-9eb4de16 — Add regression tests for a root-owned policy directory on the hook path
 
 **Verifiable.** Same commit `0a5faa9` (02:06:25Z; bead closed 02:07:02Z), which
-grows `tests/fail_closed_runtime_tests.rs` by +175 lines. At HEAD the two
+grows `tests/fail_closed_runtime_tests.rs` by 175 lines (+170/−5). At HEAD the two
 required tests are `hook_invocation_leaves_administrator_owned_policy_untouched`
 (`tests/fail_closed_runtime_tests.rs:328` — 0555 policy directory, decision
 unchanged, policy state untouched, guarded stderr asserted clean) and
@@ -65,9 +65,10 @@ stderr assertion (deliberately, pointing at irrevers-0aa08f4e), and commit
 
 **Verifiable — verification-only bead; the evidence is the recorded manual
 verification, not a commit.** No code change was in scope and none exists,
-which matches the bead's purpose. The bead's own notes (mirrored on parent
-irrevers-8d1f79a7, which they were also recorded against per the acceptance
-criteria) carry the full reproduction: on the installed host layout
+which matches the bead's purpose. The bead's own notes carry the full
+reproduction, and the note the acceptance criteria asked for is recorded on
+parent irrevers-8d1f79a7 as a pointer to this bead ("Verified by child bead
+irrevers-93baa29a, 2026-09-07"): on the installed host layout
 (`/usr/local/bin/icg`, root-owned `/etc/icg`, installed 2026-09-06), both
 `policy status` and `policy reconcile` ran as root to completion — exit 0,
 empty stderr on live runs; live `reconcile` outcome `Pending { reason: "no
@@ -131,10 +132,10 @@ ordering comment states why the chmod wins over the later `COPY packs
 re-modes it (lines 50–51); and a build-time assertion RUN fails the image
 build if any of the four dirs is non-root-owned or world-writable. The commit
 also ships the semver-shape check replacing the exact `ICG_VERSION` match
-(Cargo.toml 0.1.6 vs ARG default 0.1.0 failed every build). The commit message
-is explicit that the image itself was not built on this box — kaniko builds in
-iad-ci at release time, and the in-build assertion RUN is the standing
-verification.
+(Cargo.toml 0.1.5 vs ARG default 0.1.0 failed every build). The commit message
+records the in-build assertion RUN as the standing verification; the image
+itself is built by kaniko in iad-ci at release time, so no local image build
+is part of the record.
 
 ## irrevers-ffdc924b — Add guard health tracking and crash monitoring infrastructure
 
@@ -155,8 +156,10 @@ integration); and crash detection is exit-status classification with signal
 and OOM separated (`exit_status_classifies_signals_and_oom_separately`) plus
 cgroup OOM-counter evidence for SIGKILL (`cgroup_oom_counter_provides_
 evidence_for_sigkill`, `read_oom_kill_count`, `with_oom_events_path`) — the
-"detects OOM, segfaults, panic" item. All tests are still in `src/health.rs`'s
-inline module at HEAD.
+"detects OOM, segfaults, panic" item. All cited tests are still at HEAD in
+the inline modules of the files that carry them (`src/health.rs`, plus
+`src/metrics.rs` for `test_guard_metrics_from_persisted_health` and
+`src/telemetry.rs` for `health_snapshot_round_trips_with_telemetry`).
 
 ## irrevers-9007792b — Operational monitoring and alerting infrastructure
 
@@ -172,9 +175,10 @@ loop and snapshot collection in `src/main.rs` (+182, `run_monitor`,
 `collect_snapshot`) and `src/health_server.rs` (+75); (5) integration with
 existing systems — Prometheus exposition via `src/monitoring.rs` (+547,
 `export_prometheus`, `MonitoringConfig::from_environment`) wiring into the
-existing `metrics.rs`/`telemetry.rs` (+72, including
+existing `src/metrics.rs` (+30/−5) and `src/telemetry.rs` (+72), with
 `redacts_payloads_when_full_content_logging_is_disabled` guarding the new
-denial exports) and `src/denial_log.rs` (+62), documented in
+denial exports — that test was added by this commit to `src/denial_log.rs`
+(+62) and is still there in its inline module at HEAD — documented in
 `docs/monitoring-deployment-guide.md`. Named tests at HEAD in
 `src/monitoring.rs`'s inline module: `collects_durable_inputs_and_emits_
 operational_metrics` and `malformed_pack_is_visible_as_a_metric` (rule-pack
@@ -188,11 +192,12 @@ config artifacts cannot silently disappear.
 document fail-closed operations"), 16 seconds before close (03:06:08Z),
 +2452 lines across ten docs files. The acceptance checklist maps as follows:
 activation guide + configuration reference → `docs/operators/fail-closed-mode.md`
-(447 lines); monitoring guide → the same file's monitoring section plus
-`docs/monitoring-deployment-guide.md` (from `a750033`, the bead before it in
-the same close window); rollback procedures → `docs/runbooks/rollback.md`
-(created by `d653ade` the previous day for the poison-pill rollback the
-procedures describe) and `docs/runbooks/incident-response.md` (+11 in this
+(447 lines at creation); monitoring guide → the same file's monitoring section
+plus `docs/monitoring-deployment-guide.md` (created by `e759254`, extended by
+`a750033` in the same close window); rollback procedures →
+`docs/runbooks/rollback.md` (created by `21a6853` on 2026-08-17 and extended
+by `d653ade` about two hours before this commit, for the poison-pill rollback
+the procedures describe) and `docs/runbooks/incident-response.md` (+11 in this
 commit); troubleshooting → `docs/operators/troubleshooting.md` (+22);
 architecture overview → `docs/design/fail-closed-transition.md` (+11, the
 irrevers-aab3854c design the bead was required to incorporate) and
@@ -201,10 +206,11 @@ onboarding docs → `README.md`, `docs/operators/README.md` (+16),
 `docs/operators/deployment-guide.md` (+21), and the new
 `docs/onboarding-guide.md` (+645). The 1222-line
 `docs/operators/training-manual.md` is the operator-facing distillation. All
-files exist at HEAD. Sequencing matches the bead's "final bead — docs
-describe what exists" constraint: it landed after the four implementation
-commits (`bb362fb`, `17971b7`, `3f0f00d`, `a525523`) and immediately after
-`a750033`.
+files exist at HEAD. Sequencing: it landed after the four implementation
+commits (`bb362fb`, `17971b7`, `3f0f00d`, `a525523`) — immediately after
+`3f0f00d` and *before* `a750033` (03:05:52Z vs 03:28:02Z), so the monitoring
+commit and the irrevers-9007792b close (03:28:12Z) both postdate this docs
+commit.
 
 ## irrevers-1517a263 — cargo test writes into the production denial log on an instrumented host
 
@@ -240,7 +246,7 @@ test in the repo or on either instrumented host consumes these lines" — which
 is the check the bead's options section demanded before choosing — and the run
 id stays recoverable via `icg health`. Both done-when code items are at HEAD:
 `HealthStore::start_run` no longer prints on the healthy path
-(`src/health.rs`, +7/−), while the fault and crash-recovery emitters the bead
+(`src/health.rs`, +6/−1), while the fault and crash-recovery emitters the bead
 said must stay (`crash_detected`, `crash_recorded`, the `*_failed` variants)
 are untouched, held there by the new
 `a_recovered_crash_still_announces_itself_on_stderr`
@@ -254,3 +260,40 @@ guarded invocation's stderr is zero bytes with the allow decision unchanged,
 while deployed v0.1.3 emits two lines on the identical input; `cargo test`
 green (60 suites), clippy `-D warnings` clean, and the suite appended nothing
 to the live denial log.
+
+---
+
+Audit note (2026-09-10): every ref in this file was re-checked against git
+history, the HEAD tree, and the bead store. All nine cited commits resolve
+(`0a5faa9`, `0e669f2`, `c38b0cd`, `a525523`, `a750033`, `859e19e`, `0c062e3`,
+`c6dcc3c`, `d653ade`) with the UTC commit times this file claims; all ten
+close timestamps match the bead store to the second (02:07:01Z, 02:07:02Z,
+03:21:52Z, 05:37:51Z, 05:42:49Z, 02:33:11Z, 03:28:12Z, 03:06:08Z, 20:31:16Z,
+02:10:01Z); no commit message names irrevers-ffdc924b or irrevers-9007792b,
+as stated. All cited test names and code anchors resolve at HEAD
+(`tests/fail_closed_runtime_tests.rs:151/328/406/486/553`,
+`src/main.rs:2539`, `src/state_store.rs` `record_guard_crash` +
+`ICG_STATE_PATH`, `src/denial_log.rs` `operational_log_path`, the
+`monitoring/` tree, both `denial_log_pollution_guard_tests.rs` tests, all
+eight `src/health.rs`-area tests, both `src/monitoring.rs` tests); at-commit
+line counts match (fail-closed-mode.md 447, training-manual.md 1222,
+Dockerfile +40/−2, state_store.rs +55, fail_closed_policy_tests.rs +55,
+denial_log.rs +135, pollution guard tests +241). The commit bodies carry
+everything attributed to them (negative controls, cargo test counts, the
+three failing crash tests, the "Nothing reads it" check). Corrections made
+while auditing: the wrapper-path comment cite `src/main.rs:1238` →
+`1239-1241` (already wrong at write time — the comment ended at 1222 in
+`0a5faa9`'s tree); `src/main.rs` numstat "−60/+51" → +14/−46; the 0a5faa9
+main.rs comment cites tightened to `835-839` / `1239-1241`;
+`tests/fail_closed_runtime_tests.rs` "+175 lines" → 175 (+170/−5); Cargo.toml
+"0.1.6" → 0.1.5 in the `c38b0cd` account; `docs/runbooks/rollback.md` creator
+`d653ade` → `21a6853` (2026-08-17; `d653ade` extended it ~2h before
+`859e19e`); `docs/monitoring-deployment-guide.md` creator → `e759254`
+(`a750033` extended it), and the "bead before it" sequencing sentence
+corrected — `859e19e` precedes `a750033`, it does not follow it;
+`redacts_payloads_when_full_content_logging_is_disabled` located in
+`src/denial_log.rs` (where `a750033` added it), not `metrics.rs`/`telemetry.rs`
+(+72 is `telemetry.rs` alone); the 93baa29a "mirrored" parenthetical
+corrected — the parent carries the pointer note, the full reproduction lives
+on the bead; `c6dcc3c` health.rs "+7/−" → +6/−1. No bead moved to
+no-evidence: all ten carry verifiable ties.
