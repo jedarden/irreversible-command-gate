@@ -44,6 +44,7 @@ Short, ordered procedures for a moment when something is on fire.
 | [developers/rule-pack-best-practices.md](developers/rule-pack-best-practices.md) | Pack authoring: regex discipline, safe patterns, testing, release gating. |
 | [notes/pretooluse-response-schema.md](notes/pretooluse-response-schema.md) | The hook wire format. |
 | [notes/redirect-not-just-block.md](notes/redirect-not-just-block.md) | Why every rule owes the caller an alternative. |
+| [notes/github-workflows-detection-seam.md](notes/github-workflows-detection-seam.md) | Where the workflows-path guard detects, and the structured fields a redirect message consumes. |
 | [notes/per-repo-overrides.md](notes/per-repo-overrides.md) | The release-bound per-repository override contract. |
 
 ## Design and decisions
