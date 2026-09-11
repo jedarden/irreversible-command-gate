@@ -9,6 +9,15 @@ per-file history in this repo. Live GitHub release checks run 2026-09-10 via
 `gh release view -R jedarden/irreversible-command-gate`. Evidence gathering
 only — no plan edits.
 
+Audited 2026-09-11 (irrevers-8176471b): every commit/tag/test/line reference
+below was re-resolved and verified against the current tree, live GitHub
+releases, and live iad-ci. Two corrections and two refreshes were applied in
+place: the c2fcfd9 timing under irrevers-e77615c8 (an earlier revision misread
+its `-0400` commit offset as UTC and said "~4h"; the true gap is ~30 seconds),
+the canary-icg wording under irrevers-6de781f4 (one doc-comment mention does
+exist in `src/trust_pointer.rs`), a live pullability re-check added under
+irrevers-340ae322, and the release-count refresh under irrevers-eff8909f.
+
 All eight beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction.
 
@@ -42,8 +51,10 @@ publish rule-pack artifact as release asset") added the `build-pack` command
 (`src/main.rs`, `src/rule_pack.rs`) and the release-upload step in
 `containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml`. Follow-up
 `c2fcfd9` (2026-08-24, "fix(rule-pack): exclude unconditional packs from merged
-artifact", `src/rule_pack.rs`) landed ~4h before the bead closed
-(2026-08-24T04:27Z). Live check 2026-09-10: `rule-pack.json` is present as an
+artifact", `src/rule_pack.rs`) landed ~30 seconds before the bead closed
+(2026-08-24 00:26:39 -0400 = 2026-08-24T04:26:39Z; close 2026-08-24T04:27:11Z
+— an earlier revision of this file misread the `-0400` offset as UTC and said
+~4h). Live check 2026-09-10: `rule-pack.json` is present as an
 asset on releases v0.1.1 and v0.1.2, and the workflow itself consumes the asset
 across releases — the coverage-diff gate runs `gh release download
 $PREVIOUS_VERSION --pattern rule-pack.json` (workflowtemplate line 130), which
@@ -66,7 +77,14 @@ both done-when criteria satisfied: `docker manifest inspect
 ronaldraygun/argo-guarded-builder:0.1.0` succeeded with manifest digest
 `sha256:dd3a46c3f85c1d6f52e55b4ad9a62cc06d6341b5055fdd5eb3e8bdd883d98ef5`, and
 workflow `icg-ci-rg9n7`'s `codex-hook-compatibility` pods reached `Running`
-(not ImagePullBackOff) while using the pinned image. In-repo corroboration:
+(not ImagePullBackOff) while using the pinned image. Live re-check 2026-09-11
+(this audit): pod `icg-ci-f8crj-build-and-release-30640588` (created
+2026-09-11T00:06:52Z, iad-ci) is `Running` on
+`ronaldraygun/argo-guarded-builder:0.1.0` — the same tag still published and
+successfully pulled by icg-ci today. (The registry now answers anonymous
+manifest requests with 401 — the repo is not anonymously pullable — so
+in-cluster pulls remain the only observable pullability proof from here.)
+In-repo corroboration:
 `containers/argo-guarded-builder/VERSION` pins the version that the
 `icg-ci-guarded-workflowtemplate.yml` image references resolve against (0.1.0
 at verification time; since bumped in a separate version-bump bead).
@@ -96,9 +114,12 @@ added channel support across `src/trust_pointer.rs` (+80, including
 same-day as the close (2026-08-15T05:16Z). No commit message references the
 bead ID and the bead's notes are empty, so the linkage is by date and scope
 match. The end-to-end round-trip test arrived later, via irrevers-e2bb8fbf
-(`c7e9df5`). **The operational half has no verifiable evidence found**: no
-reference to a launched `canary-icg` NEEDLE worker (the bead's stated roll-out
-step) exists anywhere in this repo — no docs, manifests, or runbook mention it.
+(`c7e9df5`). **The operational half has no verifiable evidence found**: the
+only in-repo mention of a launched `canary-icg` NEEDLE worker (the bead's
+stated roll-out step) is a doc comment in `src/trust_pointer.rs` describing
+the intended mechanism ("// Canary channel worker (launched via NEEDLE
+--identifier canary-icg)") — no docs, manifests, or runbook record one
+actually being launched.
 
 ## irrevers-b6579270 — Per-release deny-rate telemetry and rolling baseline
 
@@ -128,8 +149,10 @@ and the reproducible source commands — is recorded verbatim in the bead's note
 (closed 2026-09-10T10:30Z). Spot-checked against local git: all seven tags
 exist, are lightweight, and point at the recorded SHAs (e.g. v0.1.0 →
 `f0fe556`, v0.1.2 → `1b6f6a6`, v0.1.6 → `aab687d`). Two nuances for downstream
-reconciliation: (1) a `v0.1.7` tag/release now also exists (2026-09-10), outside
-the bead's stated range; (2) the bead's "zero GitHub Releases exist" line was
-true only against origin (Forgejo `git.ardenone.com`, no GitHub host configured
-there) — the GitHub mirror does have releases v0.1.1 through v0.1.7, verified
-live 2026-09-10.
+reconciliation (refreshed by the 2026-09-11 audit): (1) tags/releases beyond
+the bead's stated range now exist — `v0.1.7`–`v0.1.9` tags and releases
+`v0.1.7`–`v0.1.10` as of 2026-09-11; (2) the bead's "zero GitHub Releases
+exist" line was true only against origin (Forgejo `git.ardenone.com`, no
+GitHub host configured there) — the GitHub mirror does have releases v0.1.1
+through v0.1.10, verified live 2026-09-11 (v0.1.1–v0.1.7 verified in the
+original 2026-09-10 pass).

@@ -10,6 +10,13 @@ description/notes, cross-referenced with `git log --grep`, `git log --diff-filte
 Live cluster check run 2026-09-10 against iad-ci. Evidence gathering only — no
 plan edits.
 
+Audited 2026-09-11 (irrevers-8176471b): every commit/test/line reference below
+was re-resolved and verified against the current tree, live iad-ci, and the
+`~/declarative-config` history. All references resolve; one clarification was
+added under irrevers-f59f9313 (two implementing commits carry subjects about
+other bundled work — quoted below so `git log` readers aren't misled). No
+evidence was found needing retraction.
+
 All eight beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction. Timestamps are UTC unless
 a `-0400` offset is shown (commit timestamps are recorded in the repo's local
@@ -103,12 +110,16 @@ defect is what irrevers-96594031 was created (and closed) to cover.
 **Verifiable, with a timing caveat.** The implementation matches the notes'
 description exactly, but the push landed shortly *after* the close timestamp:
 
-- `9c6951b` (2026-08-14 23:47:30 -0400 = 2026-08-15T03:47:30Z) wired the CLI:
-  `Commands::Update` in `src/main.rs` (GitHub Releases check per the trust
-  pointer, `UpdateConfig`). Its tree references `update::*` while not yet
-  containing `src/update.rs` — the code existed uncommitted and went in
-  broken at that boundary.
-- `d1e2b38` (2026-08-15 00:21:04 -0400 = 2026-08-15T04:21:04Z) added
+- `9c6951b` (2026-08-14 23:47:30 -0400 = 2026-08-15T03:47:30Z; subject
+  "feat(engine): implement content-mode input acquisition" — the commit
+  bundles engine and updater work, so match on the `src/main.rs` delta, not
+  the subject) wired the CLI: `Commands::Update` in `src/main.rs` (GitHub
+  Releases check per the trust pointer, `UpdateConfig`). Its tree references
+  `update::*` while not yet containing `src/update.rs` — the code existed
+  uncommitted and went in broken at that boundary.
+- `d1e2b38` (2026-08-15 00:21:04 -0400 = 2026-08-15T04:21:04Z; subject
+  "docs(plan): decide install path, ownership, and mode for guard artifacts"
+  — likewise a bundled commit) added
   `src/update.rs` (317 lines): one-shot GitHub Releases API check, download of
   the rule-pack artifact per the trust pointer, atomic write-then-rename
   replacement, no persistent process — the per-invocation architecture the
