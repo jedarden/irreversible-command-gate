@@ -18,6 +18,16 @@ corrections came out of the audit and are applied in place: the
 `48d5a60` test count (12 → 11 at that commit) and the
 `regression_suite_scope_tests` name-to-line mapping.
 
+Second independent pass (irrevers-423f1be6, 2026-09-11): the same
+re-resolution re-run — all 11 SHAs (8 this repo, 3 declarative-config), all
+close-timestamp deltas, and all 16 test/line citations verified exact; five
+suites re-run green (27/27, exit 0) and both repros re-executed with
+identical output (8 cases, 5 command-mode / 3 content-mode; exit 2 + REQUIRED
+→ exit 0 justified; channel flip → `no_regressions`). One further correction,
+applied in place: the `e1aab5a` skip-category parenthetical — only two of the
+13 rules that cannot yield a deny case actually ship a non-deny channel; the
+other 11 are predicate checks or the secrets pack's unconditional match.
+
 All five beads were confirmed **Closed** at time of writing, so every entry
 below is closing evidence, not a status correction. Timestamps are UTC unless
 a `-0400` offset is shown; bead timestamps are UTC.
@@ -72,8 +82,10 @@ checkout untouched):
   now exits **0** with a reasoned skip ("redirect channel is
   AdditionalContext, which never denies; covered by the engine tests for that
   channel instead"). `e1aab5a` deliberately stopped the command from being
-  fatal for legitimately non-deny channels (rewrite/warning/predicate — 13 of
-  26 shipped rules), and coverage-diff reports `no_regressions` for a pure
+  fatal for rules that legitimately cannot yield a deny case (non-deny
+  channels on `git-force-push`/`openbao-kv-get-to-stdout`, five predicate
+  checks, and the secrets pack's unconditional match — 13 of 26 shipped
+  rules in all), and coverage-diff reports `no_regressions` for a pure
   channel flip, so **at the command level this specific weakening is no
   longer a gate failure**.
 - Enforcement for the shipped packs moved into the repo's own test suite,
