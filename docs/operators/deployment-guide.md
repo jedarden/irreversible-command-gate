@@ -110,6 +110,8 @@ Production deployment should use this ownership model:
 | `/etc/icg/rule-pack.json` | Legacy single-pack compatibility artifact | `root:root`, `0644` |
 | `/etc/icg/trust-pointer.json` | Trusted release reference | `root:root`, `0644` |
 | `/etc/icg/last-update-check.json` | Updater bookkeeping | `root:root`, `0644` |
+| `/etc/icg/fail-closed-policy.json` | Durable Fail-Closed policy state | `root:root`, `0644`, not writable by the guarded agent |
+| `/etc/icg/fail-closed-policy.lock` | Exclusive lock for Fail-Closed policy mutations | `root:root`, `0644`, not writable by the guarded agent |
 | `/var/cache/icg/telemetry.json` | Rolling evaluation telemetry | writable by the hook identity, if telemetry is wanted |
 
 The rule pack and trust pointer must not be writable by the agent process. The
@@ -118,6 +120,26 @@ hook identity must be able to create/read `/var/cache/icg/telemetry.json`.
 Later telemetry processing and persistence errors are reported as warnings,
 but a permission failure during initialization can prevent that invocation
 from returning a decision.
+
+The Fail-Closed policy state and its lock sit inside the same administrator
+boundary. A guarded invocation, hook or wrapper, consumes an
+already-committed policy decision read-only: it neither writes nor locks
+`/etc/icg/fail-closed-policy.json` or `/etc/icg/fail-closed-policy.lock`,
+and it must not even try to open the lock file for writing. Every policy
+mutation is an operator action — `icg policy reconcile` plus the manual
+`configure`, `demote`, `force-graduate`, and `force-revert` controls, run
+from an administrator shell or deployment controller — and the guarded
+process never reconciles the policy on its own behalf, including on the
+invocation right after a recovered crash; crash evidence goes to the state
+store the guarded agent owns under `/var/cache/icg` instead.
+
+Making the lock file agent-writable was considered and rejected, not
+deferred. An agent must not hold a lock on state it cannot legitimately
+alter, and even with the lock held, the subsequent policy write would still
+fail against the root-only policy file. Agent lock access would only add a
+permission failure on every graduation attempt, warned on the same stderr
+channel a real fault needs, without granting the agent any legitimate
+capability.
 
 ## Source installation
 
