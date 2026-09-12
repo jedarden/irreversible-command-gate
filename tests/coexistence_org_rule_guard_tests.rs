@@ -8,12 +8,13 @@
 //! - PASS criterion: CONSISTENT verdicts (both deny, or both allow)
 //! - FAIL criterion: DIVERGENT verdict (one denies, the other does not)
 //! - Expected behavior: Both systems fire on the same :latest violation → redundant double-deny
-//! - Test scope: rule 3 (:latest image tags in .yaml writes) and rule 1 (.github/workflows
-//!   writes) are both covered by icg; the rest are probed only to document expected divergence
+//! - Test scope: rule 3 (:latest image tags in .yaml writes), rule 1 (.github/workflows
+//!   writes), and rule 2 (kind:Job/CronJob YAML content) are all covered by icg; the rest
+//!   are probed only to document expected divergence
 //!
-//! Rule 2 (kind:Job/CronJob) and rule 4 (mutating kubectl) legitimately diverge because icg
-//! doesn't absorb them. Rule 5 (credential values) is only partially absorbed (Bash channel
-//! only). Rule 1 (.github/workflows) is now absorbed by icg as well (see
+//! Rule 4 (mutating kubectl) legitimately diverges because icg doesn't absorb it. Rule 5
+//! (credential values) is only partially absorbed (Bash channel only). Rules 1
+//! (.github/workflows) and 2 (kind:Job/CronJob) are now absorbed by icg as well (see
 //! coexistence_scope_limited_to_rule_3_overlap_only).
 
 use icg::engine::{CheckResult, ContentSource, Engine, InputSource, PreToolUseInput, ToolInput};
@@ -127,19 +128,20 @@ fn coexistence_both_allow_pinned_images() {
 fn coexistence_scope_limited_to_rule_3_overlap_only() {
     // This test documents the COEXISTENCE SCOPE and verifies we don't probe beyond it.
     //
-    // Rule 3 (:latest in .yaml) is the ONLY rule covered by BOTH systems:
+    // Rules 1-3 are covered by BOTH systems:
     // - Rule 1 (.github/workflows) → now absorbed by icg (both systems deny)
-    // - Rule 2 (kind:Job/CronJob) → org-rule-guard.py only, icg doesn't absorb
-    // - Rule 3 (:latest in .yaml) → BOTH systems, this test's focus
+    // - Rule 2 (kind:Job/CronJob) → now absorbed by icg (both systems deny)
+    // - Rule 3 (:latest in .yaml) → BOTH systems, this test's original focus
     // - Rule 4 (mutating kubectl) → org-rule-guard.py only, PERMANENTLY not absorbed (plan.md)
     // - Rule 5 (credential values) → org-rule-guard.py Write/Edit only, Bash absorbed by icg
     //
-    // Divergent verdicts on rules 1-2,4-5 are EXPECTED and NOT a coexistence failure.
-    // This test only probes rule 3 overlap.
+    // Divergent verdicts on rules 4-5 are EXPECTED and NOT a coexistence failure.
+    // This test probes the absorbed rules for their consistent double-deny.
 
     let engine = load_image_tag_engine();
 
-    // Verify icg DOESN'T cover rules 1-2,4-5 (expected divergence)
+    // Verify icg DOES cover rules 1-2 (consistent with org-rule-guard.py), and
+    // DOESN'T cover rules 4-5 (expected divergence)
     //
     // Rule 1: .github/workflows/* writes
     let result = engine.evaluate_content(&ContentSource::Write {
@@ -156,10 +158,11 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
         file_path: "k8s/job.yaml".to_string(),
         content: "kind: Job\nmetadata:\n  name: test\n".to_string(),
     });
-    // icg allows this (no pack covers kind:Job yet)
-    // org-rule-guard.py rule 2 denies this
-    // This DIVERGENCE is EXPECTED (not absorbed) and NOT a coexistence test failure
-    assert!(matches!(result, CheckResult::Allowed));
+    // icg now denies this (job_cronjob_yaml guard is absorbed into
+    // evaluate_content_inner, judged on the content being introduced)
+    // org-rule-guard.py rule 2 also denies this
+    // Both deny → consistent, PASS
+    assert!(matches!(result, CheckResult::Denied { .. }));
 
     // Rule 3: :latest in .yaml (covered by both systems, tested elsewhere in this file)
     // Both deny → consistent, PASS

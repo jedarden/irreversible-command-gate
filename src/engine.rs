@@ -2436,6 +2436,25 @@ impl Engine {
             };
         }
 
+        // The Job/CronJob guard judges only the content being introduced:
+        // `new_content()` is the full Write body, or the Edit's replacement
+        // text, so an Edit that *removes* a Job (old text matching, new text
+        // clean) stays allowed. The denial carries no `matched_path` -- that
+        // slot names a path, and this guard denied on content -- so the
+        // rendered reason falls back to `file=<target>` like every other
+        // content-pattern denial. The offending line stays on the module's
+        // `Detection` seam for in-process consumers.
+        if let crate::job_cronjob_yaml::Detection::Matched { reason, .. } =
+            crate::job_cronjob_yaml::detect(source.file_path(), source.new_content())
+        {
+            return CheckResult::Denied {
+                reason,
+                pack_id: crate::job_cronjob_yaml::PACK_ID.to_string(),
+                pattern_id: crate::job_cronjob_yaml::PATTERN_ID.to_string(),
+                matched_path: None,
+            };
+        }
+
         if self.should_fail_open() {
             return if self.should_fail_closed() {
                 CheckResult::Denied {
@@ -4003,6 +4022,229 @@ mod tests {
                 CheckResult::Allowed,
                 "expected Allowed for {file_path}"
             );
+        }
+    }
+
+    /// The Job/CronJob guard denies every shared guarded spelling through
+    /// `evaluate_content` for both Write and Edit -- before any pack dispatch,
+    /// so an empty rule pack changes nothing. The denial carries the shared
+    /// redirect wording and the guard's pack/pattern attribution, and no
+    /// `matched_path`: that slot names a path, and this guard denied on
+    /// content, so the rendered reason falls back to `file=<target>`.
+    #[test]
+    fn test_evaluate_content_denies_job_cronjob_yaml_write() {
+        let engine = default_engine();
+        for content in crate::job_cronjob_yaml::GUARDED_CONTENTS {
+            let sources = [
+                ContentSource::Write {
+                    file_path: "k8s/job.yaml".to_string(),
+                    content: (*content).to_string(),
+                },
+                ContentSource::Edit {
+                    file_path: "k8s/job.yaml".to_string(),
+                    old_content: "apiVersion: v1".to_string(),
+                    new_content: (*content).to_string(),
+                },
+            ];
+
+            for source in sources {
+                match engine.evaluate_content(&source) {
+                    CheckResult::Denied {
+                        pack_id,
+                        pattern_id,
+                        reason,
+                        matched_path,
+                    } => {
+                        assert_eq!(pack_id, crate::job_cronjob_yaml::PACK_ID);
+                        assert_eq!(pattern_id, crate::job_cronjob_yaml::PATTERN_ID);
+                        // The shared BLOCKED_REASON wording, carried through
+                        // Detection::Matched verbatim into the denial.
+                        assert_eq!(reason, crate::job_cronjob_yaml::BLOCKED_REASON);
+                        // A content denial carries no matched path -- see the
+                        // guard call in evaluate_content_inner.
+                        assert_eq!(
+                            matched_path, None,
+                            "a content denial must not carry matched_path"
+                        );
+                    }
+                    other => {
+                        panic!("expected Denied for {content:?}, got {other:?}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The guard is scoped to `.yaml`/`.yml` targets: the same Job content
+    /// aimed at any other path stays allowed, so prose, source, and markdown
+    /// files that merely mention `kind: Job` remain writable.
+    #[test]
+    fn test_evaluate_content_allows_job_content_on_non_yaml_paths() {
+        let engine = default_engine();
+        for file_path in [
+            "docs/jobs.md",
+            "src/job.rs",
+            "README",
+            "job.yaml.j2",
+            "k8s/job.txt",
+        ] {
+            let source = ContentSource::Write {
+                file_path: file_path.to_string(),
+                content: "kind: Job\n".to_string(),
+            };
+
+            assert_eq!(
+                engine.evaluate_content(&source),
+                CheckResult::Allowed,
+                "expected Allowed for {file_path}"
+            );
+        }
+    }
+
+    /// The shared false-positive table stays allowed on a `.yaml` target:
+    /// longer scalars sharing the prefix, comments, unrelated fields, block
+    /// scalar string literals, and malformed or partial YAML.
+    #[test]
+    fn test_evaluate_content_allows_job_cronjob_false_positive_content() {
+        let engine = default_engine();
+        for content in crate::job_cronjob_yaml::UNGUARDED_CONTENTS {
+            for source in [
+                ContentSource::Write {
+                    file_path: "k8s/app.yaml".to_string(),
+                    content: (*content).to_string(),
+                },
+                ContentSource::Edit {
+                    file_path: "k8s/app.yaml".to_string(),
+                    old_content: "kind: Job".to_string(),
+                    new_content: (*content).to_string(),
+                },
+            ] {
+                assert_eq!(
+                    engine.evaluate_content(&source),
+                    CheckResult::Allowed,
+                    "expected Allowed for {content:?}"
+                );
+            }
+        }
+    }
+
+    /// An Edit that *removes* a Job must stay allowed: only the replacement
+    /// text is judged, so fixing an existing Job (old text matching, new text
+    /// a Deployment) goes through.
+    #[test]
+    fn test_evaluate_content_edit_removing_a_job_stays_allowed() {
+        let engine = default_engine();
+        let source = ContentSource::Edit {
+            file_path: "k8s/job.yaml".to_string(),
+            old_content: "apiVersion: batch/v1\nkind: Job\n".to_string(),
+            new_content: "apiVersion: apps/v1\nkind: Deployment\n".to_string(),
+        };
+
+        assert_eq!(engine.evaluate_content(&source), CheckResult::Allowed);
+    }
+
+    /// A multi-file Codex patch that introduces a Job manifest among benign
+    /// files denies through the batch evaluation -- the same
+    /// `evaluate_content_inner` detection call every normalized file runs
+    /// through, so patch breadth cannot hide a guarded document.
+    #[test]
+    fn multi_file_apply_patch_introducing_a_job_manifest_is_denied() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: README.md\n\
+                     +hello\n\
+                     *** Add File: k8s/migrate.yaml\n\
+                     +apiVersion: batch/v1\n\
+                     +kind: Job\n\
+                     +metadata:\n\
+                     +  name: migrate\n\
+                     *** Update File: deploy/app.yaml\n\
+                     @@\n\
+                     -image: app:1.2.3\n\
+                     +image: app:1.2.4\n\
+                     *** End Patch";
+
+        let source = Engine::input_source_from_pre_tool_use(apply_patch_input(patch))
+            .expect("patch should normalize")
+            .expect("patch should produce a checkable input");
+        let InputSource::ContentBatch(sources) = source else {
+            panic!("multi-file patch should normalize to a batch, got {source:?}");
+        };
+        assert_eq!(sources.len(), 3);
+
+        match engine.evaluate_content_batch(&sources) {
+            CheckResult::Denied {
+                pack_id,
+                pattern_id,
+                ..
+            } => {
+                assert_eq!(pack_id, crate::job_cronjob_yaml::PACK_ID);
+                assert_eq!(pattern_id, crate::job_cronjob_yaml::PATTERN_ID);
+            }
+            other => panic!("expected a Job/CronJob denial, got {other:?}"),
+        }
+    }
+
+    /// The benign batch counterpart: a multi-file patch whose YAML files
+    /// carry only false-positive shapes (a ConfigMap embedding a script that
+    /// mentions a Job, a Deployment manifest) stays allowed.
+    #[test]
+    fn multi_file_apply_patch_with_only_false_positive_yaml_is_allowed() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Add File: README.md\n\
+                     +hello\n\
+                     *** Add File: k8s/config.yaml\n\
+                     +data:\n\
+                     +  seed.sh: |\n\
+                     +    kind: Job\n\
+                     *** Add File: deploy/app.yaml\n\
+                     +kind: Deployment\n\
+                     *** End Patch";
+
+        let source = Engine::input_source_from_pre_tool_use(apply_patch_input(patch))
+            .expect("patch should normalize")
+            .expect("patch should produce a checkable input");
+        let InputSource::ContentBatch(sources) = source else {
+            panic!("multi-file patch should normalize to a batch, got {source:?}");
+        };
+
+        assert_eq!(
+            engine.evaluate_content_batch(&sources),
+            CheckResult::Allowed,
+            "a patch introducing no Job/CronJob document must stay allowed"
+        );
+    }
+
+    /// A single-file patch adding a Job manifest denies through the same
+    /// normalization: one source, evaluated as Content.
+    #[test]
+    fn single_file_apply_patch_introducing_a_job_manifest_is_denied() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Update File: k8s/nightly.yaml\n\
+                     @@\n\
+                     -kind: ConfigMap\n\
+                     +kind: CronJob\n\
+                     *** End Patch";
+
+        let source = Engine::input_source_from_pre_tool_use(apply_patch_input(patch))
+            .expect("patch should normalize")
+            .expect("patch should produce a checkable input");
+        let InputSource::Content(content) = source else {
+            panic!("single-file patch should normalize to one source, got {source:?}");
+        };
+
+        match engine.evaluate_content(&content) {
+            CheckResult::Denied {
+                pack_id,
+                pattern_id,
+                ..
+            } => {
+                assert_eq!(pack_id, crate::job_cronjob_yaml::PACK_ID);
+                assert_eq!(pattern_id, crate::job_cronjob_yaml::PATTERN_ID);
+            }
+            other => panic!("expected a Job/CronJob denial, got {other:?}"),
         }
     }
 

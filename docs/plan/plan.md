@@ -13,17 +13,18 @@ end state, stated precisely rather than aspirationally**: not full
 removal. Two things keep it alive under the plan's *current*, actually
 scheduled scope: (1) its kubectl-mutation rule is **permanently** excluded
 from absorption ("Explicitly not attempted" — zero-I/O determinism
-reasons that don't go away), and (2) its `kind: Job`/`CronJob` rule isn't
-excluded on principle, just **not yet scheduled** by any phase (see
-`docs/notes/existing-enforcement-infrastructure.md`). Its
-`.github/workflows` rule once sat in category (2) beside it; it has since
-been absorbed — a built-in engine guard (pack attribution
-`github-workflows`) denies workflow-definition writes on Write/Edit and
-Codex `apply_patch` (2026-09), redundantly with the hook during
-coexistence. So today's accurate
-claim is "shrinks to at least a kubectl-only rump, plus whichever of the
-Job-CronJob rules remain unscheduled" — not "kubectl-only,"
-until a future phase actually picks up (2). "Deprecated" means
+reasons that don't go away), and (2) its Write/Edit credential-value rule
+has no absorbed channel yet, so it stays with the hook until one exists
+(see `docs/notes/existing-enforcement-infrastructure.md`).
+Its `.github/workflows` rule and its `kind: Job`/`CronJob` rule once sat
+in that unscheduled category beside it; both have since been absorbed —
+built-in engine guards (pack attributions `github-workflows` and
+`job-cronjob-yaml`) deny workflow-definition writes and Job/CronJob
+manifest content on Write/Edit and Codex `apply_patch` (2026-09),
+redundantly with the hook during coexistence. So today's accurate
+claim is "shrinks to a kubectl-only rump plus the Write/Edit
+credential-value rule" — not "kubectl-only,"
+until a future phase actually picks up the credential channel. "Deprecated" means
 "superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is
 framed accordingly. Covers both **Claude Code and Codex CLI** as guarded

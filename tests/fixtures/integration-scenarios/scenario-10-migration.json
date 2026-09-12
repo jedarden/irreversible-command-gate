@@ -38,9 +38,7 @@
       "icg_denies": true,
       "icg_pack": "github-workflows",
       "icg_pattern": "github-workflows-protected"
-    }
-  ],
-  "org_guard_only_probes": [
+    },
     {
       "name": "Kubernetes Job manifest",
       "tool_name": "Write",
@@ -49,8 +47,12 @@
         "content": "kind: Job\nmetadata:\n  name: one-shot\n"
       },
       "org_guard_denies": true,
-      "icg_denies": false
-    },
+      "icg_denies": true,
+      "icg_pack": "job-cronjob-yaml",
+      "icg_pattern": "kind-job-cronjob"
+    }
+  ],
+  "org_guard_only_probes": [
     {
       "name": "mutating kubectl command",
       "tool_name": "Bash",

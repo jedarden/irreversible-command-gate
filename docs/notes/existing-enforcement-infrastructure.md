@@ -90,10 +90,9 @@ assumed indefinite coexistence with `org-rule-guard.py`. That's stale: per
 `docs/plan/plan.md`'s Overview (2026-08-13 direction, since refined), that
 hook is expected to shrink toward deprecation as this project's coverage
 supersedes it — but not to full removal. Its kubectl-mutation rule is
-*permanently* excluded from absorption; its `kind: Job`/`CronJob` rule
-(2 below) isn't excluded on principle, just not yet scheduled by any
-phase; and its `.github/workflows` rule (1 below) has since been scheduled
-and absorbed — see plan.md's Overview for the precise current wording,
+*permanently* excluded from absorption; its `.github/workflows` rule
+(1 below) and its `kind: Job`/`CronJob` rule (2 below) have since been
+scheduled and absorbed — see plan.md's Overview for the precise current wording,
 which this note only paraphrases and shouldn't be treated as a substitute
 for. Coexistence is an interim state for whichever rules *do* get
 scheduled, not a permanent policy for all five. The plan already
@@ -126,10 +125,14 @@ absorbs pieces of the five rules above rather than avoiding them:
   with the hook for as long as both run
   (`tests/coexistence_org_rule_guard_tests.rs`;
   `docs/notes/github-workflows-detection-seam.md`).
-- **Rule 2 (`kind: Job`/`CronJob`)** — no phase in plan.md picks this up
-  yet. It remains solely `org-rule-guard.py`'s job for now — not because of
-  a standing "don't duplicate" policy, but simply because nothing has
-  scheduled the absorption.
+- **Rule 2 (`kind: Job`/`CronJob`)** — absorbed 2026-09: a built-in guard in
+  the engine (pack attribution `job-cronjob-yaml` /
+  `kind-job-cronjob`, not a pack file) denies manifest content declaring
+  `kind: Job` or `kind: CronJob` on Claude Code Write/Edit and Codex
+  `apply_patch`, judged only on the content a write *introduces*, redundantly
+  with the hook for as long as both run
+  (`tests/coexistence_org_rule_guard_tests.rs`;
+  `src/job_cronjob_yaml.rs`).
 
 `irrevers-62c6f748` (Phase 5) is the concrete marker of the trajectory: an
 install-time smoke test against `org-rule-guard.py`, explicitly framed as

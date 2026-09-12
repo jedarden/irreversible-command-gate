@@ -22,7 +22,7 @@ icg supersedes most of these rules and adds new coverage:
 | org-rule-guard.py Rule | icg Equivalent | Status |
 |------------------------|----------------|--------|
 | No `.github/workflows/*` | Built-in `github-workflows` guard (shipped) | **Covered by both** — redundant double-deny |
-| No `kind: Job`/`CronJob` | Not yet implemented (Phase 4) | Remains with org-rule-guard.py |
+| No `kind: Job`/`CronJob` | Built-in `job-cronjob-yaml` guard (shipped) | **Covered by both** — redundant double-deny |
 | No `:latest` image tags | `image-tag` pack (includes bare-SHA) | **MIGRATED** |
 | No mutating `kubectl` | Explicitly not implemented | Remains with org-rule-guard.py |
 | No credential values (Write/Edit) | Remains with org-rule-guard.py | Coexistence |
@@ -43,12 +43,13 @@ icg supersedes most of these rules and adds new coverage:
 - `:latest` rule migrated to icg (image-tag pack)
 - `.github/workflows/*` absorbed by icg's built-in `github-workflows` guard
   (both hooks deny during coexistence)
-- org-rule-guard.py still owns kubectl, `kind: Job`/`CronJob`, and
-  Write/Edit credential rules
+- `kind: Job`/`CronJob` absorbed by icg's built-in `job-cronjob-yaml` guard
+  (both hooks deny during coexistence)
+- org-rule-guard.py still owns kubectl and Write/Edit credential rules
 
 **Phase 3: Deprecation** (Future)
-- org-rule-guard.py reduced to kubectl and `kind: Job`/`CronJob` (plus the
-  Write/Edit credential rule until icg covers that channel)
+- org-rule-guard.py reduced to kubectl (plus the Write/Edit credential rule
+  until icg covers that channel)
 - icg handles all other rules
 
 ## Pre-Migration Checklist
