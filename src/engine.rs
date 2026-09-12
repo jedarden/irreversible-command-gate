@@ -4688,6 +4688,90 @@ mod tests {
         assert_workflows_denial(result, ".github/workflows/ci.yml");
     }
 
+    /// The evaluation-stage fail-open arm behind `evaluate_content` and
+    /// `evaluate_content_batch`: a fault inside content evaluation must never
+    /// become the denial of the write it was checking. The detection helpers
+    /// on that path are total (the Job/CronJob predicate's totality is pinned
+    /// by `malformed_input_never_panics`), so no input faults the real call
+    /// site and the engine offers no injection seam -- this drives the exact
+    /// composition the boundary uses, `catch_unwind` of a faulting evaluation
+    /// routed into [`Engine::guard_failure_result`], and pins both postures:
+    /// the default posture lets the write proceed, and only an operator's
+    /// fail-closed policy turns the same fault into a denial. A Job manifest
+    /// that evaluates normally still denies on merit -- the boundary swallows
+    /// faults, never real detections.
+    #[test]
+    fn content_evaluation_panic_fails_open_unless_a_fail_closed_policy_says_otherwise() {
+        // The guard itself is live: a Job manifest write denies on its own
+        // pattern attribution, not through any fault path.
+        let job = ContentSource::Write {
+            file_path: "k8s/job.yaml".to_string(),
+            content: "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: migrate\n".to_string(),
+        };
+        match default_engine().evaluate_content(&job) {
+            CheckResult::Denied {
+                pack_id,
+                pattern_id,
+                ..
+            } => {
+                assert_eq!(pack_id, crate::job_cronjob_yaml::PACK_ID);
+                assert_eq!(pattern_id, crate::job_cronjob_yaml::PATTERN_ID);
+            }
+            other => panic!("expected a Job/CronJob denial on merit, got {other:?}"),
+        }
+
+        // An evaluation that panics instead -- the fault `evaluate_content`'s
+        // `catch_unwind` catches -- collapses into the fail-open arm, which
+        // allows the write under the default posture.
+        let faulting = || -> CheckResult {
+            panic!("injected content-evaluation fault");
+        };
+        let routed = match catch_unwind(AssertUnwindSafe(faulting)) {
+            Ok(result) => result,
+            Err(_) => default_engine().guard_failure_result("content evaluation panicked"),
+        };
+        assert_eq!(
+            routed,
+            CheckResult::Allowed,
+            "a panicking content evaluation must allow the write, never deny it"
+        );
+
+        // The same fault denies only under an operator's fail-closed policy,
+        // and then with the pinned guard-crash attribution -- never with a
+        // Job/CronJob denial, so a fault cannot masquerade as a rule match.
+        let denied = match catch_unwind(AssertUnwindSafe(faulting)) {
+            Ok(result) => result,
+            Err(_) => default_engine()
+                .with_fail_closed(true)
+                .guard_failure_result("content evaluation panicked"),
+        };
+        match denied {
+            CheckResult::Denied {
+                reason,
+                pack_id,
+                pattern_id,
+                matched_path,
+            } => {
+                assert_eq!(pack_id, "fail-closed");
+                assert_eq!(pattern_id, "guard-crash");
+                // The content arm's own wording -- "operations", not the
+                // command arms' "commands".
+                assert_eq!(
+                    reason,
+                    "Guard crash in fail-closed mode - rejecting all operations"
+                );
+                // The guard-crash denial is not a rule match either: like the
+                // Job/CronJob denial it must never be mistaken for, it carries
+                // no matched_path.
+                assert_eq!(
+                    matched_path, None,
+                    "a guard-crash denial must not carry matched_path"
+                );
+            }
+            other => panic!("expected the fail-closed guard-crash denial, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_evaluate_content_safe_pattern_matches() {
         let mut engine = default_engine();
