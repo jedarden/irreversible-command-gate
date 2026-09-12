@@ -331,6 +331,49 @@ fn hook_fails_open_on_unparseable_patch_input() {
     assert_hook_allow(&allowed, "an unparseable patch");
 }
 
+/// A patch whose hunks only remove Job/CronJob lines is judged on the
+/// content it introduces: nothing is introduced, so the patch allows end to
+/// end. Cleaning up an existing Job goes through; only introducing one is
+/// denied. This is the apply_patch counterpart of
+/// `hook_allows_edit_that_removes_a_job`.
+#[test]
+fn hook_allows_patch_whose_hunks_only_remove_a_job() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let patch = "*** Begin Patch\n\
+                 *** Update File: k8s/nightly.yaml\n\
+                 @@\n\
+                 -apiVersion: batch/v1\n\
+                 -kind: CronJob\n\
+                 -metadata:\n\
+                 -  name: nightly\n\
+                 *** End Patch";
+    let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(patch));
+    assert_hook_allow(&allowed, "a patch that only removes a CronJob");
+}
+
+/// A patch made of malformed hunks -- a hunk header with garbage counts,
+/// content lines with no `+`/`-`/space prefix, trailing text past the End
+/// marker -- must neither panic the hook nor fabricate a denial: the process
+/// exits 0 with a plain allow. (`run_hook_for_tool` asserts the exit status,
+/// so a panic anywhere in the patch parser fails here.)
+#[test]
+fn hook_fails_open_on_malformed_hunks() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    let malformed = "*** Begin Patch\n\
+                     *** Update File: k8s/notes.yaml\n\
+                     @@ -1,3 +1,4 @@ this trailer is not valid hunk syntax\n\
+                     kind: Job\n\
+                     this line has no patch prefix at all\n\
+                     *** End Patch\n\
+                     trailing text after the patch is ignored";
+    let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(malformed));
+    assert_hook_allow(&allowed, "a patch of malformed hunks");
+}
+
 // --- in-process (mid-layer) coverage ---
 
 /// Pin the full structured Job/CronJob denial: the shared redirect wording,

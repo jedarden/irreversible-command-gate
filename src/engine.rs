@@ -4248,6 +4248,84 @@ mod tests {
         }
     }
 
+    /// A hunk is judged on the content it introduces: a patch whose only
+    /// Job/CronJob lines are removals normalizes to no introduced content at
+    /// all and stays allowed. This is the apply_patch counterpart of the
+    /// Edit-removes-a-Job test above -- cleaning up an existing Job goes
+    /// through; only introducing one is denied.
+    #[test]
+    fn apply_patch_removing_only_job_lines_stays_allowed() {
+        let engine = default_engine();
+        let patch = "*** Begin Patch\n\
+                     *** Update File: k8s/nightly.yaml\n\
+                     @@\n\
+                     -apiVersion: batch/v1\n\
+                     -kind: CronJob\n\
+                     -metadata:\n\
+                     -  name: nightly\n\
+                     *** End Patch";
+
+        let sources = normalize_apply_patch(patch).expect("removal-only patch should normalize");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].new_content(),
+            "",
+            "removed lines are not content the patch introduces"
+        );
+
+        assert_eq!(
+            engine.evaluate_content_batch(&sources),
+            CheckResult::Allowed,
+            "a patch that only removes a CronJob must stay allowed"
+        );
+    }
+
+    /// Malformed hunks are a defensive-parse case, never a denial and never a
+    /// crash: hunk headers with garbage counts, content lines with no
+    /// `+`/`-`/space prefix, and trailing text past the End marker are all
+    /// dropped or ignored, the patch still normalizes, and nothing that was
+    /// never introduced is fabricated into a detection. The guard keeps
+    /// working through the same garbage: a real introduced CronJob riding
+    /// along with malformed lines still denies.
+    #[test]
+    fn malformed_hunks_fail_open_and_do_not_disable_the_guard() {
+        let engine = default_engine();
+        let malformed = "*** Begin Patch\n\
+                         *** Update File: k8s/notes.yaml\n\
+                         @@ -1,3 +1,4 @@ this trailer is not valid hunk syntax\n\
+                         kind: Job\n\
+                         this line has no patch prefix at all\n\
+                         *** End Patch\n\
+                         trailing text after the patch is ignored";
+
+        let sources = normalize_apply_patch(malformed).expect("malformed hunks must not error");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            sources[0].new_content(),
+            "",
+            "unparseable hunk lines are not content the patch introduces"
+        );
+        assert_eq!(
+            engine.evaluate_content_batch(&sources),
+            CheckResult::Allowed,
+            "a malformed hunk must fail open rather than fabricate a denial"
+        );
+
+        let smuggling = "*** Begin Patch\n\
+                         *** Update File: k8s/notes.yaml\n\
+                         @@ -1,3 +1,4 @@ garbage counts ]]]\n\
+                         kind: Job\n\
+                         +kind: CronJob\n\
+                         *** End Patch";
+        let sources = normalize_apply_patch(smuggling).expect("malformed hunks must not error");
+        match engine.evaluate_content_batch(&sources) {
+            CheckResult::Denied { pack_id, .. } => {
+                assert_eq!(pack_id, crate::job_cronjob_yaml::PACK_ID);
+            }
+            other => panic!("an introduced CronJob must still deny, got {other:?}"),
+        }
+    }
+
     /// Build the PreToolUse payload a Codex `apply_patch` call sends.
     fn apply_patch_input(patch: &str) -> PreToolUseInput {
         PreToolUseInput {
