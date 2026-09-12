@@ -1,6 +1,8 @@
 //! Library for irreversible-command-gate
 //!
-//! This exposes the core functionality for testing and reuse.
+//! This exposes the core functionality for testing and reuse: every guard
+//! and predicate is a `pub mod` so integration tests and downstream tooling
+//! can drive it directly.
 
 pub mod alerting;
 pub mod coverage;
@@ -12,6 +14,7 @@ pub mod fail_closed;
 pub mod github_workflows;
 pub mod health;
 pub mod health_server;
+pub mod job_cronjob_yaml;
 pub mod metrics;
 pub mod monitoring;
 pub mod new_pack;
