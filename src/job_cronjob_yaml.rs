@@ -70,6 +70,9 @@ pub const GUARDED_CONTENTS: &[&str] = &[
     "kind: JoB\n",
     // everything uppercase
     "KIND: CRONJOB\n",
+    // values fully lowercase (the common hand-written casing)
+    "kind: job\n",
+    "kind: cronjob\n",
     // tab indentation and a tab after the colon
     "\tkind:\tJob\n",
     // extra spaces on both sides of the colon
