@@ -297,6 +297,57 @@ fn hook_allows_multi_file_patch_with_only_false_positive_yaml() {
     assert_hook_allow(&allowed, "a multi-file false-positive patch");
 }
 
+/// The full shared false-positive table through the Add File patch shape:
+/// every lookalike spelling must survive `normalize_apply_patch`'s `+`
+/// prefix stripping unchanged and allow silently at the hook boundary. This
+/// is the apply_patch counterpart of the Write/Edit table sweeps above --
+/// "lookalikes allowed" is proven per entry, not just on one composite patch.
+#[test]
+fn hook_allows_patch_adding_every_false_positive_content() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    for content in UNGUARDED_CONTENTS {
+        let patch = format!(
+            "*** Begin Patch\n\
+             *** Add File: k8s/app.yaml\n\
+             {added}\
+             *** End Patch",
+            added = content
+                .lines()
+                .map(|line| format!("+{line}\n"))
+                .collect::<String>()
+        );
+        let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(&patch));
+        assert_hook_allow(&allowed, "an Add File patch of {content:?}");
+    }
+}
+
+/// Same table through an Update File hunk: the `@@` header line is patch
+/// metadata, not file content, so the lookalikes introduced under it reach
+/// the predicate as ordinary added lines and must allow.
+#[test]
+fn hook_allows_patch_hunk_introducing_every_false_positive_content() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = empty_pack_path(temp.path());
+
+    for content in UNGUARDED_CONTENTS {
+        let patch = format!(
+            "*** Begin Patch\n\
+             *** Update File: k8s/app.yaml\n\
+             @@\n\
+             {added}\
+             *** End Patch",
+            added = content
+                .lines()
+                .map(|line| format!("+{line}\n"))
+                .collect::<String>()
+        );
+        let allowed = run_hook_for_tool(&pack_path, "apply_patch", apply_patch_input_for(&patch));
+        assert_hook_allow(&allowed, "an Update File hunk introducing {content:?}");
+    }
+}
+
 /// A truncated patch (Begin marker present, End marker lost to a cut-off
 /// generation) is parsed as far as it goes: the guarded content already seen
 /// still denies. This pins the defensive-parse contract at the hook boundary
