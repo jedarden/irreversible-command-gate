@@ -148,3 +148,8 @@
 {"last_strand":null,"state":"idle","ts":"2026-09-12T13:56:33.210891437+00:00","worker":"glm-seam"}
 {"last_strand":null,"state":"idle","ts":"2026-09-12T14:03:03.572346397+00:00","worker":"glm-seam"}
 {"last_strand":null,"state":"idle","ts":"2026-09-12T14:07:00.150879401+00:00","worker":"glm-seam"}
+{"last_strand":null,"state":"idle","ts":"2026-09-12T14:40:59.506818280+00:00","worker":"glm-seam"}
+{"last_strand":null,"state":"idle","ts":"2026-09-12T14:51:20.711361575+00:00","worker":"glm-seam"}
+{"last_strand":null,"state":"idle","ts":"2026-09-12T14:55:32.389569619+00:00","worker":"glm-icg"}
+{"last_strand":null,"state":"idle","ts":"2026-09-12T15:05:44.044007573+00:00","worker":"glm-icg"}
+{"last_strand":null,"state":"idle","ts":"2026-09-12T15:06:23.665291772+00:00","worker":"glm-seam"}
