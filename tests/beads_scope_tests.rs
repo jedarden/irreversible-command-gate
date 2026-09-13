@@ -132,6 +132,63 @@ fn tool_written_side_directories_are_allowed() {
     }
 }
 
+/// The full week trial (2026-09-06..09-13, bead irrevers-19835ba1 →
+/// irrevers-05855de6) on lab's v0.1.3 binary, which predates the narrowing.
+///
+/// 30 would-denies, 15 distinct paths, every one a domain-check Write under
+/// `.beads/state/` or `.beads/logs/`: per-bead analysis scripts, step
+/// summaries, and classification records. The predicate sees only the target
+/// path, never the content, so replaying the 15 distinct paths covers all 30
+/// recorded denials. `state/work-completion/` is included alongside them:
+/// domain-check's own CLAUDE.md directs verify-work-completion.sh to write
+/// there on every pre-close check, so blocking it breaks that repo's defined
+/// workflow. All must allow, and the store must still deny -- both directions
+/// in one place, as the verification record for that bead.
+#[test]
+fn the_week_trial_paths_replay_as_allow_and_the_store_still_denies() {
+    let dir = shared_checkout();
+    for target in [
+        // The 15 distinct paths lab recorded, verbatim.
+        ".beads/logs/bf-6d3d6-classification.json",
+        ".beads/logs/bf-6d3d6-root-cause.json",
+        ".beads/state/crash-prevention-testing/gc-bounds.md",
+        ".beads/state/crash-prevention-testing/safeguards.md",
+        ".beads/state/domchk-0bc507d3/domchk-da433598-verification-2026-09-08.md",
+        ".beads/state/domchk-1835a393/sampler.sh",
+        ".beads/state/domchk-53a64cb1/extract_commits.py",
+        ".beads/state/domchk-82a54a7c/compute_divergence_metrics.py",
+        ".beads/state/domchk-884dd8ae/compile_report.py",
+        ".beads/state/domchk-884dd8ae/render_markdown.py",
+        ".beads/state/domchk-990ef135/extract_traces.py",
+        ".beads/state/domchk-ca6412a0/compute_unique_commits_authors.py",
+        ".beads/state/safeguard-verification-2026-09-06/step1-summary.md",
+        ".beads/state/safeguard-verification-2026-09-06/step2-summary.md",
+        ".beads/state/safeguard-verification-2026-09-06/step3-summary.md",
+        // Sanctioned by domain-check's CLAUDE.md (verify-work-completion.sh).
+        ".beads/state/work-completion/domchk-0bc507d3.json",
+    ] {
+        assert!(
+            !denied(&dir, target),
+            "{target} was denied; the week trial proved these are legitimate writes"
+        );
+    }
+
+    // The other direction: a direct write at the store must still deny.
+    for target in [
+        ".beads/beads.db",
+        ".beads/beads.db-wal",
+        ".beads/checkpoint/current.json",
+        ".beads/config.json",
+        ".beads/events.jsonl",
+        ".beads/heartbeats.jsonl",
+    ] {
+        assert!(
+            denied(&dir, target),
+            "{target} is the store; narrowing for the trial paths must not open it"
+        );
+    }
+}
+
 /// A linked worktree is the sanctioned way to work on the store, so it must
 /// never be guarded -- otherwise the redirect sends the caller somewhere that
 /// is also blocked.
