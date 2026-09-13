@@ -2701,7 +2701,8 @@ fn main() -> Result<()> {
                 HealthSubcommand::Status { path } => {
                     let health_path = path.unwrap_or_else(configured_health_path);
                     let store = health::HealthStore::new(health_path);
-                    let metrics = store.health_metrics()?;
+                    let state = store.load_or_create()?;
+                    let metrics = state.compute_metrics();
 
                     println!("# Guard Health Status\n");
                     println!("**Path:** {}", store.path().display());
@@ -2722,6 +2723,31 @@ fn main() -> Result<()> {
                         println!("**Last Crash:** {}", last_crash);
                     } else {
                         println!("**Last Crash:** (none)");
+                    }
+                    println!();
+
+                    // The recorded reasons, not just the counts: a crash
+                    // history that only shows timestamps cannot be triaged.
+                    println!("## Recent Crash Records");
+                    let recent: Vec<&health::CrashRecord> =
+                        state.crash_history.iter().rev().take(5).collect();
+                    if recent.is_empty() {
+                        println!("(none recorded)");
+                    } else {
+                        for crash in recent {
+                            let mut line =
+                                format!("- `{}` {:?}", crash.timestamp, crash.crash_type);
+                            if let Some(signal) = crash.signal {
+                                line.push_str(&format!(" signal={signal}"));
+                            }
+                            if let Some(exit_code) = crash.exit_code {
+                                line.push_str(&format!(" exit_code={exit_code}"));
+                            }
+                            println!("{line}");
+                            if let Some(context) = &crash.context {
+                                println!("  {context}");
+                            }
+                        }
                     }
                     println!();
 

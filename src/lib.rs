@@ -26,6 +26,7 @@ pub mod rollback;
 pub mod rule_pack;
 pub mod state_store;
 pub mod telemetry;
+pub mod temp_files;
 pub mod trust_pointer;
 pub mod update;
 pub mod value_derivation;

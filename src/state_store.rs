@@ -797,9 +797,8 @@ impl StateStore {
             .file_name()
             .context("State path has no file name")?
             .to_string_lossy();
-        let temp_path = self
-            .parent_dir()
-            .join(format!(".{file_name}.tmp-{}", std::process::id()));
+        let temp_path =
+            crate::temp_files::temp_path(self.parent_dir(), &file_name, std::process::id());
 
         let mut temp = OpenOptions::new()
             .create(true)
@@ -843,6 +842,15 @@ impl StateStore {
         })?;
 
         sync_parent_dir(self.parent_dir())?;
+
+        // Holding the state lock is what makes this safe: any foreign
+        // pid-suffixed temp file left in the directory belongs to a writer
+        // that died between creating it and its rename.
+        crate::temp_files::reclaim_orphaned_temp_files(
+            self.parent_dir(),
+            &crate::temp_files::temp_prefix(&file_name),
+        );
+
         Ok(())
     }
 
@@ -1370,6 +1378,23 @@ mod tests {
             worker.join().expect("worker panicked")?;
         }
         assert_eq!(store.deny_history()?.len(), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn save_reclaims_orphaned_temp_files() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+        fs::write(dir.path().join(".session-state.json.tmp-999999"), b"orphan")?;
+        fs::write(
+            dir.path().join(".session-state.json.tmp-backup"),
+            b"not a pid",
+        )?;
+
+        store.save(&SessionState::new())?;
+
+        assert!(!dir.path().join(".session-state.json.tmp-999999").exists());
+        assert!(dir.path().join(".session-state.json.tmp-backup").exists());
         Ok(())
     }
 

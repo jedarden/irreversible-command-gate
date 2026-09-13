@@ -419,12 +419,39 @@ impl TelemetryStore {
     }
 
     /// Persist telemetry state to disk
+    ///
+    /// The other durable stores in the telemetry cache (`health-state.json`,
+    /// `session-state.json`) serialize writers with a lock and write to a
+    /// pid-suffixed temp file. Telemetry did neither: concurrent writers
+    /// shared one fixed temp path, so under multi-process load two writers
+    /// could truncate and rewrite each other's temp file mid-write, tearing
+    /// the store after the rename. This persist now takes the same kind of
+    /// lock and reclaims the same kind of orphan.
     pub fn persist(&self) -> Result<()> {
         let content =
             serde_json::to_string_pretty(self).context("Failed to serialize telemetry store")?;
 
-        // Atomic write: write to temp file, then rename
-        let temp_path = self.store_path.with_extension("tmp");
+        if let Some(parent) = self.store_path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create telemetry directory {}", parent.display())
+                })?;
+            }
+        }
+
+        let file_name = self
+            .store_path
+            .file_name()
+            .context("Telemetry path has no file name")?
+            .to_string_lossy()
+            .into_owned();
+        let parent = self.store_path.parent().unwrap_or_else(|| Path::new("."));
+        let temp_path = crate::temp_files::temp_path(parent, &file_name, std::process::id());
+
+        // Serialize the write so a rename never replaces a torn document.
+        let _lock =
+            crate::temp_files::WriteLock::acquire(&parent.join(format!(".{file_name}.lock")))?;
+
         std::fs::write(&temp_path, content).with_context(|| {
             format!(
                 "Failed to write telemetry temp file {}",
@@ -438,6 +465,17 @@ impl TelemetryStore {
                 self.store_path.display()
             )
         })?;
+
+        // Reclaim temp files from writers that died mid-persist, including
+        // the fixed-name temp this store used before it took a lock.
+        crate::temp_files::reclaim_orphaned_temp_files(
+            parent,
+            &crate::temp_files::temp_prefix(&file_name),
+        );
+        let legacy_temp = self.store_path.with_extension("tmp");
+        if legacy_temp != self.store_path {
+            std::fs::remove_file(&legacy_temp).ok();
+        }
 
         Ok(())
     }
@@ -1184,6 +1222,74 @@ mod tests {
 
         assert_eq!(loaded_store.window().len(), 5);
 
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_persists_produce_a_parseable_store() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let store_path = temp_dir.path().join("telemetry.json");
+
+        // The hook runs this persist on every tool call across many agent
+        // processes; writers must serialize instead of tearing each other's
+        // temp file. Threads with separate open file descriptions exercise
+        // the same flock exclusion real processes get.
+        let mut workers = Vec::new();
+        for index in 0..8 {
+            let store_path = store_path.clone();
+            workers.push(std::thread::spawn(move || -> Result<()> {
+                for step in 0..25 {
+                    let mut store = TelemetryStore::load_or_create(store_path.clone())?;
+                    store.record_evaluation(
+                        if step % 2 == 0 {
+                            Verdict::Allowed
+                        } else {
+                            Verdict::Denied
+                        },
+                        Some("v1.0.0".to_string()),
+                        Some(format!("session-{index}")),
+                    );
+                    store.persist()?;
+                }
+                Ok(())
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("worker panicked")?;
+        }
+
+        // Every rename leaves a complete document, so the final store parses
+        // and holds at least one evaluation from some writer.
+        let loaded = TelemetryStore::load_or_create(store_path)?;
+        assert!(!loaded.window().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn persist_reclaims_orphaned_and_legacy_temp_files() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let store_path = temp_dir.path().join("telemetry.json");
+
+        // Orphans from dead pid-suffixed writers, plus the fixed-name temp
+        // this store used before it took a lock.
+        std::fs::write(
+            temp_dir.path().join(".telemetry.json.tmp-999999"),
+            b"orphan",
+        )?;
+        std::fs::write(temp_dir.path().join("telemetry.tmp"), b"legacy")?;
+        std::fs::write(temp_dir.path().join("telemetry.json"), br#"{"window":{}}"#)?;
+
+        let mut store = TelemetryStore::new(store_path.clone());
+        store.record_evaluation(Verdict::Allowed, None, None);
+        store.persist()?;
+
+        assert!(!temp_dir.path().join(".telemetry.json.tmp-999999").exists());
+        assert!(!temp_dir.path().join("telemetry.tmp").exists());
+        // The store itself survives and parses.
+        assert_eq!(
+            TelemetryStore::load_or_create(store_path)?.window().len(),
+            1
+        );
         Ok(())
     }
 }

@@ -272,6 +272,22 @@ or `/sys/fs/cgroup/memory.events` when present.
 | `healthy_consecutive_runs` | `5` | Clean runs required for `Healthy`. |
 | `max_crashes_per_hour` | `10.0` | More recent crashes yields `Unstable`. |
 
+Crash records carry their evidence in the record itself: `signal` and
+`exit_code` when a supervisor observed the exit, and a human-readable
+`context` string otherwise. A crash reconstructed from a durable run marker
+names the dead run (id, pid, start and heartbeat times) and notes when a torn
+temp file shows the run died mid-persist. `icg health` prints the most recent
+records with their reasons under **Recent Crash Records**, so a burst can be
+triaged from the status output alone.
+
+Each state writer in the telemetry cache (`health-state.json`,
+`session-state.json`, `telemetry.json`) persists under an inter-process lock
+using a pid-suffixed temp file, and reclaims orphaned `.tmp-<pid>` files left
+by writers that died mid-persist. Litter accumulating in `/var/cache/icg`
+across a busy week is therefore reclaimed on the write path; a leftover temp
+file seen in the directory is evidence of a writer that died very recently
+and will be cleaned up by the next persist of that store.
+
 The shared runtime state defaults to `/var/cache/icg/session-state.json` and
 retains at most 10,000 denial records and 32 release aggregates. These limits
 are implementation constants, not policy switches. Trust pointers default to

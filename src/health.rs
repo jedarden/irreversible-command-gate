@@ -176,6 +176,9 @@ impl CrashRecord {
     /// segfaults, aborts, and similar fatal failures.  `oom_killed` must come
     /// from the supervisor's cgroup/process accounting; exit code 137 alone
     /// is not sufficient to claim OOM because SIGKILL has other valid causes.
+    ///
+    /// The record carries a human-readable reason in `context` so a crash
+    /// history entry can be read without re-deriving what the numbers mean.
     pub fn from_exit_status(status: &ExitStatus, oom_killed: bool) -> Option<Self> {
         if status.success() {
             return None;
@@ -188,7 +191,21 @@ impl CrashRecord {
             } else {
                 CrashType::from_signal(signal).unwrap_or(CrashType::Unknown)
             };
-            return Some(Self::new(crash_type).with_signal(signal));
+            let name = signal_name(signal);
+            let evidence = if oom_killed {
+                " with OOM-kill evidence"
+            } else {
+                ""
+            };
+            let context = match name {
+                Some(name) => format!("terminated by {name} (signal {signal}){evidence}"),
+                None => format!("terminated by signal {signal}{evidence}"),
+            };
+            return Some(
+                Self::new(crash_type)
+                    .with_signal(signal)
+                    .with_context(context),
+            );
         }
 
         let exit_code = status.code();
@@ -197,7 +214,15 @@ impl CrashRecord {
         } else {
             CrashType::ExitCodeError
         };
-        Some(Self::new(crash_type).with_optional_exit_code(exit_code))
+        let context = match exit_code {
+            Some(code) => format!("process exited with code {code}"),
+            None => "process exited with an unknown exit code".to_string(),
+        };
+        Some(
+            Self::new(crash_type)
+                .with_optional_exit_code(exit_code)
+                .with_context(context),
+        )
     }
 
     fn with_optional_exit_code(mut self, exit_code: Option<i32>) -> Self {
@@ -307,6 +332,27 @@ impl CrashDetector {
     pub fn classify_exit_status(&self, status: &ExitStatus) -> Result<Option<CrashRecord>> {
         let oom_killed = self.oom_killed_since(None)?;
         Ok(CrashRecord::from_exit_status(status, oom_killed))
+    }
+}
+
+/// Human-readable name for a signal number, for crash context strings.
+/// Returns `None` for signals the guard has no name for rather than guessing.
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    match signal {
+        libc::SIGHUP => Some("SIGHUP"),
+        libc::SIGINT => Some("SIGINT"),
+        libc::SIGQUIT => Some("SIGQUIT"),
+        libc::SIGILL => Some("SIGILL"),
+        libc::SIGABRT => Some("SIGABRT"),
+        libc::SIGFPE => Some("SIGFPE"),
+        libc::SIGKILL => Some("SIGKILL"),
+        libc::SIGSEGV => Some("SIGSEGV"),
+        libc::SIGPIPE => Some("SIGPIPE"),
+        libc::SIGALRM => Some("SIGALRM"),
+        libc::SIGTERM => Some("SIGTERM"),
+        libc::SIGBUS => Some("SIGBUS"),
+        _ => None,
     }
 }
 
@@ -859,6 +905,45 @@ fn process_is_alive(_pid: u32) -> bool {
     false
 }
 
+/// Build the crash-record reason for a run whose durable marker was left
+/// behind. Includes everything observable about the dead run — identity,
+/// timing, and torn-temp evidence — so the record can be triaged without
+/// access to the host it came from.
+fn stale_run_context(previous: &HealthState, oom_killed: bool, torn_temp: Option<&Path>) -> String {
+    let mut reason = if oom_killed {
+        "previous guard run was killed by its cgroup OOM monitor".to_string()
+    } else {
+        "previous guard run exited without recording a clean exit".to_string()
+    };
+
+    if let Some(run_id) = previous.current_run_id.as_deref() {
+        reason.push_str("; run ");
+        reason.push_str(run_id);
+    }
+    if let Some(pid) = previous.current_run_pid {
+        reason.push_str(&format!(" (pid {pid})"));
+    }
+    if let Some(started) = previous.current_run_started_at {
+        reason.push_str(&format!(", started {started}"));
+    }
+    if let Some(heartbeat) = previous.current_run_heartbeat_at {
+        let age_secs = Utc::now()
+            .signed_duration_since(heartbeat)
+            .num_seconds()
+            .max(0);
+        reason.push_str(&format!(
+            ", last heartbeat {heartbeat} ({age_secs}s before detection)"
+        ));
+    }
+    if let Some(temp) = torn_temp {
+        reason.push_str(&format!(
+            "; torn temp file {} present, so the run died during state persist",
+            temp.display()
+        ));
+    }
+    reason
+}
+
 impl HealthStore {
     /// Create a health store at the specified path.
     pub fn new(path: impl AsRef<Path>) -> Self {
@@ -900,6 +985,19 @@ impl HealthStore {
             }
         }
         Ok(())
+    }
+
+    /// The orphaned temp file a run with `pid` would have left behind if it
+    /// died between creating its temp file and renaming it.
+    fn torn_temp_for_pid(&self, pid: Option<u32>) -> Option<PathBuf> {
+        let pid = pid?;
+        let file_name = self.path.file_name()?.to_string_lossy();
+        let candidate = crate::temp_files::temp_path(
+            self.path.parent().unwrap_or_else(|| Path::new(".")),
+            &file_name,
+            pid,
+        );
+        candidate.exists().then_some(candidate)
     }
 
     fn lock_path(&self) -> PathBuf {
@@ -974,12 +1072,10 @@ impl HealthStore {
             .path
             .file_name()
             .context("Health path has no file name")?
-            .to_string_lossy();
-        let temp_path = self
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(format!(".{file_name}.tmp-{}", std::process::id()));
+            .to_string_lossy()
+            .into_owned();
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let temp_path = crate::temp_files::temp_path(parent, &file_name, std::process::id());
 
         std::fs::write(&temp_path, content).with_context(|| {
             format!(
@@ -1023,6 +1119,19 @@ impl HealthStore {
                 .with_context(|| format!("Failed to sync health directory {}", parent.display()))?;
         }
 
+        // Holding the health lock is what makes this safe: any foreign
+        // pid-suffixed temp file left in the directory belongs to a writer
+        // that died between creating it and its rename.
+        let reclaimed = crate::temp_files::reclaim_orphaned_temp_files(
+            parent,
+            &crate::temp_files::temp_prefix(&file_name),
+        );
+        if reclaimed > 0 {
+            eprintln!(
+                "icg_health_event event=orphaned_temp_files_reclaimed count={reclaimed} file={file_name}"
+            );
+        }
+
         Ok(())
     }
 
@@ -1056,12 +1165,16 @@ impl HealthStore {
                 } else {
                     CrashType::Unknown
                 };
-                let reason = if oom_killed {
-                    "previous guard run was killed by its cgroup OOM monitor"
-                } else {
-                    "previous guard run exited without recording a clean exit"
-                };
-                let crash = CrashRecord::new(crash_type).with_context(reason.to_string());
+                // Read the torn-temp evidence before the persist below sweeps
+                // the litter: a temp file in the dead run's own name is direct
+                // evidence the run died mid-persist rather than between
+                // writes.
+                let torn_temp = self.torn_temp_for_pid(state.current_run_pid);
+                let crash = CrashRecord::new(crash_type).with_context(stale_run_context(
+                    &state,
+                    oom_killed,
+                    torn_temp.as_deref(),
+                ));
                 state.record_crash(crash);
                 recovered_crash = state.crash_history.last().cloned();
                 eprintln!(
@@ -1452,6 +1565,86 @@ mod tests {
         assert_eq!(recovered.consecutive_clean_runs, 0);
         assert!(recovered.current_run_started_at.is_some());
         Ok(())
+    }
+
+    #[test]
+    fn stale_marker_crash_records_the_dead_run_evidence() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+        let mut state = HealthState::new();
+        state.mark_start_with_id("run-100-200");
+        // A PID that cannot be this test process.
+        state.current_run_pid = Some(u32::MAX);
+        state.current_run_started_at = Some(Utc::now() - chrono::Duration::seconds(30));
+        state.current_run_heartbeat_at = Some(Utc::now() - chrono::Duration::seconds(10));
+        store.persist(&state)?;
+        // The dead run died mid-persist: its temp file is still on disk.
+        let torn = dir
+            .path()
+            .join(format!(".health-state.json.tmp-{}", u32::MAX));
+        std::fs::write(&torn, b"partial write")?;
+
+        store.start_run()?;
+
+        let recovered = store.load_or_create()?;
+        let crash = recovered.crash_history.last().expect("crash recorded");
+        let context = crash.context.as_deref().expect("context recorded");
+        assert!(context.contains("previous guard run exited without recording a clean exit"));
+        assert!(context.contains("run-100-200"));
+        assert!(context.contains(&format!("pid {}", u32::MAX)));
+        assert!(context.contains("last heartbeat"));
+        assert!(context.contains("died during state persist"));
+        // The persist that recorded the crash also reclaimed the litter.
+        assert!(!torn.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn persist_reclaims_orphaned_temp_files() -> Result<()> {
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+        std::fs::write(dir.path().join(".health-state.json.tmp-999999"), b"orphan")?;
+        std::fs::write(
+            dir.path().join(".health-state.json.tmp-backup"),
+            b"not a pid",
+        )?;
+        std::fs::write(dir.path().join("unrelated.json"), b"keep")?;
+
+        store.update(|state| state.mark_start())?;
+
+        assert!(!dir.path().join(".health-state.json.tmp-999999").exists());
+        assert!(dir.path().join(".health-state.json.tmp-backup").exists());
+        assert!(dir.path().join("unrelated.json").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn exit_status_crash_records_carry_a_readable_reason() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+
+            let segfault = ExitStatus::from_raw(libc::SIGSEGV);
+            let record = CrashRecord::from_exit_status(&segfault, false).expect("record");
+            assert_eq!(
+                record.context.as_deref(),
+                Some("terminated by SIGSEGV (signal 11)")
+            );
+
+            let killed = ExitStatus::from_raw(libc::SIGKILL);
+            let oom = CrashRecord::from_exit_status(&killed, true).expect("record");
+            assert_eq!(
+                oom.context.as_deref(),
+                Some("terminated by SIGKILL (signal 9) with OOM-kill evidence")
+            );
+
+            let coded = ExitStatus::from_raw(137 << 8);
+            let record = CrashRecord::from_exit_status(&coded, false).expect("record");
+            assert_eq!(
+                record.context.as_deref(),
+                Some("process exited with code 137")
+            );
+        }
     }
 
     #[test]
