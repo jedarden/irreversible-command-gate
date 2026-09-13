@@ -20,6 +20,114 @@ const PRODUCTION_ARTIFACT_DIR: &str = "/etc/icg";
 /// The file the write probe creates to learn whether it can write a directory.
 const PROBE_FILE_NAME: &str = ".icg-security-test";
 
+/// A security violation detected in the directory that holds a trust pointer.
+///
+/// Detection is deliberately separate from enforcement.
+/// `verify_artifact_directory_security` renders these exactly as it always
+/// has -- a hard error for the production directory and for any world-writable
+/// directory, a stderr warning for the remaining custom-path cases -- while
+/// [`crate::rollback::check_and_rollback`] records every violation as crash
+/// evidence in the state store the guarded process owns. That separation is
+/// the fix for the nineteen-day blind spot: the check's rendered result is
+/// routinely swallowed by its callers (the hook's `if let Ok(...)` trust load
+/// drops it entirely, and the rollback boundary only prints it), so stderr
+/// was never a durable record. Crash evidence is, and the operator's
+/// `icg policy reconcile` turns it into a poison-pill policy event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactDirViolation {
+    /// The directory is owned by a non-root uid.
+    NotRootOwned { dir: PathBuf, owner: u32 },
+
+    /// The directory is world-writable.
+    WorldWritable { dir: PathBuf, mode: u32 },
+
+    /// An unprivileged process can create files in the directory.
+    UnprivilegedWrite { dir: PathBuf },
+}
+
+impl ArtifactDirViolation {
+    /// Stable crash-evidence identifier for this violation.
+    ///
+    /// The identifier is a signature of the condition, not a unique event id:
+    /// a violation that persists re-records the same id on every guarded
+    /// invocation. The advancing crash counter proves the environment stayed
+    /// insecure (and keeps reconciliation consuming it), while
+    /// `PolicyState::record_poison_pill` deduplicates the policy event itself.
+    pub fn crash_id(&self) -> String {
+        let (kind, dir) = match self {
+            Self::NotRootOwned { dir, .. } => ("not-root-owned", dir),
+            Self::WorldWritable { dir, .. } => ("world-writable", dir),
+            Self::UnprivilegedWrite { dir } => ("unprivileged-write", dir),
+        };
+        format!("artifact-dir-security:{kind}:{}", dir.display())
+    }
+
+    /// Whether this violation hard-fails the security check rather than
+    /// warning. The production directory is administrator-owned by design, so
+    /// every violation there is fatal; a world-writable directory is fatal
+    /// everywhere.
+    fn is_fatal(&self) -> bool {
+        let production = match self {
+            Self::NotRootOwned { dir, .. }
+            | Self::WorldWritable { dir, .. }
+            | Self::UnprivilegedWrite { dir } => dir == Path::new(PRODUCTION_ARTIFACT_DIR),
+        };
+        production || matches!(self, Self::WorldWritable { .. })
+    }
+
+    /// The operator-facing message. Fatal violations include the
+    /// `Security violation:` prefix the hard error has always carried; the
+    /// caller adds the `⚠️  Warning: ` prefix for the non-fatal ones.
+    fn description(&self) -> String {
+        match self {
+            Self::NotRootOwned { dir, owner } => {
+                if self.is_fatal() {
+                    format!(
+                        "Security violation: Artifact directory {} is NOT owned by root (owned by uid {}). \
+                        This reproduces the self-edit gap that org-rule-guard.py has. \
+                        Run: sudo chown root:root {}",
+                        dir.display(),
+                        owner,
+                        dir.display()
+                    )
+                } else {
+                    format!(
+                        "Custom artifact directory {} is owned by uid {}, not root. \
+                        This is acceptable for testing but NOT for production.",
+                        dir.display(),
+                        owner
+                    )
+                }
+            }
+            Self::WorldWritable { dir, mode } => format!(
+                "Security violation: Artifact directory {} is world-writable (mode {:o}). \
+                This allows any user to modify trust configuration. \
+                Run: sudo chmod o-w {}",
+                dir.display(),
+                mode,
+                dir.display()
+            ),
+            Self::UnprivilegedWrite { dir } => {
+                if self.is_fatal() {
+                    format!(
+                        "Security violation: Current user can WRITE to artifact directory {}. \
+                        This reproduces the self-edit gap that org-rule-guard.py has. \
+                        The guarded agent must NOT be able to modify its own trust configuration. \
+                        Fix the permissions or run as root to update.",
+                        dir.display()
+                    )
+                } else {
+                    format!(
+                        "Current user can write to custom artifact directory {}. \
+                        This is acceptable for testing but NOT for production.",
+                        dir.display()
+                    )
+                }
+            }
+        }
+    }
+}
+
 /// Trust pointer data structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustPointer {
@@ -123,7 +231,10 @@ impl TrustPointerStore {
     ///
     /// Returns Ok(()) if the directory is secure, Err otherwise.
     /// For testing/CI contexts using custom paths, this check only warns
-    /// rather than failing.
+    /// rather than failing -- but every detected violation is also
+    /// classifiable through [`Self::detect_artifact_directory_violations`],
+    /// and the guarded boundaries record that classification as crash
+    /// evidence, so a swallowed warning still reaches policy reconciliation.
     pub fn verify_artifact_directory_security(&self) -> Result<()> {
         // Safe: `geteuid` is a plain syscall wrapper reading the caller's
         // effective uid; it touches no memory and cannot fail.
@@ -131,12 +242,41 @@ impl TrustPointerStore {
     }
 
     /// The same checks with the effective uid supplied by the caller.
+    fn verify_artifact_directory_security_with_euid(&self, euid: u32) -> Result<()> {
+        for violation in self.detect_artifact_directory_violations_with_euid(euid)? {
+            if violation.is_fatal() {
+                anyhow::bail!("{}", violation.description());
+            }
+            eprintln!("⚠️  Warning: {}", violation.description());
+        }
+        Ok(())
+    }
+
+    /// Classify every security violation of the directory holding this
+    /// store's trust pointer, in check order, without warning or failing.
+    ///
+    /// This is the detection half of
+    /// [`Self::verify_artifact_directory_security`], kept in one function so
+    /// the rendered result and the recorded evidence can never drift apart.
+    /// The guarded boundaries call it to record durable crash evidence; see
+    /// [`ArtifactDirViolation`] for why the rendered result alone is not a
+    /// record.
+    pub fn detect_artifact_directory_violations(&self) -> Result<Vec<ArtifactDirViolation>> {
+        // Safe: `geteuid` is a plain syscall wrapper; see the production call
+        // site above.
+        self.detect_artifact_directory_violations_with_euid(unsafe { libc::geteuid() })
+    }
+
+    /// The same classification with the effective uid supplied by the caller.
     ///
     /// Production always passes the real effective uid. The parameter exists
     /// so tests can drive the root and unprivileged branches without changing
     /// the real uid: a process cannot grant itself uid 0, and this suite has
     /// to pass both in root CI containers and in unprivileged checkouts.
-    fn verify_artifact_directory_security_with_euid(&self, euid: u32) -> Result<()> {
+    fn detect_artifact_directory_violations_with_euid(
+        &self,
+        euid: u32,
+    ) -> Result<Vec<ArtifactDirViolation>> {
         let artifact_dir = self
             .path
             .parent()
@@ -145,7 +285,7 @@ impl TrustPointerStore {
         // If the directory doesn't exist yet, we can't verify security yet
         // This is expected during initial setup with sudo
         if !artifact_dir.exists() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Check directory metadata
@@ -160,39 +300,22 @@ impl TrustPointerStore {
         let owner = metadata.uid();
         let perms = metadata.permissions().mode();
 
+        let mut violations = Vec::new();
+
         // Check if owned by root
         if owner != 0 {
-            // If we're using the default /etc/icg path, this is a security issue
-            if artifact_dir == Path::new(PRODUCTION_ARTIFACT_DIR) {
-                anyhow::bail!(
-                    "Security violation: Artifact directory {} is NOT owned by root (owned by uid {}). \
-                    This reproduces the self-edit gap that org-rule-guard.py has. \
-                    Run: sudo chown root:root {}",
-                    artifact_dir.display(),
-                    owner,
-                    artifact_dir.display()
-                );
-            } else {
-                // For custom paths (testing/CI), just warn
-                eprintln!(
-                    "⚠️  Warning: Custom artifact directory {} is owned by uid {}, not root. \
-                    This is acceptable for testing but NOT for production.",
-                    artifact_dir.display(),
-                    owner
-                );
-            }
+            violations.push(ArtifactDirViolation::NotRootOwned {
+                dir: artifact_dir.to_path_buf(),
+                owner,
+            });
         }
 
         // Check if world-writable (should not be)
         if perms & 0o002 != 0 {
-            anyhow::bail!(
-                "Security violation: Artifact directory {} is world-writable (mode {:o}). \
-                This allows any user to modify trust configuration. \
-                Run: sudo chmod o-w {}",
-                artifact_dir.display(),
-                perms,
-                artifact_dir.display()
-            );
+            violations.push(ArtifactDirViolation::WorldWritable {
+                dir: artifact_dir.to_path_buf(),
+                mode: perms,
+            });
         }
 
         // Root can write anywhere, so for root the probe is meaningless: it
@@ -202,11 +325,15 @@ impl TrustPointerStore {
         // (nothing login-shaped sets it), which made every guarded CI pod
         // look unprivileged here (irrevers-beee1069).
         if euid == 0 {
-            return Ok(());
+            return Ok(violations);
         }
 
         let can_write = Self::probe_write_access(artifact_dir);
-        Self::check_unprivileged_write_access(artifact_dir, can_write)
+        if let Some(violation) = Self::unprivileged_write_violation(artifact_dir, can_write) {
+            violations.push(violation);
+        }
+
+        Ok(violations)
     }
 
     /// Learn whether this process can write `directory` by creating and
@@ -225,31 +352,22 @@ impl TrustPointerStore {
     /// Interpret an unprivileged process's write access to `artifact_dir`.
     ///
     /// Callers reach this only for a non-zero effective uid -- root skips the
-    /// probe entirely, since it can write any directory it can see.
-    fn check_unprivileged_write_access(artifact_dir: &Path, can_write: bool) -> Result<()> {
+    /// probe entirely, since it can write any directory it can see. Kept as a
+    /// pure function of the probe result so tests can drive the production
+    /// and custom branches without touching the real `/etc/icg`.
+    fn unprivileged_write_violation(
+        artifact_dir: &Path,
+        can_write: bool,
+    ) -> Option<ArtifactDirViolation> {
         if !can_write {
             // Write failed as expected - directory is secure from this user
-            return Ok(());
+            return None;
         }
 
-        // We successfully wrote - this is a security issue for the default path
-        if artifact_dir == Path::new(PRODUCTION_ARTIFACT_DIR) {
-            anyhow::bail!(
-                "Security violation: Current user can WRITE to artifact directory {}. \
-                This reproduces the self-edit gap that org-rule-guard.py has. \
-                The guarded agent must NOT be able to modify its own trust configuration. \
-                Fix the permissions or run as root to update.",
-                artifact_dir.display()
-            );
-        }
-
-        // For custom paths (testing/CI), just warn
-        eprintln!(
-            "⚠️  Warning: Current user can write to custom artifact directory {}. \
-            This is acceptable for testing but NOT for production.",
-            artifact_dir.display()
-        );
-        Ok(())
+        // We successfully wrote - this is a security issue
+        Some(ArtifactDirViolation::UnprivilegedWrite {
+            dir: artifact_dir.to_path_buf(),
+        })
     }
 
     /// Get the default trust pointer file path
@@ -530,34 +648,200 @@ mod tests {
 
     #[test]
     fn unprivileged_write_to_the_production_directory_is_a_violation() {
-        let error = TrustPointerStore::check_unprivileged_write_access(
+        let violation = TrustPointerStore::unprivileged_write_violation(
             Path::new(PRODUCTION_ARTIFACT_DIR),
             true,
         )
-        .expect_err("write access to the production directory must fail the check");
+        .expect("write access to the production directory must classify as a violation");
 
         assert!(
-            error.to_string().contains("can WRITE"),
-            "unexpected error: {error:#}"
+            violation.is_fatal(),
+            "write access to the production directory must fail the check"
+        );
+        let description = violation.description();
+        assert!(
+            description.contains("can WRITE"),
+            "unexpected message: {description}"
         );
     }
 
     #[test]
     fn unprivileged_without_write_access_is_accepted() {
-        TrustPointerStore::check_unprivileged_write_access(
-            Path::new(PRODUCTION_ARTIFACT_DIR),
-            false,
-        )
-        .expect("a directory this user cannot write is secure");
+        assert!(
+            TrustPointerStore::unprivileged_write_violation(
+                Path::new(PRODUCTION_ARTIFACT_DIR),
+                false,
+            )
+            .is_none(),
+            "a directory this user cannot write is secure"
+        );
     }
 
     /// Unchanged behaviour: outside the production directory a writable
     /// directory is a warning, not a failure -- the testing/CI contexts rely
-    /// on it.
+    /// on it. It is still a violation, though: the guarded boundaries record
+    /// it as crash evidence even though the rendered check only warns, which
+    /// is what keeps a custom-path bypass from being invisible to policy
+    /// reconciliation (irrevers-91694e78).
     #[test]
-    fn unprivileged_write_to_a_custom_directory_is_accepted_with_a_warning() {
-        TrustPointerStore::check_unprivileged_write_access(Path::new("/var/tmp/icg-test"), true)
-            .expect("custom artifact directories only warn on write access");
+    fn unprivileged_write_to_a_custom_directory_warns_but_is_still_a_violation() {
+        let violation =
+            TrustPointerStore::unprivileged_write_violation(Path::new("/var/tmp/icg-test"), true)
+                .expect("custom artifact directories still classify write access as a violation");
+
+        assert!(
+            !violation.is_fatal(),
+            "custom artifact directories must warn rather than fail"
+        );
+        let description = violation.description();
+        assert!(
+            !description.contains("Security violation:"),
+            "a non-fatal classification keeps the warning shape: {description}"
+        );
+    }
+
+    /// Crash evidence identifies the condition, not the event: the same
+    /// standing violation re-records the same id, and policy reconciliation
+    /// deduplicates on the advancing counter instead.
+    #[test]
+    fn crash_ids_are_stable_signatures_of_the_condition() {
+        let dir = PathBuf::from("/etc/icg");
+        assert_eq!(
+            ArtifactDirViolation::WorldWritable {
+                dir: dir.clone(),
+                mode: 0o777
+            }
+            .crash_id(),
+            "artifact-dir-security:world-writable:/etc/icg"
+        );
+        assert_eq!(
+            ArtifactDirViolation::NotRootOwned {
+                dir: dir.clone(),
+                owner: 1000
+            }
+            .crash_id(),
+            "artifact-dir-security:not-root-owned:/etc/icg"
+        );
+        assert_eq!(
+            ArtifactDirViolation::UnprivilegedWrite { dir }.crash_id(),
+            "artifact-dir-security:unprivileged-write:/etc/icg"
+        );
+    }
+
+    /// Fatality must keep mirroring the rendered check exactly: everything
+    /// about the production directory is fatal, world-writability is fatal
+    /// wherever it lives, and the remaining custom-path conditions only warn.
+    #[test]
+    fn fatality_follows_the_rendered_check_rules() {
+        let production = PathBuf::from(PRODUCTION_ARTIFACT_DIR);
+        let custom = PathBuf::from("/var/tmp/icg-test");
+
+        assert!(ArtifactDirViolation::NotRootOwned {
+            dir: production.clone(),
+            owner: 1000
+        }
+        .is_fatal());
+        assert!(ArtifactDirViolation::UnprivilegedWrite {
+            dir: production.clone()
+        }
+        .is_fatal());
+        assert!(ArtifactDirViolation::WorldWritable {
+            dir: custom.clone(),
+            mode: 0o777
+        }
+        .is_fatal());
+        assert!(!ArtifactDirViolation::NotRootOwned {
+            dir: custom.clone(),
+            owner: 1000
+        }
+        .is_fatal());
+        assert!(!ArtifactDirViolation::UnprivilegedWrite { dir: custom }.is_fatal());
+    }
+
+    /// A world-writable directory is classified wherever it lives -- the
+    /// condition that sat unrecorded on guarded CI pods for nineteen days
+    /// (irrevers-beee1069). Metadata violations do not depend on the
+    /// effective uid, so the classification is runner-independent; a
+    /// non-root-owned fixture merely adds the not-root-owned condition
+    /// alongside it.
+    #[test]
+    fn world_writable_directory_is_classified_as_a_violation() -> Result<()> {
+        let dir = writable_tempdir()?;
+        let mut permissions = fs::metadata(dir.path())?.permissions();
+        permissions.set_mode(0o777);
+        fs::set_permissions(dir.path(), permissions)?;
+        let store = TrustPointerStore::new(dir.path().join("trust-pointer.json"));
+
+        let violations = store.detect_artifact_directory_violations_with_euid(0)?;
+
+        // The reported mode is stat's full st_mode -- file-type bits
+        // included -- so the expectation reads it back from the same source
+        // instead of hardcoding bare permission bits.
+        let mode = fs::metadata(dir.path())?.permissions().mode();
+        let expected = ArtifactDirViolation::WorldWritable {
+            dir: dir.path().to_path_buf(),
+            mode,
+        };
+        assert!(
+            violations.contains(&expected),
+            "the world-writable condition must be classified: {violations:?}"
+        );
+        assert!(
+            mode & 0o002 != 0,
+            "the fixture must still be world-writable: {mode:o}"
+        );
+        assert!(
+            expected.is_fatal(),
+            "world-writability must be fatal everywhere"
+        );
+        Ok(())
+    }
+
+    /// The unprivileged branch classifies write access in addition to any
+    /// metadata conditions, and the write probe runs for it.
+    #[test]
+    fn unprivileged_euid_classifies_write_access_as_a_violation() -> Result<()> {
+        let dir = writable_tempdir()?;
+        let sentinel = plant_probe_sentinel(dir.path())?;
+        let store = TrustPointerStore::new(dir.path().join("trust-pointer.json"));
+
+        let violations = store.detect_artifact_directory_violations_with_euid(1000)?;
+
+        assert_eq!(
+            violations.last().map(|violation| violation.crash_id()),
+            Some(format!(
+                "artifact-dir-security:unprivileged-write:{}",
+                dir.path().display()
+            )),
+            "the probe result is classified after the metadata conditions: {violations:?}"
+        );
+        assert!(
+            !sentinel.exists(),
+            "the write probe should have written and removed the sentinel"
+        );
+        Ok(())
+    }
+
+    /// The root branch never runs the probe, so it can never classify an
+    /// unprivileged-write condition -- whatever `USER` claims.
+    #[test]
+    fn root_euid_detection_skips_the_write_probe() -> Result<()> {
+        let dir = writable_tempdir()?;
+        let sentinel = plant_probe_sentinel(dir.path())?;
+        let store = TrustPointerStore::new(dir.path().join("trust-pointer.json"));
+
+        let _user = UserEnvGuard::set_to("nobody");
+        let violations = store.detect_artifact_directory_violations_with_euid(0)?;
+
+        assert!(
+            !violations.iter().any(|violation| matches!(
+                violation,
+                ArtifactDirViolation::UnprivilegedWrite { .. }
+            )),
+            "root must not classify a write probe it never ran: {violations:?}"
+        );
+        assert_eq!(fs::read(&sentinel)?, b"untouched");
+        Ok(())
     }
 
     #[test]

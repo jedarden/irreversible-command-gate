@@ -1,7 +1,7 @@
 use icg::fail_closed::{
     PolicyEventType, PolicyMode, PolicyStore, PolicyTransition, ReconcileOutcome,
 };
-use icg::rollback::PoisonPillConfig;
+use icg::rollback::{check_and_rollback, PoisonPillConfig};
 use icg::state_store::{DenyRatePolicy, StateStore};
 use icg::trust_pointer::{TrustPointer, TrustPointerStore};
 use icg::{engine::CheckResult, engine::CommandSource, engine::Engine};
@@ -207,6 +207,117 @@ fn reconcile_consumes_guard_crash_evidence_once() {
     assert_eq!(
         state.last_poison_pill_event.as_deref(),
         Some("guard-crash:crash-1741234599999999999-4243")
+    );
+}
+
+/// An artifact directory owned by a non-root uid: the standing violation the
+/// guarded CI pods carried for nineteen days without anything going red
+/// (irrevers-beee1069). Built so exactly one condition exists on every
+/// runner: unprivileged runners already own the fixture directory, and root
+/// runners give it away (the probe is skipped for root either way). Mode
+/// 0555 keeps the write probe from adding an unprivileged-write condition on
+/// unprivileged runners.
+fn artifact_dir_with_not_root_owned_violation() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    // Safe: a plain syscall wrapper; unprivileged runners already satisfy
+    // the condition, so only a root runner needs the giveaway.
+    if unsafe { libc::geteuid() } == 0 {
+        std::os::unix::fs::chown(directory.path(), Some(65534), Some(65534))
+            .expect("root should be able to chown the fixture directory");
+    }
+    let mut permissions = std::fs::metadata(directory.path())
+        .expect("temporary directory metadata")
+        .permissions();
+    permissions.set_mode(0o555);
+    std::fs::set_permissions(directory.path(), permissions).expect("fixture permissions");
+    directory
+}
+
+/// The nineteen-day blind spot, end to end (irrevers-91694e78): a security
+/// violation of the artifact directory is recorded by the guarded boundary
+/// as crash evidence in the state store it owns, the operator's
+/// reconciliation consumes it as exactly one poison-pill policy event, and
+/// reconciling the same crash count again produces none.
+#[test]
+fn artifact_dir_violation_reconciles_into_exactly_one_poison_pill() {
+    let artifact = artifact_dir_with_not_root_owned_violation();
+    let directory = secure_tempdir();
+    let runtime = StateStore::new(directory.path().join("runtime.json"));
+    let trust = TrustPointerStore::new(artifact.path().join("trust.json"));
+    let policy = PolicyStore::new(directory.path().join("policy.json"));
+    let poison_config = test_poison_config();
+    let expected_crash_id = format!(
+        "artifact-dir-security:not-root-owned:{}",
+        artifact.path().display()
+    );
+
+    // The guarded boundary: the check itself only warns for a custom-path
+    // condition, and the violation is recorded anyway.
+    let report = check_and_rollback(&runtime, &trust, &poison_config)
+        .expect("a warn-only artifact-dir condition must not fail the guarded boundary");
+    assert!(report.is_none(), "no telemetry means no rollback");
+
+    let evidence = runtime
+        .guard_crash_state()
+        .expect("guard-crash evidence should persist");
+    assert_eq!(
+        evidence.crash_count, 1,
+        "exactly one violation exists in the fixture"
+    );
+    assert_eq!(
+        evidence.last_crash_id.as_deref(),
+        Some(expected_crash_id.as_str())
+    );
+
+    // Restore write access so the temporary directory can still be removed.
+    let mut permissions = std::fs::metadata(artifact.path())
+        .expect("fixture metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(artifact.path(), permissions).expect("fixture restoration");
+
+    // The operator's reconciliation turns the evidence into one poison-pill
+    // event...
+    let outcome = policy
+        .reconcile_release_health(&runtime, &trust, &poison_config)
+        .expect("reconciliation should succeed");
+    let ReconcileOutcome::PoisonPill(PolicyTransition::PoisonPill { event_ref, .. }) = outcome
+    else {
+        panic!("the recorded violation must reconcile into a poison pill");
+    };
+    assert_eq!(event_ref, format!("guard-crash:{expected_crash_id}"));
+    assert_eq!(
+        policy
+            .load()
+            .expect("policy should load")
+            .events
+            .iter()
+            .filter(|event| event.event_type == PolicyEventType::PoisonPill)
+            .count(),
+        1
+    );
+
+    // ...and reconciling the same crash count again produces none:
+    // last_processed_guard_crash_count has already read this far.
+    assert!(matches!(
+        policy
+            .reconcile_release_health(&runtime, &trust, &poison_config)
+            .expect("replayed reconciliation should succeed"),
+        ReconcileOutcome::Pending { .. }
+    ));
+    let replayed = policy.load().expect("policy should reload");
+    assert_eq!(
+        replayed
+            .events
+            .iter()
+            .filter(|event| event.event_type == PolicyEventType::PoisonPill)
+            .count(),
+        1,
+        "the same crash count must not produce a second poison-pill event"
+    );
+    assert_eq!(
+        replayed.last_processed_guard_crash_count, 1,
+        "the policy tracks how far it has read"
     );
 }
 

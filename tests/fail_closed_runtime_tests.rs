@@ -149,6 +149,11 @@ fn run_hook_with_policy(
 /// deliberately does not provide (irrevers-3e6c6fde).
 #[test]
 fn recovered_guard_crash_records_evidence_and_reconciles_into_policy() {
+    if skip_if_ambient_trust_directory_is_insecure(
+        "recovered_guard_crash_records_evidence_and_reconciles_into_policy",
+    ) {
+        return;
+    }
     let _lock = env_lock();
     let directory = secure_tempdir();
     let input = br#"{"toolName":"Bash","toolInput":{"command":"printf safe"}}"#;
@@ -238,6 +243,11 @@ fn recovered_guard_crash_records_evidence_and_reconciles_into_policy() {
 
 #[test]
 fn recovered_guard_crash_denies_in_fail_closed_mode() {
+    if skip_if_ambient_trust_directory_is_insecure(
+        "recovered_guard_crash_denies_in_fail_closed_mode",
+    ) {
+        return;
+    }
     let _lock = env_lock();
     let directory = tempfile::tempdir().expect("temporary directory");
     let input = br#"{"toolName":"Bash","toolInput":{"command":"printf unsafe"}}"#;

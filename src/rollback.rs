@@ -81,8 +81,51 @@ pub struct RollbackReport {
     pub threshold: f64,
 }
 
+/// Record every security violation of the trust pointer's artifact directory
+/// as crash evidence in the state store the guarded process owns.
+///
+/// The check that detects these violations
+/// (`TrustPointerStore::verify_artifact_directory_security`, run on every
+/// trust-pointer load and save) renders them as a hard error or a stderr
+/// warning and nothing more -- and both renderings are routinely swallowed
+/// by callers, which is how a violating artifact directory sat unnoticed on
+/// every guarded CI pod for nineteen days (irrevers-beee1069). A violation
+/// of the directory that holds the trust configuration is exactly the
+/// "the guard's environment betrayed it" condition crash evidence exists
+/// for, so it is journalled here on every guarded invocation, whether the
+/// rendered check would fail or only warn. The policy event itself remains
+/// the operator's: `PolicyStore::reconcile_release_health` consumes this
+/// evidence, and the guarded process never writes the policy.
+///
+/// Recording failures are reported on stderr but do not fail the caller:
+/// the invocation's own guard decision must never depend on its ability to
+/// journal, and the state store is written again below on an actual
+/// rollback. Detection failures do propagate -- they are the same
+/// conditions the trust-pointer load is about to report anyway.
+fn record_artifact_dir_violations(
+    state_store: &StateStore,
+    trust_store: &TrustPointerStore,
+) -> Result<()> {
+    for violation in trust_store.detect_artifact_directory_violations()? {
+        let crash_id = violation.crash_id();
+        match state_store.record_guard_crash(&crash_id) {
+            Ok(_) => eprintln!(
+                "⚠️  Artifact-directory security violation recorded for policy reconciliation: {crash_id}"
+            ),
+            Err(error) => eprintln!(
+                "⚠️  Failed to record artifact-directory violation {crash_id}: {error:#}"
+            ),
+        }
+    }
+    Ok(())
+}
+
 /// Consume durable telemetry and automatically roll back the active release
 /// when the conservative poison-pill policy is satisfied.
+///
+/// Before examining telemetry, every security violation of the trust
+/// pointer's artifact directory is recorded as crash evidence; see
+/// [`record_artifact_dir_violations`].
 ///
 /// `Ok(None)` means that no rollback was needed or that the anomaly was
 /// conservatively suppressed (for example, because the release was outside
@@ -97,6 +140,8 @@ pub fn check_and_rollback(
     trust_store: &TrustPointerStore,
     config: &PoisonPillConfig,
 ) -> Result<Option<RollbackReport>> {
+    record_artifact_dir_violations(state_store, trust_store)?;
+
     let Some(pointer) = trust_store.load()? else {
         return Ok(None);
     };
@@ -373,6 +418,66 @@ mod tests {
         assert_eq!(
             trust_store.get_trusted_ref().expect("load pointer"),
             Some("v1".into())
+        );
+    }
+
+    /// A world-writable artifact directory must leave crash evidence behind
+    /// even though it also fails the boundary's own trust-pointer load: the
+    /// rendered error is what callers historically swallowed, so the record
+    /// cannot be allowed to depend on the call succeeding.
+    #[test]
+    fn artifact_dir_violation_is_recorded_even_when_the_check_fails_the_boundary() {
+        let directory = tempdir().expect("temporary directory");
+        let mut permissions = std::fs::metadata(directory.path())
+            .expect("temporary directory metadata")
+            .permissions();
+        permissions.set_mode(0o777);
+        std::fs::set_permissions(directory.path(), permissions)
+            .expect("world-writable fixture directory");
+        let state_store = StateStore::new(directory.path().join("state.json"));
+        let trust_store = TrustPointerStore::new(directory.path().join("trust-pointer.json"));
+
+        let result = check_and_rollback(&state_store, &trust_store, &PoisonPillConfig::default());
+
+        assert!(
+            result.is_err(),
+            "a world-writable artifact directory must still fail the trust-pointer load"
+        );
+        let crash = state_store.guard_crash_state().expect("guard-crash state");
+        assert!(
+            crash.crash_count >= 1,
+            "the violation must be journalled despite the fatal check"
+        );
+        let crash_id = crash.last_crash_id.expect("recorded crash id");
+        assert!(
+            crash_id.starts_with("artifact-dir-security:"),
+            "unexpected crash id: {crash_id}"
+        );
+    }
+
+    /// A clean artifact directory must not manufacture crash evidence. Only
+    /// a root runner can own a directory the check accepts (any directory a
+    /// non-root process owns is a not-root-owned violation by definition),
+    /// so the unprivileged case is covered by the violation tests instead.
+    #[test]
+    fn secure_artifact_directory_records_no_crash_evidence() {
+        // Safe: a plain syscall wrapper; see the production call sites.
+        if unsafe { libc::geteuid() } != 0 {
+            eprintln!("skip: a non-root runner cannot own a directory the check accepts");
+            return;
+        }
+
+        let directory = tempdir().expect("temporary directory");
+        let state_store = StateStore::new(directory.path().join("state.json"));
+        let trust_store = TrustPointerStore::new(directory.path().join("trust-pointer.json"));
+
+        check_and_rollback(&state_store, &trust_store, &PoisonPillConfig::default())
+            .expect("a secured artifact directory is not a fault");
+
+        let crash = state_store.guard_crash_state().expect("guard-crash state");
+        assert_eq!(
+            crash.crash_count, 0,
+            "a clean artifact directory must not record crash evidence"
         );
     }
 }
