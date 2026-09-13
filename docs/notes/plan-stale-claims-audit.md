@@ -7,11 +7,14 @@ irrevers-09ea6d91). Consumes:
 - `docs/notes/closed-beads-reconciliation-2026-09-12.md` incl. the
   2026-09-13 addendum (irrevers-319a2f7c, child 2)
 
-Audited 2026-09-13 at repo HEAD `f79b01f`. `docs/plan/plan.md` last
-touched by `a813b7b` (2026-09-12 04:36:20 −0400, the job-cronjob engine
-guard) — every line reference below is against that file as it stands at
-HEAD. **This pass makes no edit to `docs/plan/plan.md`**; corrections are
-the downstream editing bead's task (irrevers-7ea2d082).
+Audited 2026-09-13 at repo HEAD `f79b01f`; re-verified 2026-09-13 at
+`22425b4` (the only audit-cited file that commit touches is
+`src/health.rs`, whose crash detection / cgroup OOM classification
+survived intact; `docs/plan/plan.md` is still last touched by `a813b7b`,
+2026-09-12 04:36:20 −0400, the job-cronjob engine guard) — every line
+reference below is against that file as it stands at HEAD. **This pass
+makes no edit to `docs/plan/plan.md`**; corrections are the downstream
+editing bead's task (irrevers-7ea2d082).
 
 Evidence classes used, in descending strength: live re-verification
 (`gh release list`, `gh release view`, Argo workflow status, `bead show`)
@@ -115,10 +118,17 @@ Each entry: plan.md location, current text, corrected fact, artifact.
   - *Absorption tail:* irrevers-efe57f54, irrevers-b559d088,
     irrevers-5117dc94, irrevers-466fe313.
   - *Fail-closed policy lock lineage:* irrevers-92e6e55c (umbrella).
-  - *Unrelated defect/ops:* irrevers-e23d37cc (telemetry torn `.tmp`),
-    irrevers-3e313b79 (lexer `$( )` recursion), irrevers-6b4ded56
-    ("Install icg on ex44" — itself stale: `hetzner-ex44` was
-    decommissioned 2026-08-30 and replaced by this box; see `~/CLAUDE.md`).
+  - *Unrelated defect/ops:* irrevers-04de9cac (integration tests write
+    crash records into the production
+    `/var/cache/icg/health-state.json`), irrevers-3e313b79 (lexer
+    `$( )` recursion), irrevers-6b4ded56 ("Install icg on ex44" —
+    itself stale: `hetzner-ex44` was decommissioned 2026-08-30 and
+    replaced by this box; see `~/CLAUDE.md`).
+
+  Membership re-verified at `22425b4`: irrevers-e23d37cc (telemetry torn
+  `.tmp`), open when the audit was first written, was **Closed** (rev 4)
+  by `22425b4`; the fix surfaced irrevers-04de9cac, which took its open
+  slot — the count stays 19, the names above are the current set.
   A corrected Phase 0 should replace "the genesis bead's only remaining
   blocker" with this concrete open-work picture, not with a new singular
   blocker.
@@ -290,7 +300,7 @@ runbook's current statement of where the gate lives.
 ### B6. Deploy-location claims (root-owned paths)
 
 `docs/plan/plan.md:172-198` and the Phase 0 reconciliation's "root-owned
-deploy paths landed" (`:455-456`). Verified accurate for the guarded
+deploy paths landed" (`:454-456`). Verified accurate for the guarded
 host: live root-owned `/etc/icg` + installed `/usr/local/bin/icg`
 verified by irrevers-93baa29a (closed 2026-09-07, see
 `docs/notes/evidence/fail-closed-harness-b.md`). **Scoped caveat, not a
