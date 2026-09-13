@@ -204,6 +204,97 @@ full ID lists so the partition is auditable):
 - `docs/plan/plan.md` untouched (last touch remains `d26a83a`, 2026-09-11,
   per the compiled inventory's check).
 
+## Addendum — delta pass 2026-09-13 (irrevers-319a2f7c)
+
+Delta-only re-run of the selection rule above. Repo HEAD has moved past
+`8baee83` (now `c3ab51e`); nothing below edits either inventory doc or any
+existing entry in this file.
+
+**Method.** Same rule, same sources: closed universe via
+`bead list --status closed --limit 500 --json` (now **397**, was 363), close
+dates from the last `closed` snapshot in `forensic.jsonl` cross-checked
+against `kind == "closed"` events — the two sources agree to the minute on
+every bead. `updated_at` was not used (the 2026-09-11 evidence pass
+bulk-touched closed beads).
+
+**Delta: 34 beads closed after 2026-09-12T01:15Z; none qualifies.** The
+inventory's 42 remain complete. Adjudication by family (34 IDs, auditable
+partition):
+
+1. **Evidence/inventory/plan-reconciliation meta (11)** — the inventory
+   pipeline itself and the plan.md stale-claim work, excluded under family 1
+   above: irrevers-3828115c, 98e9188e, 25063548, 92165552, fc249ab4,
+   2c3b4637, 97e30af1 (child 1 of this split; its deliverable is
+   `shipped-releases-inventory.md`), d5ffa7cf, 83f3670e, 3dc8cb4d, b04ff68f.
+2. **Workflows-guard umbrella (1)** — irrevers-e58ddf25 itself closed
+   2026-09-12T02:33Z. Family 2 above already excludes its 14 children; the
+   umbrella joins them.
+3. **Job/CronJob detection-coverage family (13)** — enforcement coverage of
+   the `kind: Job/CronJob` deny rule and its verification, exact parallel to
+   family 2: irrevers-a3af4241, ddd9bd7d, 1ecbc527, 65a037f3, 49bbb22b,
+   84228cd5, 714874b7, 8de3e0d1, 599d1bfc, b5e5f88c, 2d1c55b0, b4b5027f,
+   5b3376f3.
+4. **"Run CI/tests over the change" sense of gate (3)** — be464cd7
+   precedent: irrevers-b8938f41, d73064bb, df1fbcc6.
+5. **Fail-closed lock-ownership verification tail (3, borderline —
+   documented)** — irrevers-8d1f79a7, 10fa65df, 31042f1e, closed
+   2026-09-12T16:21–17:26Z. These are topical category (b), but the lineage
+   (umbrella irrevers-92e6e55c, **still Open**) is already represented in
+   inventory B by five beads closed 2026-09-08: 93baa29a (the root
+   policy-command verification), f891f555, edb5c4ca, 9eb4de16, 0aa08f4e.
+   The new closes are that lineage's verify/document tail: 10fa65df
+   re-verifies at HEAD the lock-free property 3e6c6fde (in B) fixed;
+   31042f1e adds ownership-table rows to the deployment guide for the same
+   mechanism; 8d1f79a7 is the parent whose verification core is 93baa29a.
+   Excluded under family 4 (duplicate lineage, counted once under canonical
+   IDs).
+6. **Pack-rule content (1)** — irrevers-05855de6 (beads-shared-checkout-write
+   over-match fix), ff094e1f precedent from family 5.
+7. **Artifact-dir security-check fix (1, borderline — documented)** —
+   irrevers-f839b213, closed 2026-09-13T03:45Z: root-detection fix inside
+   `verify_artifact_directory_security` (trust_pointer.rs). Its umbrella
+   irrevers-beee1069 (**still Open**) is already represented in B by
+   50077acb. The bead is internal to the checker's own logic, not artifact
+   integrity itself; its only keyword hit ('gate') is the verb "gates" in
+   the description. Excluded under families 4/5.
+8. **Lab deployment trial (1)** — irrevers-19835ba1, no keyword match, ops
+   practice-mode deployment, not release process.
+
+When the two still-open umbrellas (92e6e55c, beee1069) eventually close,
+this addendum's reasoning pre-answers their adjudication: both are lineages
+already counted in B.
+
+## Anchor bead irrevers-84b36e47 — state and closing evidence (2026-09-13)
+
+- **Status: Closed, revision 59** (`bead show`). Final close event
+  2026-09-06T13:06:27Z — 25 s after Release v0.1.1 published at
+  2026-09-06T13:06:02Z; close reason cites run `icg-ci-manual-snxhj`
+  reaching Succeeded with `isDraft=false` and all four assets. (Two earlier
+  2026-08-26 close events precede reopens; rule step 5's max-`closed_at`
+  correctly selects the 2026-09-06 one, matching the inventory's date.)
+- **Live re-verification 2026-09-13**: `gh release view v0.1.1` returns
+  `isDraft: false`, published 2026-09-06T13:06:02Z, exactly four assets —
+  `icg` (13,162,400 bytes), `icg-packs.tar.gz`, `pack-manifest.json`,
+  `rule-pack.json` — i.e. the done-when criterion (binary + rule-pack
+  asset) holds.
+- **Cross-check vs child 1** (`docs/notes/shipped-releases-inventory.md`,
+  irrevers-97e30af1): consistent. v0.1.1 is the **earliest** GitHub Release
+  (v0.1.0 is the sole tag-only version), same publish timestamp to the
+  second; 61 Releases v0.1.1–v0.1.61 now exist, Latest v0.1.61
+  (2026-09-13T06:56:38Z), with the same four assets reproducing on later
+  releases (child 1 spot-checked v0.1.57/v0.1.61) — matching this bead's
+  "reproduces on every later release" note. **The closure matches the
+  reality of shipped releases**; its evidence classification
+  (git-verified at head, 2026-09-11 consolidation) stands.
+- **plan.md discrepancy confirmed, not corrected here**: `docs/plan/plan.md`
+  lines 457–461 still assert "**One residual, actively tracked: no release
+  has ever been cut.** `gh release list` … returns empty …
+  `irrevers-84b36e47` (in progress)". Both halves are stale — the bead has
+  been Closed since 2026-09-06 and 61 Releases exist. Correcting plan.md is
+  the downstream plan-reconciliation children's task (child 1's doc §
+  "Observations" supplies the replacement text); this delta pass records
+  the state only, per its scope guard.
+
 ## Reproduction
 
 ```bash
