@@ -8,13 +8,10 @@
 //! reported to stderr and the bypass remains active.
 
 use crate::telemetry::TelemetryStore;
-use std::path::PathBuf;
 
 pub const ENVIRONMENT_VARIABLE: &str = "ICG_DISABLED";
 pub const WARNING: &str =
     "WARNING: ICG_DISABLED emergency bypass active; enforcement is disabled for this invocation.";
-
-const DEFAULT_TELEMETRY_PATH: &str = "/var/cache/icg/telemetry.json";
 
 /// The entry point that was explicitly bypassed. This is the only invocation
 /// detail retained in emergency-bypass telemetry; commands and tool payloads
@@ -53,16 +50,17 @@ pub fn is_active() -> bool {
 /// an audit signal even when the telemetry cache is unavailable. The durable
 /// telemetry event is best effort: bypass activation remains fail-open with
 /// respect to telemetry persistence so an incident recovery is not blocked by
-/// a read-only or damaged cache.
+/// a read-only or damaged cache. The sink resolves through
+/// [`crate::telemetry::operational_store_path`], so a test-driven caller
+/// records its activation into the per-process scratch store rather than the
+/// host's live telemetry cache.
 pub fn record_activation(front_end: FrontEnd) {
     eprintln!(
         "icg_emergency_bypass event=activated front_end={} command_data=omitted",
         front_end.as_str()
     );
 
-    let path = std::env::var_os("ICG_TELEMETRY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_TELEMETRY_PATH));
+    let path = crate::telemetry::operational_store_path();
     let result = (|| {
         let mut telemetry = TelemetryStore::load_or_create(path.clone())?;
         telemetry.record_emergency_bypass(front_end.as_str());

@@ -902,9 +902,7 @@ fn poison_pill_config_from_telemetry(config: &telemetry::TelemetryConfig) -> Poi
 /// Load the configured reaction policy for wrapper invocations, which do not
 /// otherwise need to keep the legacy telemetry window in memory.
 fn configured_poison_pill_config() -> PoisonPillConfig {
-    let telemetry_path = std::env::var_os("ICG_TELEMETRY_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+    let telemetry_path = telemetry::operational_store_path();
     match telemetry::TelemetryStore::load_or_create(telemetry_path) {
         Ok(store) => poison_pill_config_from_telemetry(store.config()),
         Err(error) => {
@@ -1632,10 +1630,10 @@ fn main() -> Result<()> {
             }
             // If no pack exists, we'll fail-open (allow everything)
 
-            // Initialize telemetry store for rolling baseline monitoring
-            let telemetry_path = std::env::var_os("ICG_TELEMETRY_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+            // Initialize telemetry store for rolling baseline monitoring.
+            // Resolved through the shared operational sink so a test-spawned
+            // hook records its baselines into scratch, never the live cache.
+            let telemetry_path = telemetry::operational_store_path();
             let telemetry_store = std::sync::Arc::new(std::sync::Mutex::new(
                 load_runtime_telemetry_store(telemetry_path),
             ));
@@ -2292,8 +2290,7 @@ fn main() -> Result<()> {
                 path,
                 state_store_path,
             } => {
-                let telemetry_path =
-                    path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+                let telemetry_path = path.unwrap_or_else(telemetry::operational_store_path);
                 let store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
 
                 println!("# Telemetry Status\n");
@@ -2418,8 +2415,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
             TelemetrySubcommand::Reset { path, force } => {
-                let telemetry_path =
-                    path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+                let telemetry_path = path.unwrap_or_else(telemetry::operational_store_path);
 
                 if !force {
                     println!("⚠️  This will clear all telemetry data and reset the baseline.");
@@ -2448,8 +2444,7 @@ fn main() -> Result<()> {
                 cooldown_seconds,
                 auto_rollback,
             } => {
-                let telemetry_path =
-                    path.unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+                let telemetry_path = path.unwrap_or_else(telemetry::operational_store_path);
                 let store = telemetry::TelemetryStore::load_or_create(telemetry_path)?;
 
                 // Update configuration with provided values

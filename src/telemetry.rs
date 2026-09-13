@@ -333,6 +333,40 @@ impl AnomalySeverity {
     }
 }
 
+const DEFAULT_TELEMETRY_PATH: &str = "/var/cache/icg/telemetry.json";
+
+/// Resolve the telemetry store an operational write may use.
+///
+/// `ICG_TELEMETRY_PATH` always wins: a deployment that names its own sink gets
+/// exactly that sink. Otherwise the fallback is the host's live telemetry
+/// cache, and a test-driven caller is redirected to a per-process scratch
+/// path -- the same guard shape as
+/// [`crate::denial_log::operational_log_path`], because `cargo test` on an
+/// instrumented host was writing hook evaluation baselines and crash-health
+/// snapshots into the live cache (see [`crate::runtime_context`]).
+///
+/// Every operational telemetry resolution goes through here: the health
+/// store's lifecycle sync, emergency-bypass activation, the hook front end's
+/// rolling baseline, the wrapper poison-pill configuration load, and the
+/// `telemetry status`/`reset`/`configure` subcommands' default resolution.
+pub fn operational_store_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("ICG_TELEMETRY_PATH").filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+    if let Some(path) = crate::runtime_context::test_operational_path("telemetry.json") {
+        return path;
+    }
+    PathBuf::from(DEFAULT_TELEMETRY_PATH)
+}
+
+/// The host's live telemetry cache, which the default fallback documents.
+///
+/// A test that wants to assert it has not polluted operator data reads this
+/// path, not a second copy of the default.
+pub fn default_path() -> PathBuf {
+    PathBuf::from(DEFAULT_TELEMETRY_PATH)
+}
+
 /// Telemetry store: persists evaluation history and loads on startup
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryStore {

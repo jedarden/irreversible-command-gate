@@ -886,58 +886,10 @@ pub fn operational_log_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("ICG_DENIAL_LOG").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    if process_is_test_driven() {
+    if crate::runtime_context::process_is_test_driven() {
         return None;
     }
     Some(PathBuf::from(DEFAULT_DENIAL_LOG_PATH))
-}
-
-/// Is the current process a Rust test binary, or one cargo launched for a
-/// test binary?
-///
-/// `cargo test` drives two kinds of process that can reach an operational
-/// write:
-///
-/// 1. **The test binary itself** -- a unit test compiled into this crate, or
-///    an integration test under `tests/` that calls into the library
-///    in-process. It runs with cargo's environment and libtest's argv.
-/// 2. **The binaries an integration test spawns** through
-///    `CARGO_BIN_EXE_icg`. Those are unmodified production binaries invoked
-///    as `icg hook`, so no compile-time `cfg` distinguishes them -- but they
-///    inherit cargo's environment, and cargo sets `CARGO_BIN_EXE_<name>` only
-///    while running that crate's tests.
-///
-/// Detection deliberately stops short of "the `CARGO` variable is set":
-/// `cargo run -- check --command ...` is documented developer usage of the
-/// real front end and should keep recording like one.
-fn process_is_test_driven() -> bool {
-    // Unit tests of this crate, compiled with the library.
-    if cfg!(test) {
-        return true;
-    }
-    // This crate's integration-test harness, and every child it spawns.
-    if std::env::var_os("CARGO_BIN_EXE_icg").is_some() {
-        return true;
-    }
-    // A test binary cargo built for another crate that links this library as
-    // a dependency: cargo puts test executables in target/<profile>/deps/,
-    // installed and `cargo run` binaries are never there, and libtest's flags
-    // never appear in a hook or wrapper argv. The argv scan is `args_os`
-    // because a hook invocation may carry non-UTF-8 arguments and this must
-    // never panic on the production path.
-    const LIBTEST_FLAGS: [&str; 3] = ["--nocapture", "--show-output", "--list"];
-    let is_libtest_flag = |arg: std::ffi::OsString| {
-        let arg: &str = &arg.to_string_lossy();
-        // libtest accepts both `--test-threads 2` and `--test-threads=2`; the
-        // latter is how this repo's own suites pass the flag.
-        LIBTEST_FLAGS.contains(&arg) || arg.starts_with("--test-threads")
-    };
-    if std::env::args_os().any(is_libtest_flag) {
-        return true;
-    }
-    std::env::args_os()
-        .next()
-        .is_some_and(|argv0| argv0.to_string_lossy().contains("/deps/"))
 }
 
 /// Persist an ordinary evaluated denial for operator reporting.

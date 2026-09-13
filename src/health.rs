@@ -955,8 +955,24 @@ impl HealthStore {
     /// Create a store from `ICG_HEALTH_PATH`, falling back to the platform
     /// cache location.  The environment override keeps supervisors and tests
     /// from needing write access to a system directory.
+    ///
+    /// A test-driven caller that did not name an explicit path is relocated to
+    /// a per-process scratch store instead of the production one.  The
+    /// fallback *is* live traffic on an instrumented host: on 2026-09-13 the
+    /// production crash history was 382 records and every retained record
+    /// carried a test context (`could not find the real \`fake_tool\` binary`,
+    /// `guard availability failure during evaluation`) written by test-spawned
+    /// hook and wrapper invocations that landed here with the variable unset.
+    /// Relocation rather than refusal keeps the whole lifecycle exercised
+    /// under test; see [`crate::runtime_context`].  Per-test discipline
+    /// (setting the variable in every guard-evaluating test) had already
+    /// leaked; the guard lives at this constructor because it is the one place
+    /// every health write passes through.
     pub fn from_environment_or_default() -> Result<Self> {
         if let Some(path) = std::env::var_os("ICG_HEALTH_PATH").filter(|path| !path.is_empty()) {
+            return Ok(Self::new(path));
+        }
+        if let Some(path) = crate::runtime_context::test_operational_path("health-state.json") {
             return Ok(Self::new(path));
         }
         Ok(Self::new(Self::default_path()?))
@@ -972,6 +988,11 @@ impl HealthStore {
     /// Uses /var/cache/icg/ for operational health data (writable by hook identity).
     /// This is separate from security-critical artifacts in /etc/icg/.
     /// See docs/plan/plan.md Architecture 'Deploy location'.
+    ///
+    /// This is the production location itself, not the resolution entry
+    /// point: [`Self::from_environment_or_default`] applies `ICG_HEALTH_PATH`
+    /// and the test-driven relocation, so operational callers should go
+    /// through it and only reach for this path when naming the live file.
     pub fn default_path() -> Result<PathBuf> {
         Ok(PathBuf::from("/var/cache/icg/health-state.json"))
     }
@@ -1274,11 +1295,13 @@ impl HealthStore {
     /// store.  Health tracking must never prevent the guard from making its
     /// normal allow/deny decision, so callers use this best-effort helper at
     /// lifecycle boundaries.
+    ///
+    /// The sink resolves through [`crate::telemetry::operational_store_path`],
+    /// which relocates a test-driven caller to scratch rather than the live
+    /// telemetry cache -- the same incident that relocated this store's own
+    /// fallback.
     pub fn sync_telemetry_best_effort(&self) {
-        let telemetry_path = std::env::var_os("ICG_TELEMETRY_PATH")
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/var/cache/icg/telemetry.json"));
+        let telemetry_path = crate::telemetry::operational_store_path();
 
         let result = (|| -> Result<()> {
             let metrics = self.health_metrics()?;
