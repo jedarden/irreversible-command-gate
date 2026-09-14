@@ -75,21 +75,42 @@ it's validated. These are two different questions — "did this one check
 error out" vs. "is the guard even still running" — and only the second one
 is allowed to graduate away from fail-open over time.
 
-**Open implementation question `irrevers-cd3f4c44` doesn't resolve on its own:**
-"fail closed when the process is dead" needs *something* to notice the
-process is gone and substitute a deny — a standing watchdog is exactly the
-"guard as a standing daemon" architecture Lens-1 idea #69 was killed for
-during ideation (real architecture change for unclear benefit against the
-current per-invocation model). Leading hypothesis, **not yet confirmed**:
-the fail-closed transition doesn't need icg's own watchdog at all if
-Claude Code's and Codex's own PreToolUse hook systems already have
+**Resolved implementation question — harness error/timeout behavior,
+verified.** "Fail closed when the process is dead" needs *something* to
+notice the process is gone and substitute a deny — a standing watchdog is
+exactly the "guard as a standing daemon" architecture Lens-1 idea #69 was
+killed for during ideation (real architecture change for unclear benefit
+against the current per-invocation model). The leading hypothesis was that
+the fail-closed transition might not need icg's own watchdog at all if
+Claude Code's and Codex's own PreToolUse hook systems already had
 configurable behavior for "the hook command errored, timed out, or never
-responded" — in which case "fail closed" means configuring *that* harness
-setting once reliability is validated, not building new standing
-infrastructure. Needs verifying against both harnesses' actual hook specs
-before `irrevers-cd3f4c44` is implemented; if neither harness supports it, this
-finalist needs to either accept the standing-daemon cost after all or be
-re-scoped.
+responded" — in which case "fail closed" would have meant configuring *that*
+harness setting once reliability is validated. **This is no longer a
+hypothesis: it was verified, and the hypothesis was refuted.** Closed
+verification bead `irrevers-0e30c682` (2026-08-15) checked both harnesses'
+actual hook specs: Claude Code PreToolUse hooks **fail open** on hook
+timeout, on any non-2 exit code, and on HTTP/connection errors — only exit
+code 2 blocks, and there is no deny-on-error/timeout setting to enable;
+Codex **fails open by default**, with fail-closed available only behind
+opt-in configuration (`echo closed > ~/.acp/failmode`). Neither harness can
+substitute for a watchdog, so the framing question — watchdog cost vs.
+harness setting vs. re-scope — was answered none of the three:
+`irrevers-cd3f4c44` (closed 2026-08-21) shipped durable crash evidence plus
+an operator-gated policy instead, with no resident process and no harness
+setting: the durable `PolicyStore` in `src/fail_closed.rs`
+(`DEFAULT_GRADUATION_THRESHOLD = 3`, `src/fail_closed.rs:34`; `bb362fb`),
+runtime enforcement (`17971b7`), the transition audit (`3f0f00d`), and crash
+detection in `src/health.rs` (stale-run-marker-as-crash; exit-status
+classification separating signals from OOM via cgroup counters) feeding
+operator-only `icg policy reconcile`. Current operator behavior is
+documented in `docs/operators/fail-closed-mode.md`; design rationale in
+`docs/design/fail-closed-transition.md`. **Still open — none of this
+resolves it:** the graduation has not been consumed (no deployment has
+committed a FailClosed policy), the fail-closed machinery's lock/policy
+lineage umbrella `irrevers-92e6e55c` is open, and inside CI pods the
+administrator-owned trust model underneath fail-closed is undercut until
+`irrevers-beee1069` (builder image ships `/etc/icg` world-writable) and the
+fixed image's publication (`irrevers-c36bba27`, in progress) close.
 
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `openbao`, `storage-class`, `image-tag` (extends

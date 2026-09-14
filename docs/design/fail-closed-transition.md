@@ -36,6 +36,17 @@ cannot by itself detect that the process was OOM-killed. Until each deployed
 front-end has such an enforcement point, it is not eligible for the
 Fail-Closed state.
 
+> Verified after this design was written (closed bead `irrevers-0e30c682`,
+> 2026-08-15): that harness configuration is **not** generally available.
+> Claude Code PreToolUse hooks fail open on hook timeout, non-2 exit codes,
+> and HTTP/connection errors — only exit code 2 denies, and there is no
+> deny-on-error/timeout setting to enable. Codex fails open by default, with
+> fail-closed only behind opt-in (`echo closed > ~/.acp/failmode`). The
+> shipped enforcement point for hook adapters is therefore icg's own
+> tracked crash evidence denying the next invocation, not a default harness
+> setting — see
+> [`docs/operators/fail-closed-mode.md`](../operators/fail-closed-mode.md).
+
 ## State machine
 
 The policy state is fleet-level, with a deliberate canary split while in

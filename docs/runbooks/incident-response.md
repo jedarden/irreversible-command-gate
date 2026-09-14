@@ -72,8 +72,9 @@ cause is fixed.
 
 If the denial says `pack=fail-closed, pattern=guard-crash`, the hook received no
 trustworthy guard result. Confirm whether the guard is running and whether the
-harness's deny-on-hook-error/timeout setting is behaving as configured. Do not
-loosen the policy by editing a rule pack or trust pointer.
+harness's deny-on-hook-error/timeout setting (where the harness offers one —
+see [fail-closed-mode.md](../operators/fail-closed-mode.md)) is behaving as
+configured. Do not loosen the policy by editing a rule pack or trust pointer.
 
 If a critical recovery operation must proceed before the guard is repaired,
 obtain incident-command approval and use the

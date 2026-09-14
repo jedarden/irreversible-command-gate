@@ -24,7 +24,13 @@ compatibility override, not the durable activation or rollback mechanism.
 The tracked disappearance is detected by the durable health run marker on the
 next invocation. A harness that sees no process, timeout, or malformed output
 must also be configured to deny hook failure if that is part of the deployed
-Fail-Closed contract. An environment variable inside a process cannot react to
+Fail-Closed contract. That configuration is not available everywhere (verified
+2026-08-15, `irrevers-0e30c682`): Claude Code PreToolUse hooks fail open on
+timeout, non-2 exit codes, and transport errors — only exit code 2 denies —
+and Codex fails open by default, with fail-closed behind opt-in
+(`echo closed > ~/.acp/failmode`). Where the harness offers no such setting,
+the tracked-disappearance denial above is the Fail-Closed contract for that
+front-end. An environment variable inside a process cannot react to
 a process that never returns.
 
 Fail-Closed is not a defense against an approved
@@ -91,7 +97,12 @@ Record these checks in the change or release record before enabling a cohort:
    Unix-only, must find the real binary later in `PATH`, and does not cover
    absolute-path invocations.
 3. The harness behavior for process error, timeout, missing output, and invalid
-   output is known. Configure deny-on-hook-failure where the harness offers it.
+   output is known — verified 2026-08-15 (`irrevers-0e30c682`): Claude Code
+   PreToolUse hooks fail open on timeout, non-2 exit codes, and transport
+   errors (only exit code 2 denies); Codex fails open by default, with
+   fail-closed behind opt-in (`echo closed > ~/.acp/failmode`). Configure
+   deny-on-hook-failure where the harness offers it; where it does not, the
+   tracked-disappearance denial in "What the policy protects" is the contract.
 4. Health state and telemetry are writable, and an operator can query
    `icg health status`, `icg telemetry status`, and `icg policy status`.
 5. The poison-pill detector is enabled, has an exact previous trusted release,
