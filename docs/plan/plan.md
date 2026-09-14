@@ -453,14 +453,29 @@ GuardedPattern:
   shipped (`irrevers-5fdc2e13`, `irrevers-f59f9313`, `irrevers-c87a3c50`
   closed); root-owned deploy paths landed (`a03a7e6`, `irrevers-ca79d63a`,
   `irrevers-96594031` closed); the 27 clippy errors were cleared
-  (`8710b5c`, `irrevers-12d2f9b2` closed). **One residual, actively
-  tracked: no release has ever been cut.** `gh release list` on
-  `jedarden/irreversible-command-gate` returns empty and icg-ci runs are
-  currently failing at `build-and-release` — `irrevers-84b36e47` (in
-  progress) is the verification bead and the genesis bead's only remaining
-  blocker. The phase's build deliverables are complete; the end-to-end
-  release proof is not, so nothing downstream should cite "a released
-  artifact" as existing yet.)*
+  (`8710b5c`, `irrevers-12d2f9b2` closed). **Release status, reconciled
+  again 2026-09-14 — this block's earlier "no release has ever been cut"
+  residual is stale and no longer holds: the end-to-end release proof now
+  exists.** Git tags `v0.1.0` through `v0.1.6` shipped 2026-08-27 through
+  2026-09-08 (inventoried by `irrevers-eff8909f`), and releases kept
+  advancing on every `Cargo.toml` version bump after that — as of this
+  reconciliation there are 62 tags (`v0.1.0`–`v0.1.61`) and 61 GitHub
+  Releases (`v0.1.1`–`v0.1.61`; `v0.1.0` is tagged but was never
+  published to GitHub), each non-draft with all four assets (`icg`,
+  `icg-packs.tar.gz`, `pack-manifest.json`, `rule-pack.json`), latest
+  `v0.1.61` on 2026-09-13. `irrevers-84b36e47`, the end-to-end release
+  verification bead and the last remaining Phase 0 blocker, **closed
+  2026-09-06**: release `v0.1.1` published with all four assets 25 s
+  before close, and that shape reproduces on every later release
+  (GIT-VERIFIED — the surviving GitHub release object is the evidence,
+  the green Argo Workflow being TTL-reaped; detail in
+  `docs/notes/evidence/release-verification-a.md`). The phase's build
+  deliverables and its end-to-end release proof are both complete.
+  **What remains open is deployment, not release**: no host installation
+  has happened yet (`irrevers-6b4ded56`, open), and the CI build image
+  ships `/etc/icg` world-writable, defeating the trust model in every CI
+  pod (`irrevers-beee1069`, open) — downstream work may now cite released
+  artifacts as existing, but not a deployed, installed guard.)*
   - Build the `icg-ci` Argo WorkflowTemplate (`declarative-config/k8s/iad-ci/argo-workflows/`)
     on the existing `forge-ci`/`needle-ci`/`agentscribe-ci`/`sigil-ci`
     pattern — Rust binary → GitHub Release, never GitHub Actions.
