@@ -1,22 +1,22 @@
 //! Characterization of `$( )` command substitution in `lex_shell_commands`.
 //!
-//! The lexer has no `$( )` awareness: `$` and `(` are ordinary word
-//! characters, so what happens depends entirely on the quoting context the
-//! substitution appears in. This suite pins each context's present behavior;
-//! expectations that are not true yet ship `#[ignore]` with a reference to
-//! irrevers-f7201bd7 so a later child can un-ignore them.
+//! The lexer treats `$(` outside a single-quoted word as a nested command
+//! context (child irrevers-c6f6c7b8's implementation of the approach settled
+//! in irrevers-f7201bd7's characterization): the interior lexes as commands
+//! with its own quote and heredoc state, and the matching `)` pops back to
+//! the surrounding word.
 //!
-//! * Top level: the words inside `$( )` are lexed more or less normally --
-//!   a `<<` heredoc there is honored and its body consumed, and `;`/`&&`
-//!   still act as command boundaries -- but the opening `$(` glues onto the
-//!   first inner word, so that one command dispatches as executable
-//!   `$(cat`/`$(bao` and matches no pack.
-//! * Inside a double-quoted word the whole substitution is one inert blob
-//!   until a `"` inside the nested context closes the outer word, which is
-//!   what fragments the corpus shape `git commit -m "$(cat <<'EOF' ... )"`.
+//! * Top level: the interior commands dispatch under their own basenames --
+//!   `cat`, not `$(cat` -- and heredocs, quotes, and separators inside the
+//!   substitution behave normally.
+//! * Inside a double-quoted word the substitution still runs, so its interior
+//!   commands dispatch too, and the surrounding word survives as one argv
+//!   word. That is what lets the corpus shape
+//!   `git commit -m "$(cat <<'EOF' ... )"` reach the anchored
+//!   `git-commit-without-pathspec` regex whole again.
 //! * Inside a single-quoted word it stays literal text.
-//! * Backticks get no substitution treatment either. That is an explicit
-//!   deferral, not an oversight.
+//! * Backticks get no substitution treatment. That is an explicit deferral,
+//!   not an oversight.
 //!
 //! The fix approach is settled in
 //! [`docs/notes/command-substitution-lexing.md`](../docs/notes/command-substitution-lexing.md):
@@ -156,30 +156,70 @@ fn backtick_substitution_is_explicitly_deferred() {
     );
 }
 
-/// The corpus shape's security properties hold today (parent bead
-/// irrevers-3e313b79 verified both directions): prose naming a destructive
-/// command inside a requoted message is documentation, and it must not
-/// manufacture an invocation even while the message fragments.
+/// The corpus shape's security property (parent bead irrevers-3e313b79
+/// verified both directions): prose naming a destructive command inside a
+/// requoted message is documentation and must never manufacture an
+/// *invocation* -- no `bao` executable token, no openbao denial.
+///
+/// What changed with the nested-context fix is the commit shape around the
+/// prose. Before nesting, the body's first `"` fragmented the message and
+/// `git commit -m "$(cat ...)"` reached the packs as fragments that no
+/// anchored rule could match. Now the message arrives as one argv word, so
+/// `git-commit-without-pathspec` sees the pathspec-less commit the shell
+/// would actually run and denies it -- on the commit's own shape, never on
+/// the words inside the message. That recovery is the coverage the parent
+/// bead filed this lexer defect for.
 #[test]
-fn requoted_prose_does_not_become_an_invocation() {
+fn requoted_prose_denies_on_the_commit_shape_never_on_the_prose() {
     let command = "git commit -m \"$(cat <<'EOF'\ndocs: why \"bao kv destroy\" is denied\nEOF\n)\"";
-    assert!(
-        !denied(command),
-        "writing the words `bao kv destroy` into a commit message is prose, \
-         not a destructive invocation"
+    let result = engine().evaluate_command(&CommandSource::Hook(command.to_string()));
+    let CheckResult::Denied {
+        reason,
+        pack_id,
+        pattern_id,
+        ..
+    } = result
+    else {
+        panic!(
+            "a pathspec-less commit whose message comes from a substitution \
+             must reach git-commit-without-pathspec whole"
+        );
+    };
+    assert_eq!(
+        pattern_id, "git-commit-without-pathspec",
+        "the denial must come from the commit shape; reason: {reason}"
+    );
+    assert_eq!(
+        pack_id, "git",
+        "the prose must not route the denial through any other pack"
     );
     assert!(
         !executables(command).iter().any(|e| e == "bao"),
-        "the fragmented message must not leak a bao executable token"
+        "the message must not leak a bao executable token"
     );
 }
 
-/// The opening `$(` is glued onto the first inner word, so the inner `cat`
-/// dispatches as executable `$(cat` and matches no pack. Once the lexer
-/// treats `$( )` as a nested context, the inner command must surface as
-/// itself.
+/// The same prose shape WITH a pathspec stays allowed: the redirect the
+/// pathspec rule exists to give has already been followed.
 #[test]
-#[ignore = "opening $( glues into the first inner word ($(cat)); tracked as irrevers-f7201bd7"]
+fn requoted_prose_with_a_pathspec_stays_allowed() {
+    let command =
+        "git commit src/a.rs -m \"$(cat <<'EOF'\ndocs: why \"bao kv destroy\" is denied\nEOF\n)\"";
+    assert!(
+        !denied(command),
+        "a commit that names its paths is not a pathspec-less commit, \
+         whatever its message contains"
+    );
+    assert!(
+        !executables(command).iter().any(|e| e == "bao"),
+        "the message must not leak a bao executable token"
+    );
+}
+
+/// The opening `$(` used to glue onto the first inner word, dispatching it as
+/// executable `$(cat` and matching no pack. With a nested context the inner
+/// command surfaces as itself.
+#[test]
 fn top_level_substitution_first_inner_command_is_not_glued() {
     let command = "$(cat <<'EOF' > /tmp/n\nbody\nEOF\necho done)";
     assert!(
@@ -188,23 +228,20 @@ fn top_level_substitution_first_inner_command_is_not_glued() {
     );
 }
 
-/// Same glue, denial-level: the *first* inner command after a separator is
-/// today the only one hidden (`$(bao` matches no pack keyword). It must
-/// reach the openbao pack like its siblings after the next separator do.
+/// Same glue, denial-level: before nesting, the *first* inner command after a
+/// separator was the only one hidden (`$(bao` matches no pack keyword). It
+/// must reach the openbao pack like its siblings after the next separator.
 #[test]
-#[ignore = "first inner word after $( is glued ($(bao); tracked as irrevers-f7201bd7"]
 fn a_first_inner_command_after_a_separator_reaches_dispatch() {
     assert!(denied("$(bao kv destroy secret/x; echo done)"));
 }
 
-/// The corpus shape from the parent bead. Today the first `"` inside the
-/// body closes the outer word, so the message arrives as three fragmented
-/// argv words after `-m`. The nested-context fix must deliver it as one
-/// word; the denial-level consequence (`git-commit-without-pathspec`
-/// matching again) is pinned as the ignored test in
-/// tests/heredoc_lexing_tests.rs.
+/// The corpus shape from the parent bead. Before nesting, the first `"` inside
+/// the body closed the outer word and the message arrived as three fragmented
+/// argv words after `-m`. The nested context delivers it as one word; the
+/// denial-level consequence (`git-commit-without-pathspec` matching again) is
+/// pinned in tests/heredoc_lexing_tests.rs.
 #[test]
-#[ignore = "a double quote inside the nested context closes the outer word; tracked as irrevers-f7201bd7"]
 fn a_nested_double_quote_does_not_close_the_outer_word() {
     let command = "git commit -q -m \"$(cat <<'EOF'\nfix: openssl-sys's script says \"Could not find\"\nEOF\n)\"";
     let token = Engine::new()
@@ -224,11 +261,10 @@ fn a_nested_double_quote_does_not_close_the_outer_word() {
     );
 }
 
-/// Inside a double-quoted word nothing inside `$( )` is lexed today, so
-/// inner commands never dispatch. With a nested context they must, even
-/// though the surrounding quotes make the substitution an operand.
+/// Inside a double-quoted word the substitution is still run by the shell, so
+/// its interior commands must dispatch even though the surrounding quotes
+/// make the substitution an operand.
 #[test]
-#[ignore = "quoted $( ) content is one inert blob today; tracked as irrevers-f7201bd7"]
 fn a_substitution_inside_double_quotes_surfaces_inner_commands() {
     assert!(denied("echo \"$(bao kv destroy secret/x && ls)\""));
 }

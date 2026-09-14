@@ -637,6 +637,144 @@ pub enum CheckResult {
     },
 }
 
+/// One lexing context: top-level shell text, or the interior of a `$( )`
+/// command substitution.
+///
+/// Each context carries its own quote, escape, heredoc, and word state, so a
+/// quote or heredoc opened inside a substitution can neither swallow text
+/// that belongs outside it nor leak its own state outward. That isolation is
+/// what the double-quoted commit-message corpus shape needs: the first `"` in
+/// the heredoc body used to close the outer word and fragment the message
+/// into three argv words the anchored pack regexes cannot match.
+#[derive(Clone, Default)]
+struct LexContext {
+    /// Quote character currently open in this context, if any.
+    quote: Option<char>,
+    /// The previous character was a backslash outside quotes.
+    escaped: bool,
+    /// Words accumulated for the command being lexed in this context.
+    command: Vec<String>,
+    /// The word currently being accumulated.
+    word: String,
+    /// Whether `word` holds content (or an open quote) worth emitting.
+    word_started: bool,
+    /// Heredoc redirections seen on the current line, in order. Their bodies
+    /// are literal text and are consumed -- not lexed -- when the line ends.
+    pending_heredocs: Vec<(String, bool)>,
+    /// Unquoted `(` grouping depth. A `)` closes the substitution only when
+    /// this is zero, so the paren that ends `$( (rm -rf /) )` closes the
+    /// subshell grouping, not the substitution.
+    grouping_depth: usize,
+}
+
+fn finish_word_ctx(ctx: &mut LexContext) {
+    if ctx.word_started {
+        ctx.command.push(std::mem::take(&mut ctx.word));
+        ctx.word_started = false;
+    }
+}
+
+fn finish_command_ctx(commands: &mut Vec<Vec<String>>, ctx: &mut LexContext) {
+    finish_word_ctx(ctx);
+    if !ctx.command.is_empty() {
+        commands.push(std::mem::take(&mut ctx.command));
+    }
+}
+
+/// Open a command-substitution context on `$(`.
+///
+/// The outer context is pushed verbatim and restored by `close_substitution`;
+/// what the interior inherits is decided here. A substitution that *captures*
+/// into an env assignment (`TOKEN=$(git ...)`) keeps the assignment target as
+/// a prefix of its first word, so the token dispatches exactly as the glued
+/// `TOKEN=$(git` word always did -- which is what keeps the git pack's
+/// captured-credential-fill allowance working. Any other interior word starts
+/// clean, because a substitution mid-word still *runs* its commands: the
+/// shell executes `rm` in `a$(rm -rf /)` even though the output concatenates.
+fn open_substitution(stack: &mut Vec<LexContext>, outer: &LexContext) -> LexContext {
+    stack.push(outer.clone());
+    let inherits_assignment = is_env_assignment_prefix(&outer.word);
+    LexContext {
+        word: if inherits_assignment {
+            outer.word.clone()
+        } else {
+            String::new()
+        },
+        word_started: inherits_assignment,
+        ..Default::default()
+    }
+}
+
+/// Close the innermost command-substitution context on an unquoted `)`.
+fn close_substitution(
+    commands: &mut Vec<Vec<String>>,
+    stack: &mut Vec<LexContext>,
+    ctx: &mut LexContext,
+) {
+    finish_command_ctx(commands, ctx);
+    if let Some(mut outer) = stack.pop() {
+        // A heredoc declared inside the substitution but not yet terminated
+        // keeps its place in line: its body starts on the next line however
+        // the nesting unwinds, and the next newline consumes it.
+        let mut inner_heredocs = std::mem::take(&mut ctx.pending_heredocs);
+        outer.pending_heredocs.append(&mut inner_heredocs);
+        *ctx = outer;
+    }
+}
+
+/// Is this word text an env assignment awaiting its value, e.g. `TOKEN=`
+/// immediately before a `$(`? Mirrors the engine's env_assign_pattern so a
+/// captured substitution is recognized without recompiling a regex per word.
+fn is_env_assignment_prefix(word: &str) -> bool {
+    let Some(name) = word.strip_suffix('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Consume `$(( ... ))` arithmetic expansion as literal word characters.
+///
+/// The interior is an expression, not commands, so it must not open a nested
+/// context -- and its closing parens must not be mistaken for the end of one
+/// (in `$(echo $((1+2)))` the first `)` belongs to the arithmetic). The scan
+/// tracks bracket depth so nested expressions such as `$(( (a+b)*c ))` stay
+/// inside the word. A quote or shell metacharacter is not arithmetic-shaped;
+/// bailing out there resumes ordinary lexing, which is both today's behavior
+/// and the conservative reading of malformed input -- it can never swallow a
+/// command separator.
+fn consume_arithmetic(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    word: &mut String,
+    word_started: &mut bool,
+) {
+    *word_started = true;
+    word.push('$');
+    let mut depth = 0usize;
+    while let Some(character) = chars.next() {
+        word.push(character);
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return;
+                }
+            }
+            // A backslash escapes the next character even here; keep both so
+            // an escaped separator cannot split a command mid-expansion.
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+            }
+            '\n' | ';' | '&' | '|' | '\'' | '"' | '`' => return,
+            _ => {}
+        }
+    }
+}
+
 /// Split shell input into command-word vectors without invoking a shell.
 ///
 /// This is intentionally a small lexer rather than a shell evaluator. The
@@ -644,52 +782,37 @@ pub enum CheckResult {
 /// execute expansions or run anything supplied by the caller. Quotes and
 /// backslash escapes are removed so rule expressions see the words that the
 /// shell would pass to the executable.
+///
+/// A top-level `$( )` -- or one inside a double-quoted word, where the shell
+/// still runs it -- opens a nested command context: its interior is lexed as
+/// commands with its own quote and heredoc state, and the matching `)` pops
+/// back to the surrounding word. Commands the shell would run must reach
+/// pack dispatch whether they are written directly or inside a substitution;
+/// before nesting existed, every command inside `$( )` was invisible.
 fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
-    let mut command = Vec::new();
-    let mut word = String::new();
-    let mut word_started = false;
-    let mut quote = None;
-    let mut escaped = false;
-
-    let finish_word = |command: &mut Vec<String>, word: &mut String, started: &mut bool| {
-        if *started {
-            command.push(std::mem::take(word));
-            *started = false;
-        }
-    };
-
-    let finish_command = |commands: &mut Vec<Vec<String>>,
-                          command: &mut Vec<String>,
-                          word: &mut String,
-                          started: &mut bool| {
-        finish_word(command, word, started);
-        if !command.is_empty() {
-            commands.push(std::mem::take(command));
-        }
-    };
-
-    // Heredoc redirections seen on the current line, in order. Their bodies
-    // are literal text and are consumed -- not lexed -- when the line ends.
-    let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
+    // Contexts surrounding the one being lexed, outermost first. Empty when
+    // the current context is the top level.
+    let mut stack: Vec<LexContext> = Vec::new();
+    let mut ctx = LexContext::default();
 
     let mut chars = input.chars().peekable();
     while let Some(character) = chars.next() {
-        if escaped {
+        if ctx.escaped {
             // A backslash-newline is a shell line continuation. For all other
             // characters, retain the escaped character as part of this word.
             if character != '\n' {
-                word.push(character);
-                word_started = true;
+                ctx.word.push(character);
+                ctx.word_started = true;
             }
-            escaped = false;
+            ctx.escaped = false;
             continue;
         }
 
-        if let Some(active_quote) = quote {
+        if let Some(active_quote) = ctx.quote {
             if character == active_quote {
-                quote = None;
-                word_started = true;
+                ctx.quote = None;
+                ctx.word_started = true;
             } else if active_quote == '"' && character == '\\' {
                 // Inside double quotes only shell-special escapes lose their
                 // backslash. Keep other backslashes literal.
@@ -697,23 +820,44 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
                     Some(next @ ('"' | '\\' | '$' | '`' | '\n')) => {
                         chars.next();
                         if next != '\n' {
-                            word.push(next);
-                            word_started = true;
+                            ctx.word.push(next);
+                            ctx.word_started = true;
                         }
                     }
                     _ => {
-                        word.push(character);
-                        word_started = true;
+                        ctx.word.push(character);
+                        ctx.word_started = true;
                     }
                 }
+            } else if active_quote == '"' && character == '$' && chars.peek() == Some(&'(') {
+                // A command substitution inside double quotes is still run by
+                // the shell. Nesting is what keeps the surrounding word intact
+                // while the interior lexes as commands. Consume the paren so
+                // the nested context cannot mistake it for a grouping `(`.
+                chars.next();
+                ctx = open_substitution(&mut stack, &ctx);
             } else {
-                word.push(character);
-                word_started = true;
+                ctx.word.push(character);
+                ctx.word_started = true;
             }
             continue;
         }
 
         match character {
+            '$' if chars.peek() == Some(&'(') => {
+                let mut lookahead = chars.clone();
+                lookahead.next();
+                if lookahead.next() == Some('(') {
+                    consume_arithmetic(&mut chars, &mut ctx.word, &mut ctx.word_started);
+                } else {
+                    // Consume the paren with the `$`: leaving it for the next
+                    // iteration would open the nested context and then count
+                    // this same paren as a grouping `(` inside it, so the
+                    // substitution's closing `)` would never pop.
+                    chars.next();
+                    ctx = open_substitution(&mut stack, &ctx);
+                }
+            }
             // A heredoc body is literal text, not shell. Without this the
             // lexer treats an apostrophe in the body as an opening quote that
             // never closes, swallows the rest of the input into one word, and
@@ -725,7 +869,7 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
                     // `<<<` is a herestring: its operand is an ordinary word
                     // on the same line, with no body to consume.
                     chars.next();
-                    finish_word(&mut command, &mut word, &mut word_started);
+                    finish_word_ctx(&mut ctx);
                     continue;
                 }
                 let strip_tabs = if chars.peek() == Some(&'-') {
@@ -739,35 +883,52 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
                 }
                 let delimiter = read_heredoc_delimiter(&mut chars);
                 if !delimiter.is_empty() {
-                    pending_heredocs.push((delimiter, strip_tabs));
+                    ctx.pending_heredocs.push((delimiter, strip_tabs));
                 }
-                finish_word(&mut command, &mut word, &mut word_started);
+                finish_word_ctx(&mut ctx);
             }
             '\'' | '"' => {
-                quote = Some(character);
-                word_started = true;
+                ctx.quote = Some(character);
+                ctx.word_started = true;
             }
-            '\\' => escaped = true,
+            '\\' => ctx.escaped = true,
             '\n' => {
-                finish_command(&mut commands, &mut command, &mut word, &mut word_started);
+                finish_command_ctx(&mut commands, &mut ctx);
                 // The bodies begin on the line after the redirection, in the
                 // order the redirections appeared.
-                for (delimiter, strip_tabs) in std::mem::take(&mut pending_heredocs) {
+                for (delimiter, strip_tabs) in std::mem::take(&mut ctx.pending_heredocs) {
                     consume_heredoc_body(&mut chars, &delimiter, strip_tabs);
                 }
             }
             character if character.is_whitespace() => {
-                finish_word(&mut command, &mut word, &mut word_started);
+                finish_word_ctx(&mut ctx);
             }
             ';' | '&' | '|' => {
                 // Treat both short and compound shell operators as command
                 // boundaries. The second character of &&/|| is just another
                 // delimiter and therefore yields no empty command.
-                finish_command(&mut commands, &mut command, &mut word, &mut word_started);
+                finish_command_ctx(&mut commands, &mut ctx);
+            }
+            '(' if !stack.is_empty() => {
+                // A grouping subshell inside a substitution: the paren is a
+                // shell operator and a word boundary, and its matching `)`
+                // must decrement the grouping instead of closing the
+                // substitution. `(` is an ordinary character at top level,
+                // where there is no context to break.
+                finish_word_ctx(&mut ctx);
+                ctx.grouping_depth += 1;
+            }
+            ')' if !stack.is_empty() => {
+                if ctx.grouping_depth > 0 {
+                    finish_word_ctx(&mut ctx);
+                    ctx.grouping_depth -= 1;
+                } else {
+                    close_substitution(&mut commands, &mut stack, &mut ctx);
+                }
             }
             _ => {
-                word.push(character);
-                word_started = true;
+                ctx.word.push(character);
+                ctx.word_started = true;
             }
         }
     }
@@ -775,11 +936,19 @@ fn lex_shell_commands(input: &str) -> Vec<Vec<String>> {
     // A trailing backslash is malformed shell, but retaining it gives the
     // caller a conservative best-effort token instead of silently dropping a
     // command word.
-    if escaped {
-        word.push('\\');
-        word_started = true;
+    if ctx.escaped {
+        ctx.word.push('\\');
+        ctx.word_started = true;
     }
-    finish_command(&mut commands, &mut command, &mut word, &mut word_started);
+    // An unterminated substitution never sees its `)`. Flush innermost-first
+    // so a truncated `$(bao kv destroy ...` still reaches pack dispatch --
+    // the conservative reading, mirroring the unterminated-heredoc stance.
+    finish_command_ctx(&mut commands, &mut ctx);
+    while let Some(mut outer) = stack.pop() {
+        // A heredoc still pending inside the truncated substitution has no
+        // body to consume; dropping it mirrors a trailing redirection.
+        finish_command_ctx(&mut commands, &mut outer);
+    }
 
     commands
 }

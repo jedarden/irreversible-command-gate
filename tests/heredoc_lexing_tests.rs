@@ -123,12 +123,12 @@ fn a_herestring_is_not_a_heredoc() {
 /// The real corpus shape: a multi-line commit message written through a
 /// quoted heredoc inside `$( )`, whose body contains both quote kinds.
 ///
-/// The security properties hold -- see the two tests below. What does not yet
-/// work is `git-commit-without-pathspec` matching, because the lexer does not
-/// recurse into `$( )`: the first double quote in the body closes the outer
-/// word and the rule is handed a fragment. Tracked as irrevers-3e313b79.
+/// The nested-context lexer (irrevers-c6f6c7b8) keeps the message as one argv
+/// word -- the body's quotes live inside the substitution's own context and
+/// cannot close the outer word -- so `git-commit-without-pathspec` sees the
+/// pathspec-less commit the shell would run. Before nesting, the first `"` in
+/// the body fragmented the message and this denied nothing.
 #[test]
-#[ignore = "lexer does not recurse into $( ); tracked as irrevers-3e313b79"]
 fn a_requoted_commit_message_still_reaches_the_pathspec_rule() {
     let command = "git commit -q -m \"$(cat <<'EOF'\nfix: openssl-sys's script says \"Could not find\"\nEOF\n)\"";
     assert!(denied(command));
