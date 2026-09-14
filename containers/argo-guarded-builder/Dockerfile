@@ -86,15 +86,22 @@ RUN chmod 0755 /usr/local/bin/icg \
 # Assert the trust directory the guard depends on cannot regress to being
 # writable by anything other than root. A build-time failure here beats a
 # runtime security violation the guard only warns about and continues past.
+#
+# The mask 022 covers both write bits that matter, group AND other: matching
+# the last octal digit alone (`case $mode in *2|*3|*6|*7)`) sees only the
+# other bit and would pass a group-writable 0775. The 0-prefixed literals are
+# octal -- /bin/sh (dash) rejects the `8#` base prefix -- and stat %a never
+# prints a leading zero, so `0$mode` is always one octal number, setid/sticky
+# digits included.
 RUN for dir in /etc/icg /etc/icg/packs /etc/icg/overrides /var/cache/icg; do \
       owner="$(stat -c '%U' "$dir")"; \
       mode="$(stat -c '%a' "$dir")"; \
       if [ "$owner" != "root" ]; then \
         echo "SECURITY: $dir is owned by $owner, not root" >&2; exit 1; \
       fi; \
-      case "$mode" in \
-        *2|*3|*6|*7) echo "SECURITY: $dir is world-writable (mode $mode)" >&2; exit 1 ;; \
-      esac; \
+      if [ "$(( 0$mode & 022 ))" -ne 0 ]; then \
+        echo "SECURITY: $dir is group- or other-writable (mode $mode)" >&2; exit 1; \
+      fi; \
     done
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
