@@ -75,9 +75,9 @@ fn top_level_substitution_still_honors_the_heredoc_inside_it() {
 }
 
 /// `;` and `&&` between words that began inside a top-level `$( )` are still
-/// command boundaries, so every inner command *after the first* surfaces
-/// with a clean executable. The first one does not -- see the ignored test
-/// below.
+/// command boundaries, so inner commands surface with a clean executable.
+/// The first one used to glue to its `$(`; the not-glued tests below pin
+/// that it now dispatches as itself.
 #[test]
 fn a_separator_inside_a_top_level_substitution_surfaces_later_inner_commands() {
     for separator in ["&&", ";"] {
