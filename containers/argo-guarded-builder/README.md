@@ -40,7 +40,7 @@ spec:
   templates:
     - name: build-with-guard
       container:
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         command: [bash, -c]
         args:
           - |
@@ -69,7 +69,7 @@ spec:
   templates:
     - name: build-with-custom-rules
       container:
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         volumeMounts:
           - name: rule-pack
             mountPath: /etc/icg/packs/runtime.json

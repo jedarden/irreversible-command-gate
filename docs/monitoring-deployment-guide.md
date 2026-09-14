@@ -10,7 +10,7 @@ The PATH-wrapper integration extends icg coverage from interactive Claude Code/C
 
 ### Components
 
-1. **Guarded Builder Image** (`ronaldraygun/argo-guarded-builder:0.1.0`)
+1. **Guarded Builder Image** (`ronaldraygun/argo-guarded-builder:0.1.1`)
    - Extends `ronaldraygun/needle-ci-builder:0.1.5-with-deps`
    - Pre-installs icg binary and PATH-wrapper symlinks
    - Includes the repository rule packs at `/etc/icg/packs`
@@ -63,7 +63,7 @@ Modify existing workflow templates to use the guarded image:
 image: debian:bookworm
 
 # After
-image: ronaldraygun/argo-guarded-builder:0.1.0
+image: ronaldraygun/argo-guarded-builder:0.1.1
 ```
 
 ## Usage
@@ -119,9 +119,9 @@ The builder image includes a default rule pack at build time. To update it:
 # Update the pack files in this repository, then rebuild from the repository
 # root. The Dockerfile copies packs/ into /etc/icg/packs.
 docker build \
-  --build-arg ICG_VERSION=0.1.0 \
+  --build-arg ICG_VERSION=0.1.1 \
   -f containers/argo-guarded-builder/Dockerfile \
-  -t ronaldraygun/argo-guarded-builder:0.1.0 \
+  -t ronaldraygun/argo-guarded-builder:0.1.1 \
   .
 ```
 
@@ -134,7 +134,7 @@ spec:
   templates:
     - name: build-with-custom-rules
       container:
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         volumeMounts:
           - name: custom-rules
             mountPath: /etc/icg/packs/runtime.json
@@ -157,7 +157,7 @@ spec:
   templates:
     - name: build-with-override
       container:
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         volumeMounts:
           - name: repo-override
             mountPath: /etc/icg/overrides/repo-name.toml
@@ -172,7 +172,7 @@ spec:
 
 The icg project's own release pipeline (`icg-ci`) should use this guarded image:
 
-1. **Update `icg-ci-workflowtemplate.yml`** to use `ronaldraygun/argo-guarded-builder:0.1.0`
+1. **Update `icg-ci-workflowtemplate.yml`** to use `ronaldraygun/argo-guarded-builder:0.1.1`
 2. **Verify the workflow can still build and release icg**
 3. **Test that destructive operations in the release workflow are properly denied**
 

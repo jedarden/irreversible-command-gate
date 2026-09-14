@@ -37,7 +37,7 @@ spec:
           - name: codex-version
       container:
         # Use guarded builder for Codex compatibility tests
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         imagePullPolicy: IfNotPresent
         command: [bash, -c]
         args:
@@ -79,7 +79,7 @@ spec:
       container:
         # SELF-REFERENTIAL PROTECTION: icg's own release pipeline uses the guarded builder
         # This ensures the guard protecting everything else is itself protected
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         imagePullPolicy: IfNotPresent
         command: [bash, -c]
         args:

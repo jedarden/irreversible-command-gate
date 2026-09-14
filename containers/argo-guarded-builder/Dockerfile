@@ -23,7 +23,7 @@ FROM ${BASE_IMAGE}
 LABEL maintainer="jedarden"
 LABEL description="Rust builder with irreversible-command-gate PATH-wrapper protection"
 
-ARG ICG_VERSION=0.1.0
+ARG ICG_VERSION=0.1.1
 ENV ICG_VERSION="${ICG_VERSION}"
 ENV ICG_INSTALL_DIR="/usr/local/bin"
 ENV ICG_RULE_PACK="/etc/icg/packs"

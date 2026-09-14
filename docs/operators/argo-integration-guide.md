@@ -61,7 +61,7 @@ image: debian:bookworm
 
 With:
 ```yaml
-image: ronaldraygun/argo-guarded-builder:0.1.0
+image: ronaldraygun/argo-guarded-builder:0.1.1
 imagePullPolicy: IfNotPresent
 ```
 
@@ -122,7 +122,7 @@ spec:
     - name: build
       container:
         # Use guarded builder instead of plain Debian
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         command: [bash, -c]
         args:
           - |
@@ -142,7 +142,7 @@ spec:
   templates:
     - name: build
       container:
-        image: ronaldraygun/argo-guarded-builder:0.1.0
+        image: ronaldraygun/argo-guarded-builder:0.1.1
         volumeMounts:
           - name: custom-rules
             mountPath: /etc/icg/packs/runtime.json
