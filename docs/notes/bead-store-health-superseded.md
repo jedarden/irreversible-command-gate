@@ -54,6 +54,27 @@ The other failed user units on this host (`starvation-watchdog`,
 `bead-self-heal`, etc.) belong to other subsystems and repos and were left
 untouched.
 
+## A second orphan the first sweep missed
+
+`systemd/check-consistency.sh` (landed 2026-09-14, `irrevers-ccb71837`) found
+another leftover of the same class on its first run:
+`icg-frontier-consistency.service` is still installed in
+`~/.config/systemd/user/` as a plain file, its repo-side unit was one of the
+twelve deleted in `092e82c`, and its `ExecStart` points at
+`target/debug/frontier-consistency-check`, which no longer builds from this
+tree. Unlike unified-repair it is **disabled and inactive** — one `enable`
+away from the same `203/EXEC`, which is exactly why nothing was failing
+loudly and the retirement sweep (which searched for the unified-repair name)
+did not see it. Removing it is a host write, outside the scaffolding bead's
+scope; the check prints the remediation on every run until it is done:
+
+```console
+systemctl --user disable --now icg-frontier-consistency.service
+rm ~/.config/systemd/user/icg-frontier-consistency.service
+systemctl --user daemon-reload
+systemctl --user reset-failed icg-frontier-consistency.service 2>/dev/null || true
+```
+
 ## The successor repair path
 
 `bead doctor` is the one starvation-repair tool, and on this host it runs as
@@ -67,8 +88,12 @@ mean `bead doctor` / `bead-doctor.timer`. Nothing else exists.
 
 ## What remains open
 
-- `irrevers-ccb71837` — track this repo's systemd units in-repo with
-  install/uninstall scripts and a consistency check, so a repo-side deletion
-  can no longer strand a live unit on the host.
+- `irrevers-ccb71837` — **landed 2026-09-14**: `systemd/` now carries
+  `install.sh` / `uninstall.sh` / `check-consistency.sh` plus the invariant
+  in `systemd/README.md`, AGENTS.md documents the rule, and
+  `tests/systemd_consistency_tests.rs` runs the repo-side half in CI.
+- Removing `icg-frontier-consistency.service` from the host (above) — a
+  host-side action for the operator or the retirement strand; the check will
+  keep naming it until then.
 - `irrevers-46f2b741` — the parent bead; closes once the remaining WANTED
   items above land.

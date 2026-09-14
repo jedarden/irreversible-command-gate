@@ -94,6 +94,27 @@ If a bead-store problem needs tooling, it goes to `bead-rs` as a bead. Not
 here. Recover the removed code from history if you need to read it:
 `git show 6c13171 -- src/starvation_diagnostic.rs`.
 
+## Host units live in `systemd/`, never only on the host
+
+That removal left a lesson. `092e82c` deleted the scripts but the *installed*
+copies of twelve units stayed in `~/.config/systemd/user/` on codinghome, and
+one timer kept firing into `203/EXEC` for a week (bead `irrevers-46f2b741`).
+A deleted script can strand a live unit only because the two lived in
+different places with no link between them. So:
+
+- Any systemd unit this repo installs on a host is tracked in `systemd/` and
+  installed as a **symlink** from the host's unit directory via
+  `systemd/install.sh` — never a copy. A symlink breaks visibly when the
+  tracked unit is deleted; a copy fails silently when it fires.
+- A commit that deletes a script must, **in the same commit**, delete its
+  tracked unit and say in the commit message that hosts need
+  `systemd/uninstall.sh` run.
+- `systemd/check-consistency.sh` fails on either direction of drift: a
+  tracked unit referencing a path missing from the working tree, or a host
+  unit executing a repo path that no longer exists. Run it before pushing
+  anything that touches `systemd/` or a script a unit executes; CI runs the
+  repo-side half (`tests/systemd_consistency_tests.rs`).
+
 ## Repository conventions
 
 - Work on `main`; do not open feature branches.
