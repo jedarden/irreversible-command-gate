@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "pack_id": "github-workflows",
+      "pattern_id": "github-workflows-protected",
+      "command": "",
+      "file_path": ".github/workflows/ci.yml",
+      "content": "name: ci\non: push\n",
+      "expected": "deny"
+    },
+    {
+      "pack_id": "job-cronjob-yaml",
+      "pattern_id": "kind-job-cronjob",
+      "command": "",
+      "file_path": "manifests/migrate.yaml",
+      "content": "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: migrate\n",
+      "expected": "deny"
+    },
+    {
+      "pack_id": "job-cronjob-yaml",
+      "pattern_id": "kind-job-cronjob",
+      "command": "",
+      "file_path": "manifests/nightly.yaml",
+      "content": "apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: nightly\n",
+      "expected": "deny"
+    }
+  ]
+}
