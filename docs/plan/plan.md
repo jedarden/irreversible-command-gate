@@ -110,7 +110,7 @@ committed a FailClosed policy; the first host installation is itself still
 open as `irrevers-6b4ded56`), and inside CI pods the administrator-owned
 trust model underneath fail-closed is undercut until `irrevers-beee1069`
 (builder image ships `/etc/icg` world-writable) and the fixed image's
-publication (`irrevers-c36bba27`, in progress) close. The lock/policy
+publication (`irrevers-c36bba27`, open) close. The lock/policy
 lineage umbrella `irrevers-92e6e55c` (open when this paragraph was
 reconciled 2026-09-14) closed the same day — the hook hot path no longer
 reaches the policy lock (`0a5faa9`) and the operator `policy` commands

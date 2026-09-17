@@ -7,7 +7,15 @@
 //! `icg install` help naming a default directory the code no longer uses.
 //! These tests pin the reconciled state so each class of drift fails a
 //! build instead of silently recurring.
+//!
+//! The 2026-09 reconciliations extended that to plan.md's claims about
+//! things outside the source tree -- shipped tags/releases and the open/
+//! closed state of the beads the plan names. Those checks live at the end
+//! of this file and read the committed ground truth those reconciliations
+//! cite: `docs/notes/shipped-releases-inventory.md` and the git-tracked
+//! `.beads/checkpoint/` snapshot.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1042,6 +1050,629 @@ fn coverage_justifications_name_real_patterns() {
              shipped pack defines. Either the id is a typo -- in which case the \
              waiver covers nothing and CI will still stop -- or the rule is gone \
              and the stanza should be removed."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// plan.md release/status claims vs committed ground truth.
+//
+// The 2026-09-14 Phase 0 reconciliation and the 2026-09-17 "verified
+// fail-closed" reconciliation (beads `irrevers-eff8909f`, `irrevers-4e649dbf`,
+// `irrevers-92e6e55c`) each fixed the same drift class by hand: plan.md said
+// "no release has ever been cut" for weeks after tags shipped, and its
+// still-open lists described beads whose status had since moved. Both were
+// found only by a human re-reading the plan against `git tag` and the bead
+// store. These checks pin the reconciled claims to the committed evidence
+// those reconciliations cite -- `docs/notes/shipped-releases-inventory.md`
+// for tags/releases, `.beads/checkpoint/` (git-tracked, auto-published on
+// every bead mutation) for bead status -- so the next drift fails `cargo
+// test` in a normal run instead of waiting for another manual audit.
+// ---------------------------------------------------------------------------
+
+/// Whitespace-flattened text, so a claim split across markdown line breaks
+/// ("`irrevers-f59f9313`,\n  `irrevers-c87a3c50`\n  closed)") reads as one
+/// window.
+fn flattened(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `v0.1.N` -> N; the only tag shape this repo cuts.
+fn patch_version(tag: &str) -> u64 {
+    tag.strip_prefix("v0.1.")
+        .and_then(|rest| rest.parse().ok())
+        .unwrap_or_else(|| panic!("unexpected tag shape {tag:?}"))
+}
+
+struct InventoryRow {
+    tag: String,
+    released: bool,
+    published_date: String,
+    latest: bool,
+}
+
+/// Parse the per-version table out of the shipped-releases inventory.
+///
+/// That doc was generated from `git for-each-ref` and the GitHub Releases
+/// API (collection method recorded in the doc itself); it is the committed
+/// stand-in for those live sources, which a test cannot query -- CI checks
+/// this repo out with `git clone --depth 1`, so no tags and no `gh` exist at
+/// test time there.
+fn shipped_inventory_rows() -> Vec<InventoryRow> {
+    let text = repo_relative("docs/notes/shipped-releases-inventory.md");
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with("| v0.1.") {
+            continue;
+        }
+        let cells: Vec<&str> = line.split('|').collect();
+        assert!(
+            cells.len() >= 6,
+            "inventory table row should have five cells: {line}"
+        );
+        let published = cells[4].trim();
+        rows.push(InventoryRow {
+            tag: cells[1].trim().to_owned(),
+            released: !published.is_empty() && published != "\u{2014}",
+            published_date: published.to_owned(),
+            latest: line.contains("**Latest**"),
+        });
+    }
+    assert!(
+        rows.len() >= 60,
+        "the inventory should enumerate the shipped tags, got {}",
+        rows.len()
+    );
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            patch_version(&row.tag),
+            index as u64,
+            "inventory tags should be contiguous from v0.1.0"
+        );
+    }
+    rows
+}
+
+/// "`vA`--`vB`" (en-dash separated, backticked) -> ("vA", "vB").
+fn backticked_range(range: &str) -> (String, String) {
+    let (first, rest) = range
+        .split_once("\u{2013}`")
+        .expect("range should be two backticked tags joined by an en-dash");
+    let last = rest
+        .split('`')
+        .next()
+        .expect("range should close the second tag");
+    let first = first.strip_suffix('`').unwrap_or(first);
+    (first.to_owned(), last.to_owned())
+}
+
+/// The "there are 62 tags (`v0.1.0`\u{2013}`v0.1.61`)" claim in plan.md.
+fn plan_tag_count_claim(plan: &str) -> (u64, String, String) {
+    let mut from = 0;
+    while let Some(rel) = plan[from..].find("there are ") {
+        let rest = &plan[from + rel + "there are ".len()..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(count) = digits.parse::<u64>() {
+            if let Some(range) = rest[digits.len()..].strip_prefix(" tags (`") {
+                let (first, last) = backticked_range(range);
+                return (count, first, last);
+            }
+        }
+        from += rel + "there are ".len();
+    }
+    panic!(
+        "plan.md should state the shipped tag count as \
+         \"there are N tags (`vA`\u{2013}`vB`)\""
+    );
+}
+
+/// The "61 GitHub Releases (`vA`\u{2013}`vB`; ...)" claim, with the full
+/// parenthetical so callers can check its qualifiers.
+fn plan_release_count_claim(plan: &str) -> (u64, String, String, String) {
+    let mut from = 0;
+    while let Some(rel) = plan[from..].find("GitHub Releases (`v") {
+        let at = from + rel;
+        let before = plan[..at].trim_end();
+        let digits: String = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if let Ok(count) = digits.parse::<u64>() {
+            let rest = &plan[at..];
+            let open = rest.find('(').expect("release claim opens a parenthetical");
+            let close = rest[open..]
+                .find(')')
+                .expect("release parenthetical closes")
+                + open;
+            // skip "(`" -- the marker above guarantees that shape
+            let paren = &rest[open + 2..close];
+            let (range_part, _) = paren.split_once("; ").unwrap_or((paren, ""));
+            let (first, last) = backticked_range(range_part);
+            return (count, first, last, paren.to_owned());
+        }
+        from = at + 1;
+    }
+    panic!("plan.md should state the GitHub Releases count and range");
+}
+
+/// The "latest `v0.1.61` on 2026-09-13" claim in plan.md.
+fn plan_latest_release_claim(plan: &str) -> (String, String) {
+    let mut from = 0;
+    while let Some(rel) = plan[from..].find("latest `v0.") {
+        let at = from + rel;
+        let rest = &plan[at + "latest `".len()..];
+        let tag = rest.split('`').next().expect("latest tag is backticked");
+        let after = &rest[rest.find('`').expect("latest tag closes") + 1..];
+        if let Some(date) = after.strip_prefix(" on ") {
+            let day: String = date
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '-')
+                .collect();
+            if day.len() == 10 {
+                return (tag.to_owned(), day);
+            }
+        }
+        from = at + 1;
+    }
+    panic!(
+        "plan.md should state the latest release as \
+         \"latest `vX.Y.Z` on YYYY-MM-DD\""
+    );
+}
+
+/// plan.md's Phase 0 release block must agree with the shipped-releases
+/// inventory, and the old "no release has ever been cut" fiction may appear
+/// only as a quoted residual that the same sentence marks stale.
+#[test]
+fn plan_release_claims_match_the_shipped_releases_inventory() {
+    let plan = flattened(&repo_relative("docs/plan/plan.md"));
+    let rows = shipped_inventory_rows();
+
+    let unreleased: Vec<&str> = rows
+        .iter()
+        .filter(|row| !row.released)
+        .map(|row| row.tag.as_str())
+        .collect();
+    assert_eq!(
+        unreleased,
+        ["v0.1.0"],
+        "the inventory should show exactly one tagged-but-never-released version"
+    );
+
+    let (tag_count, tag_first, tag_last) = plan_tag_count_claim(&plan);
+    assert_eq!(
+        tag_count as usize,
+        rows.len(),
+        "plan.md's shipped tag count disagrees with the inventory"
+    );
+    assert_eq!(tag_first, rows[0].tag, "plan.md's first tag disagrees");
+    assert_eq!(
+        tag_last,
+        rows[rows.len() - 1].tag,
+        "plan.md's newest tag disagrees with the inventory"
+    );
+
+    let released: Vec<&InventoryRow> = rows.iter().filter(|row| row.released).collect();
+    let (release_count, release_first, release_last, paren) = plan_release_count_claim(&plan);
+    assert_eq!(
+        release_count as usize,
+        released.len(),
+        "plan.md's GitHub Releases count disagrees with the inventory"
+    );
+    assert_eq!(
+        release_first, released[0].tag,
+        "plan.md's first release disagrees"
+    );
+    assert_eq!(
+        release_last,
+        released[released.len() - 1].tag,
+        "plan.md's newest release disagrees with the inventory"
+    );
+    assert!(
+        paren.contains("never published to GitHub"),
+        "plan.md should keep stating that the first tag ({}) has no GitHub \
+         release -- that is the set difference the inventory records",
+        unreleased[0]
+    );
+
+    let latest_row = rows
+        .iter()
+        .find(|row| row.latest)
+        .expect("the inventory should mark one row **Latest**");
+    let (latest_tag, latest_date) = plan_latest_release_claim(&plan);
+    assert_eq!(
+        latest_tag, latest_row.tag,
+        "plan.md's latest release disagrees"
+    );
+    assert_eq!(
+        latest_date,
+        &latest_row.published_date[..10],
+        "plan.md's latest-release date disagrees with the inventory"
+    );
+
+    assert!(
+        plan.contains(
+            "all four assets (`icg`, `icg-packs.tar.gz`, \
+                       `pack-manifest.json`, `rule-pack.json`)"
+        ),
+        "plan.md should keep naming the four release assets every release ships"
+    );
+    let inventory = repo_relative("docs/notes/shipped-releases-inventory.md");
+    for asset in ["icg-packs.tar.gz", "pack-manifest.json", "rule-pack.json"] {
+        assert!(
+            inventory.contains(asset),
+            "the inventory's artifact evidence should name {asset}"
+        );
+    }
+
+    // The reconciled block quotes the old fiction only to retract it. Any
+    // occurrence of the no-release claim must carry its own retraction
+    // nearby, so the stale phrasing cannot quietly become affirmative again.
+    let mut residuals = 0;
+    for phrase in [
+        "no release has ever been cut",
+        "no release has been cut",
+        "No GitHub release has been cut",
+    ] {
+        let mut from = 0;
+        while let Some(rel) = plan[from..].find(phrase) {
+            let start = from + rel;
+            let end = (start + phrase.len() + 90).min(plan.len());
+            let tail = &plan[start..end];
+            assert!(
+                tail.contains("stale") || tail.contains("no longer holds"),
+                "plan.md states {phrase:?} without marking it stale; releases \
+                 exist -- see docs/notes/shipped-releases-inventory.md"
+            );
+            residuals += 1;
+            from = start + phrase.len();
+        }
+    }
+    assert!(
+        residuals >= 1,
+        "the reconciled release block (quoting and retracting the stale \
+         no-release residual) should stay in plan.md"
+    );
+}
+
+/// Where tags are actually available (a working tree or full clone), the
+/// inventory must not have fallen behind them. CI checks out with
+/// `git clone --depth 1` -- no tags -- and NEEDLE verification extracts a
+/// tarball with no `.git` at all, so an empty or missing tag list skips
+/// rather than fails; the plan-vs-inventory assertions above carry those
+/// environments.
+#[test]
+fn local_git_tags_agree_with_the_shipped_releases_inventory() {
+    let rows = shipped_inventory_rows();
+    let Ok(output) = Command::new("git")
+        .args(["-C", env!("CARGO_MANIFEST_DIR"), "tag", "-l", "v0.1.*"])
+        .output()
+    else {
+        return; // no git or no checkout: nothing live to compare against
+    };
+    if !output.status.success() {
+        return;
+    }
+    let tags: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if tags.is_empty() {
+        return; // shallow CI checkout: no refs to compare
+    }
+
+    let live_max = tags.iter().map(|tag| patch_version(tag)).max().unwrap();
+    let inventory_max = patch_version(&rows[rows.len() - 1].tag);
+    for index in 0..rows.len() {
+        let tag = format!("v0.1.{index}");
+        assert!(
+            tags.iter().any(|live| live == &tag),
+            "the inventory lists {tag} but this checkout does not have it; \
+             either the inventory is stale or tags were not fetched \
+             (git fetch --tags origin)"
+        );
+    }
+    assert_eq!(
+        live_max, inventory_max,
+        "this checkout has tags the inventory does not list (v0.1.{live_max} \
+         vs v0.1.{inventory_max}): re-collect the inventory and reconcile \
+         plan.md's release block"
+    );
+}
+
+/// A release/status claim plan.md's prose attaches to a bead id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimedStatus {
+    Closed,
+    Open,
+    InProgress,
+}
+
+impl ClaimedStatus {
+    /// What the bead store's `base_status` must say for the claim to hold.
+    /// "Open" is the loose claim and tolerates `in_progress` (still not
+    /// closed); "in progress" is specific and requires exactly that.
+    fn holds_against(self, base_status: &str) -> bool {
+        match self {
+            ClaimedStatus::Closed => base_status == "closed",
+            ClaimedStatus::Open => matches!(base_status, "open" | "in_progress"),
+            ClaimedStatus::InProgress => base_status == "in_progress",
+        }
+    }
+}
+
+/// id -> base_status for every bead in the git-tracked checkpoint snapshot.
+///
+/// `beads.db` is local-only, but bead-rs republishes `.beads/checkpoint/`
+/// after every committed mutation, so the checkpoint is the committed ground
+/// truth a test can read -- including in a clean extraction, where no
+/// database exists.
+fn checkpoint_bead_statuses() -> BTreeMap<String, String> {
+    let checkpoint = Path::new(env!("CARGO_MANIFEST_DIR")).join(".beads/checkpoint");
+    let current: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(checkpoint.join("current.json"))
+            .expect(".beads/checkpoint/current.json should exist (it is git-tracked)"),
+    )
+    .expect("checkpoint current.json should parse");
+    let active_root = current["active_root"]["path"]
+        .as_str()
+        .expect("current.json should name its active snapshot object")
+        .to_owned();
+    let object = fs::read_to_string(checkpoint.join(active_root))
+        .expect("the active checkpoint object should exist beside current.json");
+    let mut statuses = BTreeMap::new();
+    for line in object.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: serde_json::Value =
+            serde_json::from_str(line).expect("checkpoint record should parse");
+        if let Some(issue) = record.get("issue") {
+            statuses.insert(
+                issue["id"]
+                    .as_str()
+                    .expect("checkpoint issue has an id")
+                    .to_owned(),
+                issue["base_status"]
+                    .as_str()
+                    .expect("checkpoint issue has a base_status")
+                    .to_owned(),
+            );
+        }
+    }
+    assert!(
+        statuses.len() > 100,
+        "the checkpoint snapshot should carry the full bead store, got {} issues",
+        statuses.len()
+    );
+    statuses
+}
+
+/// A char that keeps a word together; the hyphen matters, so "fail-closed"
+/// never reads as the standalone word "closed".
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Offsets of `word` in `text` where it stands alone -- not inside
+/// "fail-closed", "openbao", "opens", or similar.
+fn boundary_matches(text: &str, word: &str) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(word) {
+        let start = from + rel;
+        let end = start + word.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        let standalone =
+            before.is_none_or(|c| !is_word_char(c)) && after.is_none_or(|c| !is_word_char(c));
+        if standalone {
+            hits.push(start);
+        }
+        from = end;
+    }
+    hits
+}
+
+/// The word ending just before `at`, skipping punctuation -- used to tell
+/// behavioral prose ("fails open while the guard's reliability is unproven")
+/// from a status claim.
+fn word_before(text: &str, at: usize) -> &str {
+    let trimmed = text[..at].trim_end_matches(|c: char| !c.is_alphanumeric());
+    let start = trimmed
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphanumeric())
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(trimmed.len());
+    &trimmed[start..]
+}
+
+/// Strip a historical parenthetical -- "(open when this paragraph was
+/// reconciled 2026-09-14)" -- so a narrative reference to an older status
+/// does not shadow the claim that follows it ("closed the same day").
+fn strip_historical_qualifiers(window: &str) -> &str {
+    let mut rest = window;
+    loop {
+        let after_ticks = rest.trim_start_matches(['`', ' ', ',']);
+        let Some(without_paren) = after_ticks.strip_prefix('(') else {
+            return rest;
+        };
+        let historical =
+            without_paren.starts_with("open ") || without_paren.starts_with("in progress");
+        match (historical, without_paren.find(')')) {
+            (true, Some(close)) => rest = &without_paren[close + 1..],
+            _ => return rest,
+        }
+    }
+}
+
+/// The status claim plan.md attaches to a bead id, read from the text right
+/// after it.
+///
+/// Only tight, adjacent phrasings count -- "(`irrevers-x`, open)",
+/// "`irrevers-x` closed", "(`irrevers-x`, in progress)" -- because the plan's
+/// prose also says "fails open" and "fail-closed" about *behavior*, and a
+/// loose scan would pin fiction as fact. Guards, in order:
+/// - a possessive ("`irrevers-x`'s discussion") is a reference, not a claim;
+/// - a historical parenthetical is skipped (see
+///   [`strip_historical_qualifiers`]);
+/// - an "open" preceded by "fail"/"fails" is behavioral prose, not a status;
+/// - "open as `irrevers-x`" is the one claim-before-the-id form the plan
+///   uses ("still open as `irrevers-6b4ded56`").
+fn claimed_status(window: &str) -> Option<ClaimedStatus> {
+    let rest = strip_historical_qualifiers(window);
+    let mut candidates: Vec<(usize, ClaimedStatus)> = Vec::new();
+    for (word, claim) in [
+        ("closed", ClaimedStatus::Closed),
+        ("in progress", ClaimedStatus::InProgress),
+        ("open", ClaimedStatus::Open),
+    ] {
+        for at in boundary_matches(rest, word) {
+            candidates.push((at, claim));
+        }
+    }
+    candidates.sort_by_key(|(at, _)| *at);
+    for (at, claim) in candidates {
+        if claim == ClaimedStatus::Open && matches!(word_before(rest, at), "fail" | "fails") {
+            continue;
+        }
+        return Some(claim);
+    }
+    None
+}
+
+/// The beads whose status the 2026-09 reconciliations pinned, with the
+/// claim those reconciled paragraphs assert. Each must stay present in
+/// plan.md with exactly this claim, and the claim must hold against the
+/// checkpoint.
+///
+/// - `irrevers-6b4ded56` -- first host installation (still open)
+/// - `irrevers-beee1069` -- builder image ships /etc/icg world-writable
+/// - `irrevers-c36bba27` -- fixed builder image publication
+/// - `irrevers-92e6e55c` -- lock/policy lineage umbrella (closed 2026-09-14)
+/// - `irrevers-84b36e47` -- end-to-end release verification (closed
+///   2026-09-06)
+const GUARDED_BEAD_CLAIMS: [(&str, ClaimedStatus); 5] = [
+    ("irrevers-6b4ded56", ClaimedStatus::Open),
+    ("irrevers-beee1069", ClaimedStatus::Open),
+    ("irrevers-c36bba27", ClaimedStatus::Open),
+    ("irrevers-92e6e55c", ClaimedStatus::Closed),
+    ("irrevers-84b36e47", ClaimedStatus::Closed),
+];
+
+/// Every status claim plan.md makes about any bead must hold against the
+/// checkpoint, and the claims this reconciliation pinned must survive both
+/// in the checkpoint and as explicit text in the plan.
+#[test]
+fn plan_bead_status_claims_match_the_bead_checkpoint() {
+    let plan = flattened(&repo_relative("docs/plan/plan.md"));
+    let statuses = checkpoint_bead_statuses();
+
+    // id -> the claim (if any) each mention carries.
+    let mut claims: BTreeMap<String, Vec<Option<ClaimedStatus>>> = BTreeMap::new();
+    let mut from = 0;
+    while let Some(rel) = plan[from..].find("irrevers-") {
+        let id_start = from + rel;
+        let id_end = id_start + "irrevers-".len() + 8;
+        from = id_end;
+        let Some(id) = plan.get(id_start..id_end) else {
+            continue;
+        };
+        if !id["irrevers-".len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        // a ninth hex digit means this is some longer id, not a bead id
+        if plan[id_end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        let after = &plan[id_end..];
+        let claim = if after.starts_with("'s") || after.starts_with("`'s") {
+            None
+        } else {
+            // .get() so a window edge landing inside a multibyte char
+            // truncates to the remainder instead of panicking
+            let window = plan
+                .get(id_end..(id_end + 110).min(plan.len()))
+                .unwrap_or(after);
+            claimed_status(window).or_else(|| {
+                let before = &plan[..id_start];
+                let cut = before
+                    .char_indices()
+                    .find(|(at, _)| before.len() - at <= 30)
+                    .map(|(at, _)| at)
+                    .unwrap_or(0);
+                let tail = &before[cut..];
+                (tail.ends_with("open as `") || tail.ends_with("open as "))
+                    .then_some(ClaimedStatus::Open)
+            })
+        };
+        claims.entry(id.to_owned()).or_default().push(claim);
+    }
+    assert!(
+        claims.len() > 40,
+        "plan.md should still name its beads, found {}",
+        claims.len()
+    );
+
+    for (id, mentions) in &claims {
+        let base = statuses.get(id).unwrap_or_else(|| {
+            panic!(
+                "plan.md names {id}, which the bead checkpoint does not know; \
+                 the plan must not reference beads outside the store"
+            )
+        });
+        for claim in mentions.iter().flatten() {
+            assert!(
+                claim.holds_against(base),
+                "plan.md claims {id} is {claim:?}, but the bead checkpoint says \
+                 {base:?}; reconcile the plan paragraph or the bead -- one of \
+                 the two has drifted"
+            );
+        }
+    }
+
+    for (id, expected) in GUARDED_BEAD_CLAIMS {
+        let mentions = claims.get(id).unwrap_or_else(|| {
+            panic!(
+                "plan.md must keep stating the status of {id}; the reconciled \
+                 paragraph this guard pins has been removed"
+            )
+        });
+        let stated: Vec<ClaimedStatus> = mentions.iter().flatten().copied().collect();
+        assert!(
+            !stated.is_empty(),
+            "plan.md mentions {id} but no longer states its status; the \
+             reconciled paragraph must keep the explicit claim"
+        );
+        for claim in &stated {
+            assert_eq!(
+                claim, &expected,
+                "plan.md must keep claiming {id} is {expected:?} (as \
+                 reconciled); it now says {claim:?}"
+            );
+        }
+        let base = statuses.get(id).expect("guarded bead is in the checkpoint");
+        assert!(
+            expected.holds_against(base),
+            "the guard expects {id} to be {expected:?} but the checkpoint now \
+             says {base:?}; the reconciliation itself has drifted -- update \
+             the guard together with plan.md"
         );
     }
 }
