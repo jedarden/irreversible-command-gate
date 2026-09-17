@@ -40,8 +40,30 @@ const OPERATOR_FACING_DOCS: [&str; 10] = [
     "docs/developers/README.md",
 ];
 
+/// The checkout this run audits.
+///
+/// `env!("CARGO_MANIFEST_DIR")` is baked in at compile time, and this box's
+/// global cargo config (`~/.cargo/config.toml`) points `target-dir` at the
+/// shared `/build/target-workers`, so cargo reuses a test binary built by a
+/// *different* checkout of this repo whenever its fingerprint looks fresh.
+/// The baked path then names some other tree -- a deleted gate extraction or
+/// a trial replay of an old commit -- and every doc/checkpoint read below
+/// silently audits *that* tree. Seen live 2026-09-17: a reused binary read a
+/// pre-reconciliation plan.md and failed its own guard. cargo runs test
+/// binaries with the package root as the working directory, so prefer the
+/// runtime cwd; fall back to the baked path only when it does not name a
+/// checkout (the binary invoked by hand from an unrelated directory).
+fn audited_checkout() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("Cargo.toml").exists() {
+            return cwd;
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
 fn repo_relative(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    let path = audited_checkout().join(relative);
     fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("should read {}: {error}", path.display()))
 }
@@ -227,7 +249,7 @@ fn quick_start_makes_no_kubectl_coverage_claim() {
 fn quick_start_pack_inventory_matches_the_shipped_packs() {
     let doc = quick_start();
 
-    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let packs_dir = audited_checkout().join("packs");
     let mut shipped_ids: Vec<String> = fs::read_dir(&packs_dir)
         .unwrap_or_else(|error| panic!("should read {}: {error}", packs_dir.display()))
         .filter_map(|entry| {
@@ -328,7 +350,7 @@ fn quick_start_is_a_single_coherent_guide() {
 #[test]
 fn quick_start_coverage_table_matches_every_shipped_pattern() {
     let doc = quick_start();
-    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let packs_dir = audited_checkout().join("packs");
 
     let mut entries: Vec<_> = fs::read_dir(&packs_dir)
         .unwrap_or_else(|error| panic!("should read {}: {error}", packs_dir.display()))
@@ -429,7 +451,7 @@ fn operator_docs_do_not_cite_a_fictional_surface() {
 /// must actually exist in a shipped pack.
 #[test]
 fn documented_pattern_ids_exist_in_a_shipped_pack() {
-    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let packs_dir = audited_checkout().join("packs");
     let mut shipped: Vec<String> = Vec::new();
     for entry in fs::read_dir(&packs_dir).expect("packs/ should be readable") {
         let path = entry.expect("directory entry").path();
@@ -515,7 +537,7 @@ fn install_docs_cite_the_current_release_version() {
 /// Their text may not point at a file in one operator's home directory.
 #[test]
 fn packs_do_not_reference_paths_outside_this_repository() {
-    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let packs_dir = audited_checkout().join("packs");
     for entry in fs::read_dir(&packs_dir).expect("packs/ readable") {
         let path = entry.expect("entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -592,7 +614,7 @@ fn documented_subcommands_all_exist() {
     // --help. Docs are right to name it.
     real.insert("wrapper".to_owned());
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = &audited_checkout();
     let mut offenders: Vec<String> = Vec::new();
 
     for doc in markdown_files(&root.join("docs"))
@@ -749,7 +771,7 @@ fn disclaims_a_command(line: &str) -> bool {
 /// invocation and exits 2.
 #[test]
 fn documented_flags_exist_on_their_subcommand() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = &audited_checkout();
     let mut offenders: Vec<String> = Vec::new();
 
     for doc in markdown_files(&root.join("docs"))
@@ -952,7 +974,7 @@ fn no_doc_claims_the_wrapper_is_unimplemented() {
         "wrapper is not yet implemented",
     ];
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = &audited_checkout();
     let mut offenders = Vec::new();
     for doc in markdown_files(&root.join("docs"))
         .into_iter()
@@ -1024,7 +1046,7 @@ fn docs_state_that_the_guard_does_not_check_caller_identity() {
 #[test]
 fn coverage_justifications_name_real_patterns() {
     let record = repo_relative("packs/coverage-justifications.md");
-    let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+    let packs_dir = audited_checkout().join("packs");
 
     let mut shipped: BTreeSet<String> = BTreeSet::new();
     for entry in fs::read_dir(&packs_dir).expect("packs/ readable") {
@@ -1349,8 +1371,15 @@ fn plan_release_claims_match_the_shipped_releases_inventory() {
 #[test]
 fn local_git_tags_agree_with_the_shipped_releases_inventory() {
     let rows = shipped_inventory_rows();
+    let checkout = audited_checkout();
     let Ok(output) = Command::new("git")
-        .args(["-C", env!("CARGO_MANIFEST_DIR"), "tag", "-l", "v0.1.*"])
+        .args([
+            "-C",
+            checkout.to_str().expect("checkout path is valid utf-8"),
+            "tag",
+            "-l",
+            "v0.1.*",
+        ])
         .output()
     else {
         return; // no git or no checkout: nothing live to compare against
@@ -1415,7 +1444,7 @@ impl ClaimedStatus {
 /// truth a test can read -- including in a clean extraction, where no
 /// database exists.
 fn checkpoint_bead_statuses() -> BTreeMap<String, String> {
-    let checkpoint = Path::new(env!("CARGO_MANIFEST_DIR")).join(".beads/checkpoint");
+    let checkpoint = audited_checkout().join(".beads/checkpoint");
     let current: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(checkpoint.join("current.json"))
             .expect(".beads/checkpoint/current.json should exist (it is git-tracked)"),
