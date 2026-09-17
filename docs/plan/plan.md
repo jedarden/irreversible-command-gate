@@ -106,11 +106,15 @@ operator-only `icg policy reconcile`. Current operator behavior is
 documented in `docs/operators/fail-closed-mode.md`; design rationale in
 `docs/design/fail-closed-transition.md`. **Still open — none of this
 resolves it:** the graduation has not been consumed (no deployment has
-committed a FailClosed policy), the fail-closed machinery's lock/policy
-lineage umbrella `irrevers-92e6e55c` is open, and inside CI pods the
-administrator-owned trust model underneath fail-closed is undercut until
-`irrevers-beee1069` (builder image ships `/etc/icg` world-writable) and the
-fixed image's publication (`irrevers-c36bba27`, in progress) close.
+committed a FailClosed policy; the first host installation is itself still
+open as `irrevers-6b4ded56`), and inside CI pods the administrator-owned
+trust model underneath fail-closed is undercut until `irrevers-beee1069`
+(builder image ships `/etc/icg` world-writable) and the fixed image's
+publication (`irrevers-c36bba27`, in progress) close. The lock/policy
+lineage umbrella `irrevers-92e6e55c` (open when this paragraph was
+reconciled 2026-09-14) closed the same day — the hook hot path no longer
+reaches the policy lock (`0a5faa9`) and the operator `policy` commands
+were verified as root — so it is resolved, not open.
 
 **Rule data: modular, pack-per-tool.** Not a monolithic rule list —
 separate units for `openbao`, `storage-class`, `image-tag` (extends
