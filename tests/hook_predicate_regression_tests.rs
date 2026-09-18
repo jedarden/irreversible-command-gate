@@ -56,8 +56,19 @@ const JOB_CRONJOB_PACK: &str = "job-cronjob-yaml";
 const JOB_CRONJOB_PATTERN: &str = "kind-job-cronjob";
 
 /// The shipped pack directory, i.e. the production configuration the hook
-/// runs with in a checkout.
+/// runs with in a checkout. Prefer the checkout the binary is running in
+/// (cargo starts test binaries with the package root as cwd): this box's
+/// shared target directory can hand back a binary built by a different
+/// checkout of this repo, and the baked `CARGO_MANIFEST_DIR` then reads a
+/// foreign tree — the same trap `audited_checkout()` guards against in the
+/// documentation-consistency tests. Fall back to the baked path only when
+/// the cwd is not a checkout.
 fn packs_dir() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("Cargo.toml").exists() {
+            return cwd.join("packs");
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("packs")
 }
 
