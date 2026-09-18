@@ -34,9 +34,13 @@ fn icg(args: &[&str]) -> Output {
         .expect("icg should run")
 }
 
-fn icg_with_stdin(args: &[&str], input: &str) -> Output {
+/// Run `icg check --stdin` with the child's cwd pinned to `cwd`, so
+/// hook-reported relative targets resolve against `cwd` instead of wherever
+/// the test runner happens to sit.
+fn icg_with_stdin(cwd: &Path, args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
         .args(args)
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -321,8 +325,23 @@ fn scenario_9_custom_predicates_evaluate_shared_checkout_scope() {
     let mut engine = Engine::new();
     engine.load_pack(pack).unwrap();
 
+    // The predicate judges where the target sits on disk -- it walks the
+    // target's ancestors looking for a repository root -- so the verdict
+    // depends on the tree around the path, not on the pack alone. Build the
+    // shared-checkout shape this scenario is about instead of assuming the
+    // test process already runs inside one: a pristine `git archive`
+    // extraction has no `.git`, and there the same write is legitimately
+    // allowed.
+    let shared_checkout = tempdir().unwrap();
+    let git_dir = shared_checkout.path().join(".git");
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+    let checkpoint_write = shared_checkout
+        .path()
+        .join(".beads/checkpoint/developer-scenario.json");
     let shared_checkout_write = ContentSource::Write {
-        file_path: ".beads/checkpoint/developer-scenario.json".to_string(),
+        file_path: checkpoint_write.to_string_lossy().into_owned(),
         content: "{\"case\":\"realistic\"}\n".to_string(),
     };
     assert!(matches!(
@@ -334,8 +353,12 @@ fn scenario_9_custom_predicates_evaluate_shared_checkout_scope() {
         } if pack_id == "beads-predicates" && pattern_id == "beads-shared-checkout-write"
     ));
 
+    // Both in-process verdicts target the fixture, so the allow side
+    // actually exercises "repository root found, target not under .beads/"
+    // rather than passing vacuously in a tree with no repository at all.
+    let notes_write = shared_checkout.path().join("docs/developer-notes.md");
     let unrelated_write = ContentSource::Write {
-        file_path: "docs/developer-notes.md".to_string(),
+        file_path: notes_write.to_string_lossy().into_owned(),
         content: "The checkout is healthy.\n".to_string(),
     };
     assert_eq!(
@@ -346,13 +369,24 @@ fn scenario_9_custom_predicates_evaluate_shared_checkout_scope() {
     let pack_arg = fixture("adding-custom-predicates.json")
         .to_string_lossy()
         .into_owned();
+    // The stdin CLI path resolves hook-reported relative paths against the
+    // process cwd, so run the child inside the fixture checkout to exercise
+    // the same shared-checkout verdict end to end.
     let request = r#"{"toolName":"Write","toolInput":{"filePath":".beads/checkpoint/developer-scenario.json","content":"{}"}}"#;
-    let denied = icg_with_stdin(&["check", "--stdin", "--pack", &pack_arg], request);
+    let denied = icg_with_stdin(
+        shared_checkout.path(),
+        &["check", "--stdin", "--pack", &pack_arg],
+        request,
+    );
     assert!(denied.status.success(), "{}", output_text(&denied));
     assert!(output_text(&denied).contains("beads-shared-checkout-write"));
 
     let safe_request = r#"{"toolName":"Write","toolInput":{"filePath":"docs/developer-notes.md","content":"safe"}}"#;
-    let allowed = icg_with_stdin(&["check", "--stdin", "--pack", &pack_arg], safe_request);
+    let allowed = icg_with_stdin(
+        shared_checkout.path(),
+        &["check", "--stdin", "--pack", &pack_arg],
+        safe_request,
+    );
     assert!(allowed.status.success(), "{}", output_text(&allowed));
     assert!(output_text(&allowed).contains("ALLOW"));
 }
