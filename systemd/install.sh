@@ -70,6 +70,7 @@ for unit in "${units[@]}"; do
   fi
 
   run ln -s "$unit" "$dest"
+  [ "$DRY_RUN" = 1 ] || echo "  linked: $name"
   installed=$((installed + 1))
 done
 

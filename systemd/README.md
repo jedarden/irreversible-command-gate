@@ -32,8 +32,11 @@ systemd/install.sh            # symlink every tracked unit into ~/.config/system
                                # daemon-reload, enable units with an [Install] section,
                                # then run the consistency check
 systemd/install.sh --now      # ... and start them immediately
-systemd/uninstall.sh          # stop, disable and remove exactly our symlinks; never
-                               # touches a host file it does not own
+systemd/uninstall.sh          # stop, disable and remove exactly our symlinks — including
+                               # orphaned ones whose tracked unit a commit already
+                               # deleted; never touches a host file that is not one of
+                               # our symlinks
+systemd/uninstall.sh --dry-run  # show what would be removed (and why), change nothing
 systemd/check-consistency.sh  # exit 1 on drift, printing each violation and its fix
 systemd/check-consistency.sh --repo-only   # CI form: no ~/.config/systemd/user needed
 ```
@@ -61,6 +64,28 @@ run, 2026-09-14) had gone unnoticed — it never fired.
 that is what systemd resolves against. A `target/` binary is never in git but
 is real to a unit once built; a script that exists only in git history is
 dead to a unit.
+
+## Deleting a script, or a unit
+
+The required cleanup, in the order it should happen:
+
+1. **Deleting a script** — delete its tracked unit **in the same commit** and
+   say in the commit message that hosts need `systemd/uninstall.sh` run.
+   `check-consistency.sh` direction (a) blocks the push if the unit is left
+   behind pointing at the vanished script.
+2. **Deleting a unit only** (retiring it while its script stays) — same rule:
+   delete it in the same commit that stops using it, and mention
+   `systemd/uninstall.sh` in the commit message.
+3. **On each host after pulling such a commit** — run `systemd/uninstall.sh`.
+   It removes the still-tracked symlinks *and* the orphaned ones: a host
+   symlink pointing into this directory is ours by construction (only
+   `install.sh` creates one), so uninstall removes it even when its tracked
+   unit has already been deleted and the link dangles. `systemctl --user
+   daemon-reload` then makes systemd drop the unit for good.
+4. **A plain-file copy** (pre-scaffolding residue like the retired
+   `icg-frontier-consistency.service`) proves nothing about its origin, so
+   nothing deletes it automatically. `check-consistency.sh` names it and
+   prints the exact `systemctl`/`rm` commands until a human removes it.
 
 ## Limits
 
