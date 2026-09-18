@@ -791,6 +791,30 @@ impl StateStore {
         self.validate_and_migrate(&mut state)?;
         state.schema_version = STATE_SCHEMA_VERSION;
 
+        // Administrative commands such as `sudo icg trust set` also record
+        // trust-pointer history in this hook-owned runtime store.  Atomic
+        // replacement normally gives the new file to the invoking user; when
+        // that user is root it would therefore strand the next unprivileged
+        // hook behind a root-owned 0600 file.  Preserve an existing runtime
+        // owner's uid/gid across privileged replacements while continuing to
+        // enforce the state file's 0600 mode below.
+        #[cfg(unix)]
+        let preserved_owner = {
+            use std::os::unix::fs::MetadataExt;
+
+            if unsafe { libc::geteuid() } == 0 && self.path.exists() {
+                let metadata = fs::metadata(&self.path).with_context(|| {
+                    format!(
+                        "Failed to inspect existing state owner for {}",
+                        self.path.display()
+                    )
+                })?;
+                Some((metadata.uid(), metadata.gid()))
+            } else {
+                None
+            }
+        };
+
         let content = serde_json::to_vec_pretty(&state).context("Failed to serialize state")?;
         let file_name = self
             .path
@@ -814,9 +838,21 @@ impl StateStore {
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::{fs::PermissionsExt, io::AsRawFd};
             temp.set_permissions(fs::Permissions::from_mode(0o600))
                 .context("Failed to set state-file permissions")?;
+
+            if let Some((uid, gid)) = preserved_owner {
+                let result = unsafe { libc::fchown(temp.as_raw_fd(), uid, gid) };
+                if result != 0 {
+                    return Err(io::Error::last_os_error()).with_context(|| {
+                        format!(
+                            "Failed to preserve state-file owner for {}",
+                            self.path.display()
+                        )
+                    });
+                }
+            }
         }
 
         temp.write_all(&content).with_context(|| {
@@ -1395,6 +1431,36 @@ mod tests {
 
         assert!(!dir.path().join(".session-state.json.tmp-999999").exists());
         assert!(dir.path().join(".session-state.json.tmp-backup").exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn privileged_save_preserves_existing_state_file_owner() -> Result<()> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        // The ownership transition this guards requires privilege to
+        // reproduce.  Non-root developer runs still exercise the surrounding
+        // save path; root CI and the explicit host verification exercise this
+        // assertion.
+        if unsafe { libc::geteuid() } != 0 {
+            return Ok(());
+        }
+
+        let dir = tempdir()?;
+        let store = test_store(dir.path());
+        store.save(&SessionState::new())?;
+
+        const HOOK_UID: u32 = 65_534;
+        const HOOK_GID: u32 = 65_534;
+        std::os::unix::fs::chown(store.path(), Some(HOOK_UID), Some(HOOK_GID))?;
+
+        store.mark_git_pull()?;
+
+        let metadata = fs::metadata(store.path())?;
+        assert_eq!(metadata.uid(), HOOK_UID);
+        assert_eq!(metadata.gid(), HOOK_GID);
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         Ok(())
     }
 
