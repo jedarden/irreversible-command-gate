@@ -1,0 +1,42 @@
+{
+  "id": "warning-verdict-e2e",
+  "tool_keywords": ["git"],
+  "applies_to": ["*.conf"],
+  "safe_patterns": [
+    {
+      "id": "safe-git-status",
+      "type": "command_regex",
+      "regex": "^git\\s+status\\b"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "warn-worktree-add",
+      "type": "command_regex",
+      "regex": "git\\s+worktree\\s+add",
+      "tier": "tier3",
+      "severity": "Medium",
+      "explanation": "A worktree is only safe when its target path is disposable.",
+      "redirect": {
+        "channel": "additional_context",
+        "reason_template": "Verify the worktree target is disposable before continuing",
+        "rewrite_template": null
+      },
+      "destructive": false
+    },
+    {
+      "id": "warn-public-bind-address",
+      "type": "content_regex",
+      "regex": "listen_address\\s*=\\s*\"0\\.0\\.0\\.0\"",
+      "tier": "tier3",
+      "severity": "Medium",
+      "explanation": "A wildcard bind exposes the service beyond the host.",
+      "redirect": {
+        "channel": "additional_context",
+        "reason_template": "Confirm this service should be reachable from off-host",
+        "rewrite_template": null
+      },
+      "destructive": false
+    }
+  ]
+}
