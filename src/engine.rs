@@ -1165,6 +1165,10 @@ pub struct Engine {
     telemetry_store: Option<std::sync::Arc<std::sync::Mutex<crate::telemetry::TelemetryStore>>>,
     /// Optional session ID for correlation across evaluations
     session_id: Option<String>,
+    /// Optional declared harness identity for evaluation telemetry. Set by
+    /// the hook front end's adapter contract; a closed non-secret enum (see
+    /// `crate::adapter`), so nothing free-form can reach a record.
+    harness: Option<crate::adapter::HarnessId>,
     /// Optional release reference for this evaluation session
     release_ref: Option<String>,
     /// Optional state store for Tier 2 cross-invocation state tracking
@@ -1221,6 +1225,7 @@ impl Engine {
             fail_closed,
             telemetry_store: None,
             session_id: None,
+            harness: None,
             release_ref: None,
             state_store: None,
         }
@@ -1238,6 +1243,18 @@ impl Engine {
     /// Set the session ID for correlation across evaluations
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Declare which harness adapter is calling, for evaluation telemetry.
+    ///
+    /// The identity is the adapter contract's closed [`HarnessId`] enum, so
+    /// the recorded value is always one of its non-secret slugs and never
+    /// anything derived from the payload. `None` (the default) means the
+    /// invocation declared no harness and none is recorded. Wire-level
+    /// rules: `docs/notes/harness-adapter-contract.md`.
+    pub fn with_harness(mut self, harness: Option<crate::adapter::HarnessId>) -> Self {
+        self.harness = harness;
         self
     }
 
@@ -2791,6 +2808,7 @@ impl Engine {
         if let Some(telemetry_store) = &self.telemetry_store {
             let release_ref = self.release_ref().map(String::from);
             let session_id = self.session_id().map(String::from);
+            let harness = self.harness.map(crate::adapter::HarnessId::as_slug);
 
             let (pack_id, pattern_id) = match result {
                 CheckResult::Denied {
@@ -2816,6 +2834,7 @@ impl Engine {
                     verdict,
                     release_ref,
                     session_id,
+                    harness,
                     pack_id,
                     pattern_id,
                 );

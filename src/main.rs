@@ -7,10 +7,11 @@ use coverage::*;
 use engine::{Engine, InputSource};
 use fail_closed::PolicyStore;
 use icg::{
-    coverage, denial_log, emergency_bypass, engine, fail_closed, health, health_server, monitoring,
-    new_pack, overrides, pack_manifest, regex_safety, regression, rollback, rule_pack, state_store,
-    telemetry, trust_pointer, update,
+    adapter, coverage, denial_log, emergency_bypass, engine, fail_closed, health, health_server,
+    monitoring, new_pack, overrides, pack_manifest, regex_safety, regression, rollback, rule_pack,
+    state_store, telemetry, trust_pointer, update,
 };
+use adapter::{CanonicalResult, HarnessAdapter};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{
@@ -235,6 +236,13 @@ enum Commands {
             default_missing_value = "tests/regression",
         )]
         record_as_test: Option<PathBuf>,
+        /// Declare which harness is calling, per the adapter contract.
+        ///
+        /// Selects the harness adapter and records the harness's non-secret
+        /// identity in evaluation telemetry. Without it the hook serves both
+        /// shipped wire formats exactly as before and records no harness.
+        #[arg(long, value_name = "HARNESS")]
+        harness: Option<adapter::HarnessId>,
     },
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
     #[command(hide = true)]
@@ -553,25 +561,25 @@ fn practice_response_result(
     }
 }
 
-/// Render the native Codex/Claude PreToolUse response envelope. Both hook
-/// protocols consume the hook-specific decision under `hookSpecificOutput`;
-/// Codex additionally requires `hookEventName` to identify the event.
+/// Render the native Codex/Claude PreToolUse response envelope through the
+/// invocation's harness adapter. Both hook protocols consume the hook-specific
+/// decision under `hookSpecificOutput`; Codex additionally requires
+/// `hookEventName` to identify the event. The envelope itself is the adapter
+/// contract's shared renderer (`adapter::render_decision_envelope`); this
+/// wrapper adds the practice-mode conversion, which is a front-end policy,
+/// not a wire-format one.
 ///
 /// A deny reason names the file the call was about via
 /// [`denial_path_segment`]: the denial's own `matched_path` when the guard
 /// carried one (`path=`), otherwise the caller-supplied `context` (`file=`).
 fn render_hook_response(
+    harness_adapter: &dyn adapter::HarnessAdapter,
     result: engine::CheckResult,
     original_input: Option<&serde_json::Value>,
     updated_input_key: &str,
     context: Option<&str>,
     practice_mode: bool,
 ) -> serde_json::Value {
-    let details = |matched_path: Option<&str>, reason: &str, pack_id: &str, pattern_id: &str| {
-        let suffix = denial_path_segment(matched_path, context);
-        format!("{reason} [pack={pack_id}, pattern={pattern_id}{suffix}]")
-    };
-
     let practice_message = practice_mode.then(|| {
         practice_denial_report(&result, context)
             .map(|report| format!("{PRACTICE_MODE_BANNER} {report}"))
@@ -579,85 +587,12 @@ fn render_hook_response(
     });
     let result = practice_response_result(result, practice_mode);
 
-    let mut hook_output = serde_json::Map::new();
-    hook_output.insert(
-        "hookEventName".to_string(),
-        serde_json::Value::String("PreToolUse".to_string()),
+    let mut response = HarnessAdapter::render(
+        harness_adapter,
+        &CanonicalResult::from_engine(&result, context),
+        original_input,
+        updated_input_key,
     );
-
-    let mut response = match result {
-        engine::CheckResult::Allowed => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("allow".to_string()),
-            );
-            serde_json::json!({"hookSpecificOutput": hook_output})
-        }
-        engine::CheckResult::Denied {
-            reason,
-            pack_id,
-            pattern_id,
-            matched_path,
-        } => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("deny".to_string()),
-            );
-            hook_output.insert(
-                "permissionDecisionReason".to_string(),
-                serde_json::Value::String(details(
-                    matched_path.as_deref(),
-                    &reason,
-                    &pack_id,
-                    &pattern_id,
-                )),
-            );
-            serde_json::json!({"hookSpecificOutput": hook_output})
-        }
-        engine::CheckResult::Rewrite {
-            reason,
-            rewrite,
-            pack_id,
-            pattern_id,
-        } => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("allow".to_string()),
-            );
-            let mut updated_input = original_input
-                .and_then(serde_json::Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            updated_input.insert(
-                updated_input_key.to_string(),
-                serde_json::Value::String(rewrite),
-            );
-            hook_output.insert(
-                "updatedInput".to_string(),
-                serde_json::Value::Object(updated_input),
-            );
-            hook_output.insert(
-                "additionalContext".to_string(),
-                serde_json::Value::String(details(None, &reason, &pack_id, &pattern_id)),
-            );
-            serde_json::json!({"hookSpecificOutput": hook_output})
-        }
-        engine::CheckResult::Warning {
-            reason,
-            pack_id,
-            pattern_id,
-        } => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("allow".to_string()),
-            );
-            hook_output.insert(
-                "additionalContext".to_string(),
-                serde_json::Value::String(details(None, &reason, &pack_id, &pattern_id)),
-            );
-            serde_json::json!({"hookSpecificOutput": hook_output})
-        }
-    };
 
     if let Some(message) = practice_message {
         response["systemMessage"] = serde_json::Value::String(message);
@@ -799,26 +734,6 @@ fn record_hook_batch_denial(
         &InputSource::ContentBatch(contents.to_vec()),
         result,
     );
-}
-
-fn updated_input_key(
-    tool_name: Option<&str>,
-    original_input: Option<&serde_json::Value>,
-) -> &'static str {
-    match tool_name {
-        Some("Write") => "content",
-        Some("Edit") => {
-            if original_input
-                .and_then(serde_json::Value::as_object)
-                .is_some_and(|input| input.contains_key("new_string"))
-            {
-                "new_string"
-            } else {
-                "newString"
-            }
-        }
-        _ => "command",
-    }
 }
 
 /// Check for anomalies and handle automatic rollback if needed
@@ -1596,7 +1511,25 @@ fn main() -> Result<()> {
             repository,
             trusted_ref,
             record_as_test,
+            harness,
         } => {
+            // Adapter selection happens before any state is touched: an
+            // invocation declaring a harness whose adapter is not
+            // implemented must fail fast rather than be served the wrong
+            // wire format -- nothing is evaluated, stdin is never read,
+            // and no evaluation telemetry is recorded (see the adapter
+            // contract).
+            let harness_adapter: &'static dyn adapter::HarnessAdapter = match harness {
+                Some(declared) => adapter::adapter_for(declared).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no adapter is implemented for harness '{}' yet; the contract \
+                         and its per-harness mappings are documented in \
+                         docs/notes/harness-adapter-contract.md",
+                        declared.as_slug()
+                    )
+                })?,
+                None => adapter::default_adapter(),
+            };
             if emergency_bypass_active {
                 // An explicit incident escape hatch wins before pack loading,
                 // request parsing, and the fail-open/fail-closed availability
@@ -1658,6 +1591,7 @@ fn main() -> Result<()> {
             engine = engine
                 .with_telemetry_store(telemetry_store.clone())
                 .with_session_id(session_id.clone())
+                .with_harness(harness)
                 .with_release_ref(release_ref.unwrap_or_else(|| "unknown".to_string()));
             if let Some(state_store) = &durable_state_store {
                 engine = engine.with_state_store(std::sync::Arc::clone(state_store));
@@ -1673,18 +1607,17 @@ fn main() -> Result<()> {
                 Some((input, original_input)) => (Some(input), Some(original_input)),
                 None => (None, None),
             };
-            let input_key = updated_input_key(
-                hook_input.as_ref().map(|input| input.tool_name.as_str()),
-                original_input.as_ref(),
-            );
-            let input_source = match hook_input {
-                // The whole predicate+detection pipeline sits behind the
-                // engine's fail-open boundary: an unparseable tool call or an
-                // unexpected panic in the patch parser / path matcher yields
-                // None, which the None branch below renders as a plain allow.
-                Some(input) => engine.input_source_from_pre_tool_use_fail_open(input),
-                None => None,
-            };
+            // The adapter translates the harness payload into the one
+            // canonical request (and its fail-open boundary stays inside the
+            // engine's own conversion). An unsupported structured tool
+            // carries no input source and renders as a plain allow below.
+            let request = hook_input
+                .map(|input| harness_adapter.build_request(&engine, input, original_input.as_ref()));
+            let input_key = request
+                .as_ref()
+                .map(adapter::CanonicalRequest::rewrite_key)
+                .unwrap_or("command");
+            let input_source = request.as_ref().and_then(|request| request.input_source.clone());
 
             // Read input from stdin (either command-mode or content-mode)
             match input_source {
@@ -1717,6 +1650,7 @@ fn main() -> Result<()> {
                     println!(
                         "{}",
                         render_hook_response(
+                            harness_adapter,
                             result,
                             original_input.as_ref(),
                             input_key,
@@ -1755,6 +1689,7 @@ fn main() -> Result<()> {
                     println!(
                         "{}",
                         render_hook_response(
+                            harness_adapter,
                             result,
                             original_input.as_ref(),
                             input_key,
@@ -1797,6 +1732,7 @@ fn main() -> Result<()> {
                     println!(
                         "{}",
                         render_hook_response(
+                            harness_adapter,
                             result,
                             original_input.as_ref(),
                             input_key,
@@ -1825,6 +1761,7 @@ fn main() -> Result<()> {
                     println!(
                         "{}",
                         render_hook_response(
+                            harness_adapter,
                             result,
                             original_input.as_ref(),
                             input_key,
@@ -2487,6 +2424,7 @@ fn main() -> Result<()> {
                         record.verdict,
                         record.release_ref,
                         record.session_id,
+                        record.harness.as_deref(),
                     );
                 }
                 new_store.restore_rule_metrics(rule_metrics);

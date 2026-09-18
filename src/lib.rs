@@ -4,6 +4,9 @@
 //! and predicate is a `pub mod` so integration tests and downstream tooling
 //! can drive it directly.
 
+/// The canonical harness-adapter contract, version 1; its normative
+/// description lives in `docs/notes/harness-adapter-contract.md`.
+pub mod adapter;
 pub mod alerting;
 pub mod coverage;
 pub mod denial_log;

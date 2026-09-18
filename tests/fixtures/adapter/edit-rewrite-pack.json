@@ -1,0 +1,20 @@
+{
+  "id": "adapter-edit-rewrite",
+  "applies_to": ["*.yaml"],
+  "guarded_patterns": [
+    {
+      "id": "rewrite-ssd-storage-class",
+      "type": "content_regex",
+      "regex": "storageClassName:\\s*ssd",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "SSD storage classes are prohibited on Rackspace Spot.",
+      "redirect": {
+        "channel": "updated_input",
+        "reason_template": "Rewrote the storage class to sata.",
+        "rewrite_template": "storageClassName: sata"
+      },
+      "destructive": false
+    }
+  ]
+}

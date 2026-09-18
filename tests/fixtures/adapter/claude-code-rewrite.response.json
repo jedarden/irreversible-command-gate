@@ -1,0 +1,12 @@
+{
+  "hookSpecificOutput": {
+    "additionalContext": "Removed the force-push flags from git push; retrying as a normal push preserves the requested commits without rewriting the remote. [pack=adapter-command-rewrite, pattern=rewrite-force-push]",
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": {
+      "command": "git push origin main",
+      "description": "Push reviewed changes",
+      "timeout": 120000
+    }
+  }
+}

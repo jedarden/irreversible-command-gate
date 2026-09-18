@@ -1,0 +1,27 @@
+{
+  "id": "adapter-command-rewrite",
+  "tool_keywords": ["git"],
+  "safe_patterns": [
+    {
+      "id": "safe-git-status",
+      "type": "command_regex",
+      "regex": "^git\\s+status\\b"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "rewrite-force-push",
+      "type": "command_regex",
+      "regex": "^git\\s+push(?:\\s+\\S+)*\\s+(?:--force-with-lease(?:=\\S+)?|--force|-f)(?:\\s|$)",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Force-push flags can rewrite remote history and lose commits.",
+      "redirect": {
+        "channel": "updated_input",
+        "reason_template": "Removed the force-push flags from git push; retrying as a normal push preserves the requested commits without rewriting the remote.",
+        "rewrite_template": "{command_without_force}"
+      },
+      "destructive": true
+    }
+  ]
+}

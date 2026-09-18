@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "mcp__github__merge_pull_request",
+  "tool_input": {
+    "pr_number": 7,
+    "draft": true
+  }
+}

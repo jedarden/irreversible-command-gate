@@ -483,10 +483,13 @@ mod tests {
             crate::telemetry::Verdict::Denied,
             None,
             None,
+            None,
             Some("git"),
             Some("force-push"),
         );
-        telemetry.record_evaluation(crate::telemetry::Verdict::Allowed, None, None);
+        // `None` harness: monitoring aggregation is adapter-agnostic and
+        // must not depend on which wire a verdict arrived through.
+        telemetry.record_evaluation(crate::telemetry::Verdict::Allowed, None, None, None);
         telemetry.persist()?;
 
         let denial_store = DenialStore::new(denial_path.clone(), DenialLogConfig::default())?;

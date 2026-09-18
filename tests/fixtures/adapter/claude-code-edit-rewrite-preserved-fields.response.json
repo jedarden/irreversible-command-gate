@@ -1,0 +1,13 @@
+{
+  "hookSpecificOutput": {
+    "additionalContext": "Rewrote the storage class to sata. [pack=adapter-edit-rewrite, pattern=rewrite-ssd-storage-class, file=deploy/app.yaml]",
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": {
+      "file_path": "deploy/app.yaml",
+      "new_string": "storageClassName: sata",
+      "old_string": "storageClassName: ssd",
+      "reviewer_note": "pin for the spot cluster"
+    }
+  }
+}

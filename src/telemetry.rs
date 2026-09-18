@@ -100,6 +100,18 @@ pub struct EvaluationRecord {
 
     /// Optional session ID for cross-invocation correlation
     pub session_id: Option<String>,
+
+    /// Optional harness identifier for the front end that produced this
+    /// evaluation.
+    ///
+    /// This is one of the adapter contract's fixed non-secret slugs
+    /// (`claude-code`, `codex-cli`, ... -- see `crate::adapter`), never a
+    /// free-form name and never anything derived from the payload. Records
+    /// written before the field existed deserialize with `None`. The full
+    /// hygiene rules these slugs obey are in
+    /// `docs/notes/harness-adapter-contract.md`.
+    #[serde(default)]
+    pub harness: Option<String>,
 }
 
 /// Audit record for an explicit `ICG_DISABLED` activation.
@@ -515,17 +527,24 @@ impl TelemetryStore {
     }
 
     /// Record an evaluation result
+    ///
+    /// `harness` is the declaring front end's slug from the adapter contract
+    /// (see `crate::adapter::HarnessId::as_slug`), or `None` when the
+    /// invocation declared no harness. It is metadata about which wire the
+    /// verdict left through -- never payload data.
     pub fn record_evaluation(
         &mut self,
         verdict: Verdict,
         release_ref: Option<String>,
         session_id: Option<String>,
+        harness: Option<&str>,
     ) {
         let record = EvaluationRecord {
             timestamp: Utc::now(),
             verdict,
             release_ref,
             session_id,
+            harness: harness.map(str::to_string),
         };
 
         self.window.push(record);
@@ -537,10 +556,11 @@ impl TelemetryStore {
         verdict: Verdict,
         release_ref: Option<String>,
         session_id: Option<String>,
+        harness: Option<&str>,
         pack_id: Option<&str>,
         pattern_id: Option<&str>,
     ) {
-        self.record_evaluation(verdict, release_ref, session_id);
+        self.record_evaluation(verdict, release_ref, session_id, harness);
         let (Some(pack_id), Some(pattern_id)) = (pack_id, pattern_id) else {
             return;
         };
@@ -1006,6 +1026,7 @@ mod tests {
             verdict: Verdict::Allowed,
             release_ref: None,
             session_id: None,
+            harness: None,
         });
 
         assert_eq!(window.len(), 1);
@@ -1015,6 +1036,7 @@ mod tests {
             verdict: Verdict::Denied,
             release_ref: None,
             session_id: None,
+            harness: None,
         });
 
         assert_eq!(window.len(), 2);
@@ -1025,6 +1047,7 @@ mod tests {
             verdict: Verdict::Allowed,
             release_ref: None,
             session_id: None,
+            harness: None,
         });
 
         window.push(EvaluationRecord {
@@ -1032,6 +1055,7 @@ mod tests {
             verdict: Verdict::Allowed,
             release_ref: None,
             session_id: None,
+            harness: None,
         });
 
         assert_eq!(window.len(), 3);
@@ -1062,6 +1086,7 @@ mod tests {
                 verdict: Verdict::Allowed,
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1071,6 +1096,7 @@ mod tests {
                 verdict: Verdict::Denied,
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1099,6 +1125,7 @@ mod tests {
                 verdict,
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1121,6 +1148,7 @@ mod tests {
                 verdict,
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1150,6 +1178,7 @@ mod tests {
                 verdict: Verdict::Allowed,
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1163,6 +1192,7 @@ mod tests {
                 verdict: Verdict::Allowed,
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1191,6 +1221,7 @@ mod tests {
                 },
                 release_ref: None,
                 session_id: None,
+                harness: None,
             });
         }
 
@@ -1245,6 +1276,7 @@ mod tests {
                 },
                 Some("v1.0.0".to_string()),
                 Some("session-123".to_string()),
+                None,
             );
         }
 
@@ -1282,6 +1314,7 @@ mod tests {
                         },
                         Some("v1.0.0".to_string()),
                         Some(format!("session-{index}")),
+                        None,
                     );
                     store.persist()?;
                 }
@@ -1314,7 +1347,7 @@ mod tests {
         std::fs::write(temp_dir.path().join("telemetry.json"), br#"{"window":{}}"#)?;
 
         let mut store = TelemetryStore::new(store_path.clone());
-        store.record_evaluation(Verdict::Allowed, None, None);
+        store.record_evaluation(Verdict::Allowed, None, None, None);
         store.persist()?;
 
         assert!(!temp_dir.path().join(".telemetry.json.tmp-999999").exists());

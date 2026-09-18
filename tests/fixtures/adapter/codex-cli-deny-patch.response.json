@@ -1,0 +1,7 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "SSD and SSD-Large storage classes are prohibited on Rackspace Spot. Use sata or sata-large instead, and set storageClassName explicitly. [pack=storage-class, pattern=storage-class-ssd, file=a.yaml,b.yaml]"
+  }
+}

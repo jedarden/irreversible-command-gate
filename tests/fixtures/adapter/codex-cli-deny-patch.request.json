@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: a.yaml\n+storageClassName: ssd\n*** Add File: b.yaml\n+image: nginx:latest\n*** End Patch",
+    "workdir": "/tmp"
+  }
+}

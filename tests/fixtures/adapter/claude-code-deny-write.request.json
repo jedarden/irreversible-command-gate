@@ -1,0 +1,7 @@
+{
+  "toolName": "Write",
+  "toolInput": {
+    "filePath": "deploy/app.yaml",
+    "content": "image: app:1.2.3\nstorageClassName: ssd\n"
+  }
+}
