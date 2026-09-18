@@ -291,8 +291,11 @@ exact official source it was taken from.
   `beforeReadFile`, `afterFileEdit`, `beforeMCPExecution`.
 - **Output (stdout JSON):** `permission`: `"allow"` / `"deny"` / `"ask"`
   (ICG would emit only `allow`/`deny`), `user_message`, `agent_message`,
-  `updated_input` (preToolUse input substitution — the rewrite channel),
-  `additional_context` (advisory context). Exit code 2 = deny, Claude
+  `updated_input` (preToolUse input substitution — the rewrite channel).
+  `additional_context` exists but only as an **after-tool** channel on the
+  `postToolUse` events — it is not part of a permission decision — so a
+  Cursor adapter's capabilities declare `supports_additional_context: false`
+  and a Warn degrades to a bare allow (§5). Exit code 2 = deny, Claude
   Code-compatible. Exit 0 = stdout parsed as JSON.
 - **Failure semantics:** **invalid JSON or a schema mismatch on a permission
   hook blocks the call** (a natively fail-closed posture); other non-zero

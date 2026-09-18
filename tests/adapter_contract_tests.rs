@@ -405,7 +405,7 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
 /// the version) so a bump without migration is caught next to the code.
 #[test]
 fn the_canonical_request_carries_the_current_contract_version() {
-    use icg::adapter::{self, HarnessAdapter};
+    use icg::adapter;
 
     assert_eq!(adapter::ADAPTER_CONTRACT_VERSION, ADAPTER_CONTRACT_VERSION);
 
