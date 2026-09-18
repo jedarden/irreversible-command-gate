@@ -331,7 +331,12 @@ The document is stamped `"format": "coverage/v1"` and carries every pack
 (id, `enabled`, tier, severity, redirect `channel`, `destructive`, check
 kind, explanation, redirect text), plus an `unreadable` list naming any pack
 file that failed to load. An unreadable pack is a silent coverage hole in
-the text listing; here it is a field you can assert on.
+the text listing; here it is a field you can assert on. The full field-level
+contract — key sets, ordering, serialization stability, and the failure
+modes — is specified in
+[`docs/notes/coverage-json-api.md`](notes/coverage-json-api.md); the key
+sets it lists are pinned by test, so a shape change cannot reach you
+without the `format` version moving with it.
 
 `check`, `explain`, and `coverage` take `--pack <path>` (defaulting to the
 installed pack plus the repository's `packs/` directory when present). The
