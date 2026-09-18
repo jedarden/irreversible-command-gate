@@ -106,8 +106,9 @@ operator-only `icg policy reconcile`. Current operator behavior is
 documented in `docs/operators/fail-closed-mode.md`; design rationale in
 `docs/design/fail-closed-transition.md`. **Still open — none of this
 resolves it:** the graduation has not been consumed (no deployment has
-committed a FailClosed policy; the first host installation is itself still
-open as `irrevers-6b4ded56`), and inside CI pods the administrator-owned
+committed a FailClosed policy; the first host installation landed
+2026-09-18 (`irrevers-6b4ded56`, closed — Generation 0 FailOpen was
+deliberately retained), and inside CI pods the administrator-owned
 trust model underneath fail-closed is undercut until `irrevers-beee1069`
 (builder image ships `/etc/icg` world-writable) and the fixed image's
 publication (`irrevers-c36bba27`, open) close. The lock/policy
@@ -496,11 +497,13 @@ GuardedPattern:
   the green Argo Workflow being TTL-reaped; detail in
   `docs/notes/evidence/release-verification-a.md`). The phase's build
   deliverables and its end-to-end release proof are both complete.
-  **What remains open is deployment, not release**: no host installation
-  has happened yet (`irrevers-6b4ded56`, open), and the CI build image
-  ships `/etc/icg` world-writable, defeating the trust model in every CI
-  pod (`irrevers-beee1069`, open) — downstream work may now cite released
-  artifacts as existing, but not a deployed, installed guard.)*
+  **What remains open is deployment, not release**: the first host
+  installation has landed (`irrevers-6b4ded56`, closed 2026-09-18 —
+  ex44 enforcement cutover, FailOpen retained), but the CI build image
+  still ships `/etc/icg` world-writable, defeating the trust model in
+  every CI pod (`irrevers-beee1069`, open) — downstream work may now cite
+  released artifacts and a host-installed guard as existing, but not a
+  CI-enforced one.)*
   - Build the `icg-ci` Argo WorkflowTemplate (`declarative-config/k8s/iad-ci/argo-workflows/`)
     on the existing `forge-ci`/`needle-ci`/`agentscribe-ci`/`sigil-ci`
     pattern — Rust binary → GitHub Release, never GitHub Actions.

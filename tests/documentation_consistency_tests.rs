@@ -1584,14 +1584,16 @@ fn claimed_status(window: &str) -> Option<ClaimedStatus> {
 /// plan.md with exactly this claim, and the claim must hold against the
 /// checkpoint.
 ///
-/// - `irrevers-6b4ded56` -- first host installation (still open)
+/// - `irrevers-6b4ded56` -- first host installation (closed 2026-09-18;
+///   ex44 enforcement cutover deliberately retained Generation 0 FailOpen,
+///   so the paragraph's fail-closed point still stands)
 /// - `irrevers-beee1069` -- builder image ships /etc/icg world-writable
 /// - `irrevers-c36bba27` -- fixed builder image publication
 /// - `irrevers-92e6e55c` -- lock/policy lineage umbrella (closed 2026-09-14)
 /// - `irrevers-84b36e47` -- end-to-end release verification (closed
 ///   2026-09-06)
 const GUARDED_BEAD_CLAIMS: [(&str, ClaimedStatus); 5] = [
-    ("irrevers-6b4ded56", ClaimedStatus::Open),
+    ("irrevers-6b4ded56", ClaimedStatus::Closed),
     ("irrevers-beee1069", ClaimedStatus::Open),
     ("irrevers-c36bba27", ClaimedStatus::Open),
     ("irrevers-92e6e55c", ClaimedStatus::Closed),
