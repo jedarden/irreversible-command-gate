@@ -420,6 +420,13 @@ sudo -u <agent-user> env PATH="/usr/local/libexec/icg-wrappers:$PATH" command -v
 Keep the directory root-owned either way. A wrapper the guarded agent can
 replace is not a guard.
 
+The repository automates this whole procedure — root-owned wrapper
+directory, pack-derived symlinks, launch-scoped `PATH` prepending, canaries
+and practice-first rollout — in `scripts/deploy-path-wrappers.sh` with the
+`icg-harness-env` launch wrapper; see the
+[PATH-wrapper fallback guide](path-wrapper-fallback.md) for the supported
+procedure and its blind spots.
+
 This is a convenience boundary, not a security one: the agent can still call
 the real binary by absolute path, and `ICG_DISABLED=1` is an environment
 variable available to whoever sets it. Denials that say "a human runs it"
