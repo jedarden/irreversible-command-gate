@@ -221,10 +221,13 @@ mod tests {
     #[test]
     fn manifest_round_trips_and_detects_byte_mutation() {
         let directory = tempfile::tempdir().expect("temporary packs directory");
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/previous-release.json"
-        );
+        // Runtime-relative, like every other fixture consumer: cargo runs test
+        // binaries with the package root as their working directory, so this
+        // reads the checkout being run. A baked env!("CARGO_MANIFEST_DIR")
+        // named whichever checkout last built the binary when the shared
+        // target dir reused it, and the read hit that (possibly deleted) tree
+        // -- seen live 2026-09-18 in a clean HEAD extraction.
+        let fixture = "tests/fixtures/previous-release.json";
         let contents = fs::read(fixture).expect("fixture pack should be readable");
         let pack: Pack = serde_json::from_slice(&contents).expect("fixture pack should parse");
         let pack_path = directory.path().join(format!("{}.json", pack.id));
