@@ -1,0 +1,4 @@
+{
+  "decision": "deny",
+  "reason": "git credential fill prints 'password=<value>' to stdout -- never invoke it bare, even for a quick debug check. Capture the whole invocation into a shell variable and only ever reference the variable, never its expansion: TOKEN=$(git credential fill <<< $'protocol=https\\nhost=<host>\\n' | sed -n 's/^password=//p'); then use \"$TOKEN\" (e.g. in a curl -H header) without ever printing it. [pack=git, pattern=git-credential-fill-bare-stdout]"
+}

@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "BeforeTool",
+  "tool_name": "write_file",
+  "tool_input": {
+    "file_path": "deploy/app.yaml",
+    "content": "image: app:1.2.3\nstorageClassName: ssd\n"
+  }
+}

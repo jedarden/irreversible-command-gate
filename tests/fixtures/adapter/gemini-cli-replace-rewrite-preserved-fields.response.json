@@ -1,0 +1,10 @@
+{
+  "hookSpecificOutput": {
+    "tool_input": {
+      "file_path": "deploy/app.yaml",
+      "old_string": "storageClassName: ssd",
+      "new_string": "storageClassName: sata",
+      "reviewer_note": "pin for the spot cluster"
+    }
+  }
+}

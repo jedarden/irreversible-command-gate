@@ -1,0 +1,9 @@
+{
+  "hookSpecificOutput": {
+    "tool_input": {
+      "command": "git push origin main",
+      "description": "Push reviewed changes",
+      "directory": "/project"
+    }
+  }
+}

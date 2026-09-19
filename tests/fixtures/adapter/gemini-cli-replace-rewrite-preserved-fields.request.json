@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "BeforeTool",
+  "tool_name": "replace",
+  "tool_input": {
+    "file_path": "deploy/app.yaml",
+    "old_string": "storageClassName: ssd",
+    "new_string": "storageClassName: ssd",
+    "reviewer_note": "pin for the spot cluster"
+  }
+}

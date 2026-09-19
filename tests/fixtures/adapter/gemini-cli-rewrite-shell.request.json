@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "BeforeTool",
+  "tool_name": "run_shell_command",
+  "tool_input": {
+    "command": "git push --force origin main",
+    "description": "Push reviewed changes",
+    "directory": "/project"
+  }
+}

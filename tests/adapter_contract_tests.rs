@@ -169,6 +169,54 @@ fn golden_cases() -> Vec<(
             "cursor-shell-event-rewrite-degraded",
             "before-shell-execution",
         ),
+        // Gemini CLI: its own tool spellings (`run_shell_command`,
+        // `write_file`, `replace`) through the native BeforeTool envelope --
+        // the top-level decision/reason deny, the merge-override
+        // `hookSpecificOutput.tool_input` rewrite, and the warning degraded
+        // onto `systemMessage`. An allow renders the permissive empty
+        // object: `decision: "allow"` is never emitted to Gemini.
+        (
+            "gemini-cli-allow",
+            "gemini-cli",
+            SHIPPED_PACKS,
+            "gemini-cli-allow",
+            "pre-tool-use",
+        ),
+        (
+            "gemini-cli-deny-shell",
+            "gemini-cli",
+            SHIPPED_PACKS,
+            "gemini-cli-deny-shell",
+            "pre-tool-use",
+        ),
+        (
+            "gemini-cli-rewrite-shell",
+            "gemini-cli",
+            "command-rewrite-pack",
+            "gemini-cli-rewrite-shell",
+            "pre-tool-use",
+        ),
+        (
+            "gemini-cli-warning-shell",
+            "gemini-cli",
+            WARNING_PACK,
+            "gemini-cli-warning-shell",
+            "pre-tool-use",
+        ),
+        (
+            "gemini-cli-deny-write-file",
+            "gemini-cli",
+            SHIPPED_PACKS,
+            "gemini-cli-deny-write-file",
+            "pre-tool-use",
+        ),
+        (
+            "gemini-cli-replace-rewrite-preserved-fields",
+            "gemini-cli",
+            "edit-rewrite-pack",
+            "gemini-cli-replace-rewrite-preserved-fields",
+            "pre-tool-use",
+        ),
     ]
 }
 
@@ -276,7 +324,7 @@ fn golden_fixtures_render_exactly_their_recorded_response() {
 #[test]
 fn malformed_input_fails_open_with_a_successful_process() {
     let output = run_hook(
-        &fixture_path("codex-cli-malformed-input", "request.txt"),
+        &fixture_path("malformed-input", "request.txt"),
         Some("codex-cli"),
         SHIPPED_PACKS,
     );
@@ -295,6 +343,36 @@ fn malformed_input_fails_open_with_a_successful_process() {
                 "hookEventName": "PreToolUse"
             }
         })
+    );
+    assert!(
+        !output.stderr.is_empty(),
+        "the failure is diagnosed on stderr so an operator can see why nothing was checked"
+    );
+}
+
+/// The same malformed payload through the Gemini CLI adapter: fail-open
+/// renders the permissive empty object -- no `decision` field, so Gemini
+/// proceeds -- with the diagnostic on stderr only, and nothing on stdout
+/// but the one JSON object Gemini parses.
+#[test]
+fn malformed_gemini_input_fails_open_permissively() {
+    let output = run_hook(
+        &fixture_path("malformed-input", "request.txt"),
+        Some("gemini-cli"),
+        SHIPPED_PACKS,
+    );
+
+    assert!(
+        output.status.success(),
+        "fail-open must leave the hook process successful: {:?}",
+        output.status
+    );
+    let response = stdout_json(&output);
+    assert_eq!(
+        response,
+        json!({}),
+        "the permissive object is Gemini's fail-open shape: an absent decision \
+         leaves the call to Gemini's own flow"
     );
     assert!(
         !output.stderr.is_empty(),

@@ -47,7 +47,7 @@ state is touched.
 | `ClaudeCode` | `claude-code` | `ClaudeCodeAdapter` (shipped) | `PreToolUse` hook, JSON on stdin/stdout |
 | `CodexCli` | `codex-cli` | `CodexAdapter` (shipped) | `PreToolUse` hook, JSON on stdin/stdout |
 | `OpenCode` | `opencode` | none yet (§6.3) | in-process plugin API |
-| `GeminiCli` | `gemini-cli` | none yet (§6.4) | `BeforeTool` command hook, JSON on stdin/stdout |
+| `GeminiCli` | `gemini-cli` | `GeminiCliAdapter` (shipped) | `BeforeTool` command hook, JSON on stdin/stdout |
 | `Cursor` | `cursor` | `CursorAdapter` (shipped), `CursorShellExecutionAdapter` (§6.5) | agent hooks, JSON on stdin/stdout |
 | `Wrapper` | `wrapper` | none (no payload) | shadowed argv via `execvp` |
 
@@ -279,7 +279,7 @@ exact official source it was taken from.
 - **Source:** <https://opencode.ai/docs/plugins> (official plugin
   documentation), retrieved 2026-09-18.
 
-### 6.4 Gemini CLI (specified, not implemented)
+### 6.4 Gemini CLI (implemented)
 
 - **Protocol:** `BeforeTool` **command hook**. Config: `hooks` object in
   `~/.gemini/settings.json` or project `.gemini/settings.json` — event
@@ -289,22 +289,49 @@ exact official source it was taken from.
 - **Input (stdin JSON):** `session_id`, `transcript_path`, `cwd`,
   `hook_event_name`, `timestamp`, plus per-event `tool_name`,
   `tool_input` (object), optional `mcp_context`, `original_request_name`.
-  The Claude-compatible `tool_name`/`tool_input` pair is the payload a
-  GeminiCli adapter would translate.
+  The Claude-compatible `tool_name`/`tool_input` pair is the payload the
+  `GeminiCliAdapter` translates.
 - **Output (stdout JSON):** common fields `decision` (`"deny"`, alias
   `"block"`), `reason` (**required when denied** — sent to the agent as the
   tool error), `systemMessage`, `suppressOutput`, `continue`, `stopReason`;
   event-specific `hookSpecificOutput.tool_input` — an object that
   **merges with and overrides** the model's arguments, which is the rewrite
   channel (a merge-override rather than Claude Code's whole-object
-  `updatedInput`; the adapter would render the complete replacement and let
-  Gemini CLI merge it).
+  `updatedInput`; ICG renders the complete replacement and lets Gemini CLI
+  merge it).
 - **Exit codes:** `0` = success, stdout parsed as JSON (**preferred for all
   logic**; silence on stdout is mandatory — exactly one JSON object, which is
   already this contract's rendering rule); `2` = system block with **stderr**
   as the rejection reason, the turn continues; **any other exit = non-fatal
   warning, the CLI continues** — a native fail-open posture that matches
   ICG's own.
+- **Implementation (ICG):** `GeminiCliAdapter`, served by
+  `icg hook --harness gemini-cli` (registration must declare the harness —
+  `default_adapter()` is Claude Code, §2). The covered tools are Gemini's
+  spellings of the three modeled actions, classified through the engine's
+  own alias handling, not alongside it: `run_shell_command` (the Bash
+  `command` shape), `write_file` (the Write `file_path`/`content` shape),
+  and `replace` (the Edit `old_string`/`new_string` shape; `docs/tools/` in
+  the gemini-cli repository is the field reference). Rendering
+  (`render_gemini_envelope`): a Deny is the top-level
+  `{"decision": "deny", "reason": ...}` pair — `reason` is required when
+  denied and reaches the agent as the tool error, which stops the tool
+  while the turn continues; a Rewrite rides
+  `hookSpecificOutput.tool_input` as the complete replacement input, every
+  field the harness sent preserved and only the rewrite key substituted,
+  because Gemini merge-overrides field-by-field and a partial object would
+  leave the matched field intact underneath; a Warn degrades to a bare
+  allow carrying the attributed reason on `systemMessage` (§5 — BeforeTool
+  has no advisory-context channel); an Allow renders the permissive empty
+  object. A top-level `decision: "allow"` is **never emitted** — its
+  `BeforeTool` impact is unspecified and could stand in for Gemini's own
+  confirmation flow — encoded as `supports_allow_decision: false`.
+  Capabilities: `supports_updated_input: true`,
+  `supports_additional_context: false`, `honors_additional_context: false`,
+  `supports_system_message: true`. Malformed stdin keeps the shared
+  fail-open boundary (§8): exit 0, the permissive object on stdout,
+  diagnostic on stderr only. Locked by the `gemini-cli-*` golden fixtures
+  (`tests/fixtures/adapter/`) and the unit tests in `src/adapter.rs`.
 - **Versioning:** the hooks system has no wire-protocol version field; the
   hook reference in the repository is normative. Observed against the
   `main` documentation tree of `google-gemini/gemini-cli`; latest release at
@@ -571,7 +598,13 @@ with `<name>.response.json`:
 | `claude-code-unsupported-tool` | claude-code | shipped | MCP tool → plain allow |
 | `codex-cli-deny-patch` | codex-cli | shipped | `apply_patch` deny |
 | `codex-cli-deny-command` | codex-cli | shipped | command deny |
-| `codex-cli-malformed-input.request.txt` | codex-cli | shipped | truncated JSON → exit 0, plain allow, stderr diagnostic |
+| `malformed-input.request.txt` | codex-cli, gemini-cli | shipped | truncated JSON → exit 0, plain allow, stderr diagnostic |
+| `gemini-cli-allow` | gemini-cli | shipped | permissive empty object — no `decision` field |
+| `gemini-cli-deny-shell` | gemini-cli | shipped | top-level `decision`/`reason` deny of `run_shell_command` |
+| `gemini-cli-rewrite-shell` | gemini-cli | fixture `command-rewrite-pack` | `hookSpecificOutput.tool_input` rewrite preserving unmodeled fields |
+| `gemini-cli-warning-shell` | gemini-cli | shared `warning-verdict` pack | warn degraded to bare allow + `systemMessage` |
+| `gemini-cli-deny-write-file` | gemini-cli | shipped | deny of `write_file` (snake_case aliases inbound) |
+| `gemini-cli-replace-rewrite-preserved-fields` | gemini-cli | fixture `edit-rewrite-pack` | rewrite of a `replace` preserving unmodeled fields |
 
 The rewrite goldens use dedicated fixture packs so their reasons stay
 deterministic; the allow/deny/warning goldens deliberately run against the

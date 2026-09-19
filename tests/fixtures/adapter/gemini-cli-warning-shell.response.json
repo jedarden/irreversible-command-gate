@@ -1,0 +1,3 @@
+{
+  "systemMessage": "Verify the worktree target is disposable before continuing [pack=warning-verdict-e2e, pattern=warn-worktree-add]"
+}
