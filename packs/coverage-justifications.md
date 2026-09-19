@@ -36,5 +36,32 @@ last 1,500 agent transcripts on ex44:
 | of 476 total | | |
 | false positives against the 152 that correctly pass a pathspec | 0 | **0** |
 
-No input that was previously denied is now allowed. The remaining misses are
-`irrevers-3e313b79` (the lexer does not recurse into `$( )`), not this rule.
+No input that was previously denied is now allowed. The remaining misses at
+that measurement were attributed to the lexer's lack of `$( )` recursion —
+since fixed (irrevers-c6f6c7b8, 2026-09-13) — not to this rule.
+
+**Re-measured 2026-09-19, after the `$( )` lexer fix.** The corpus was
+rebuilt the same way (30,963 unique commands, the last 1,500 transcripts —
+method and reproducibility: `docs/notes/traffic-corpus-replay.md`) and
+replayed against the engine immediately before and after the lexer change:
+
+| | before | after |
+| --- | --- | --- |
+| `git commit` invocations denied | 198 | **217** |
+| of 881 total | | |
+| false positives against commits that correctly pass a pathspec | 1 | **0** |
+
+Every one of the 20 newly denied inputs is a genuine pathspec-less
+`git commit -m "$(cat <<'EOF' …)"` invocation — the population the lexer gap
+was hiding — and no rule outside the git pack changed verdict on any input.
+The one input the fix newly allows was a **false positive before**: a
+heredoc-message commit passing an explicit `-- <paths>` pathspec that the
+pre-fix lexer fragmented into a match shape. Pathspec-passing commits now
+have zero denials.
+
+Of the 246 pathspec-less commit invocations, 217 are denied and 29 still
+miss — all pre-existing rule-shape gaps unrelated to the lexer, present
+identically in both engines: 18 use a global option before the subcommand
+(`git -C <path> commit …`, `git -c k=v commit …` — the anchored regex
+requires `git\s+commit`), 9 pass the message via `-F <file>`/`-F -`, 2 are
+`--amend --no-edit`, and 1 uses a short-cluster message flag (`-qm …`).

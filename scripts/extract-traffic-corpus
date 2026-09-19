@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Extract the agent-traffic corpus from Claude Code session transcripts.
+
+Rebuilds the corpus behind the coverage measurements recorded in
+packs/coverage-justifications.md and docs/notes/traffic-corpus-replay.md:
+the `command` values of every Bash tool call in the most recent session
+transcripts under ~/.claude/projects, deduplicated. The 2026-09-06
+measurement drew the last 1,500 transcripts (20,007 unique commands).
+
+Output is JSONL, one `{"command": <string>}` per line, written mode 600.
+
+The corpus is verbatim agent traffic: it can contain secret-shaped text and
+must never be committed, printed, or stored outside the operator's own
+state. This script prints only counts.
+"""
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def find_bash_commands(obj):
+    """Yield Bash tool_use command strings from a parsed transcript entry."""
+    if isinstance(obj, dict):
+        if obj.get("type") == "tool_use" and obj.get("name") == "Bash":
+            command = obj.get("input", {}).get("command")
+            if isinstance(command, str) and command.strip():
+                yield command
+            return
+        for value in obj.values():
+            yield from find_bash_commands(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from find_bash_commands(value)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--projects-dir",
+        default=os.path.expanduser("~/.claude/projects"),
+        help="Claude Code transcript root (default: ~/.claude/projects)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=1500,
+        help="most recent transcripts to read (default: 1500, the 2026-09-06 window)",
+    )
+    parser.add_argument(
+        "--out",
+        required=True,
+        help="output JSONL path (created mode 600; must not be inside a repo)",
+    )
+    args = parser.parse_args()
+
+    projects = Path(args.projects_dir)
+    transcripts = sorted(
+        projects.rglob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[: args.limit]
+
+    # Keep first-seen order for a deterministic corpus: newest transcript
+    # first, commands in transcript order.
+    unique = dict()
+    total_calls = 0
+    for transcript in transcripts:
+        try:
+            with open(transcript, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    for command in find_bash_commands(entry):
+                        total_calls += 1
+                        unique.setdefault(command, None)
+        except OSError as error:
+            print(f"warn: unreadable transcript {transcript.name}: {error}", file=sys.stderr)
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        for command in unique:
+            fh.write(json.dumps({"command": command}, ensure_ascii=False) + "\n")
+
+    print(f"transcripts read:        {len(transcripts)}")
+    print(f"bash tool calls seen:    {total_calls}")
+    print(f"unique commands written: {len(unique)}")
+    print(f"corpus:                  {out} (mode 600)")
+
+
+if __name__ == "__main__":
+    main()

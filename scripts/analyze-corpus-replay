@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Compare two corpus-replay result files (before/after an engine change).
+
+Inputs are positional result JSONL files written by `corpus-replay` (one
+result per corpus line, no command text). Classification of the git-commit
+population uses the AFTER tree's segmentation, since that is the lexer that
+sees the true command structure; both verdict columns are then measured
+over that one population.
+
+Outputs aggregate counts only. Review of individual inputs goes through
+`--show`, which masks secret-shaped runs before printing.
+
+Usage:
+  analyze-corpus-replay BEFORE.jsonl AFTER.jsonl [--detail-dir DIR]
+  analyze-corpus-replay --corpus C.jsonl --show INDEX [INDEX ...]
+"""
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+PATHSPEC_RULE = "git-commit-without-pathspec"
+
+# git global options that consume a following value token.
+GIT_GLOBAL_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                         "--exec-path", "--super-prefix"}
+# git commit options that consume a following value token.
+COMMIT_VALUE_OPTS = {"-m", "-F", "-C", "-c", "--message", "--file", "--fixup",
+                     "--squash", "--author", "--date", "--pathspec-from-file",
+                     "--cleanup", "--reedit-message", "--reuse-message"}
+# short-flag clusters whose last letter consumes a following value.
+COMMIT_SHORT_VALUE_TAIL = set("mFCc")
+
+
+def load_results(path):
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            rows.append(json.loads(line))
+    return rows
+
+
+def git_commit_arglists(segments):
+    """Args-after-`commit` for every `git ... commit` segment."""
+    out = []
+    for seg in segments:
+        if not seg or seg[0] != "git":
+            continue
+        rest = seg[1:]
+        i = 0
+        while i < len(rest):
+            tok = rest[i]
+            if tok in GIT_GLOBAL_VALUE_OPTS:
+                i += 2
+                continue
+            if tok.startswith("-"):
+                i += 1
+                continue
+            break
+        if i < len(rest) and rest[i] == "commit":
+            out.append(rest[i + 1:])
+    return out
+
+
+def has_pathspec(args):
+    """True if a `git commit` argument list carries an explicit pathspec.
+
+    Deliberately generous: marking a non-path token as a pathspec only adds
+    an input to human review, while failing to mark one could hide a false
+    positive from review.
+    """
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok == "--":
+            return True
+        if tok.startswith("--"):
+            if "=" not in tok and tok in COMMIT_VALUE_OPTS:
+                i += 2
+                continue
+            i += 1
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            if "=" not in tok and tok[-1] in COMMIT_SHORT_VALUE_TAIL:
+                i += 2
+                continue
+            i += 1
+            continue
+        # bare positional: git commit takes only a pathspec positionally
+        return True
+    return False
+
+
+def classify(after_row):
+    arglists = git_commit_arglists(after_row.get("segments", []))
+    is_commit = bool(arglists)
+    all_have_pathspec = is_commit and all(has_pathspec(a) for a in arglists)
+    any_have_pathspec = is_commit and any(has_pathspec(a) for a in arglists)
+    return is_commit, all_have_pathspec, any_have_pathspec
+
+
+_SECRET_RUN = re.compile(r"[A-Za-z0-9+/=_@~]{16,}")
+
+
+def masked(command):
+    """Mask long secret-shaped runs; keep shell structure readable."""
+    return _SECRET_RUN.sub(lambda m: "«" + str(len(m.group(0))) + "»", command)
+
+
+def analyze(before_path, after_path, detail_dir):
+    before = load_results(before_path)
+    after = load_results(after_path)
+    if len(before) != len(after):
+        sys.exit(f"line count mismatch: {len(before)} vs {len(after)}")
+
+    population = []
+    transitions = {}
+    newly_denied = []          # (index, pack, pattern)
+    newly_allowed = []         # (index, pack, pattern) -- regression candidates
+    fp_pathspec = []           # denied by the pathspec rule though pathspec passed
+    other_new_denials = []     # newly denied by any other rule
+    denied_before_commit = 0
+    denied_after_commit = 0
+    denied_before_commit_any = 0
+    denied_after_commit_any = 0
+
+    for i, (b, a) in enumerate(zip(before, after)):
+        is_commit, all_ps, _ = classify(a)
+        b_deny = b["verdict"] == "denied"
+        a_deny = a["verdict"] == "denied"
+
+        transitions[(b["verdict"], a["verdict"])] = transitions.get((b["verdict"], a["verdict"]), 0) + 1
+
+        if is_commit:
+            population.append(i)
+            if b["pattern_id"] == PATHSPEC_RULE:
+                denied_before_commit += 1
+            if a["pattern_id"] == PATHSPEC_RULE:
+                denied_after_commit += 1
+            if b_deny:
+                denied_before_commit_any += 1
+            if a_deny:
+                denied_after_commit_any += 1
+            if a_deny and all_ps:
+                if a["pattern_id"] == PATHSPEC_RULE:
+                    fp_pathspec.append(i)
+                else:
+                    # denied by another rule on a pathspec-passing commit;
+                    # still worth review, attributed separately
+                    other_new_denials.append((i, a["pack_id"], a["pattern_id"])) if not b_deny else None
+
+        if a_deny and not b_deny:
+            newly_denied.append((i, a.get("pack_id"), a.get("pattern_id")))
+        if b_deny and not a_deny:
+            newly_allowed.append((i, b.get("pack_id"), b.get("pattern_id")))
+
+    n = len(before)
+    print(f"corpus size:                        {n}")
+    print(f"git commit invocations (after seg): {len(population)}")
+    print()
+    print("git-commit-without-pathspec denials within the population:")
+    print(f"  before: {denied_before_commit}")
+    print(f"  after:  {denied_after_commit}")
+    print(f"  denied by any rule, before: {denied_before_commit_any}")
+    print(f"  denied by any rule, after:  {denied_after_commit_any}")
+    print()
+    print("verdict transitions (before -> after):")
+    for (bv, av), count in sorted(transitions.items(), key=lambda kv: -kv[1]):
+        if bv != av:
+            print(f"  {bv:>8} -> {av:<8} {count}")
+    stable = sum(c for (bv, av), c in transitions.items() if bv == av)
+    print(f"  unchanged: {stable}")
+    print()
+    print(f"newly denied by any pack:  {len(newly_denied)}")
+    by_rule = {}
+    for _, pack, pattern in newly_denied:
+        by_rule[(pack, pattern)] = by_rule.get((pack, pattern), 0) + 1
+    for (pack, pattern), count in sorted(by_rule.items(), key=lambda kv: -kv[1]):
+        print(f"  {pack}/{pattern}: {count}")
+    print()
+    print(f"newly ALLOWED (regression candidates): {len(newly_allowed)}")
+    for i, pack, pattern in newly_allowed[:20]:
+        print(f"  index {i}: was {pack}/{pattern}")
+    print()
+    print(f"FALSE-POSITIVE candidates (denied by {PATHSPEC_RULE} with a pathspec present): {len(fp_pathspec)}")
+    for i in fp_pathspec:
+        print(f"  index {i}")
+
+    if detail_dir:
+        d = Path(detail_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "newly-denied.txt").write_text(
+            "".join(f"{i}\t{p}/{r}\n" for i, p, r in newly_denied))
+        (d / "newly-allowed.txt").write_text(
+            "".join(f"{i}\t{p}/{r}\n" for i, p, r in newly_allowed))
+        (d / "fp-pathspec.txt").write_text("".join(f"{i}\n" for i in fp_pathspec))
+        (d / "population.txt").write_text("".join(f"{i}\n" for i in population))
+        print(f"\ndetail indexes written to {d}")
+
+
+def show(corpus_path, indexes):
+    with open(corpus_path, encoding="utf-8") as fh:
+        for i, line in enumerate(fh):
+            if i in indexes:
+                command = json.loads(line)["command"]
+                print(f"--- index {i} ---")
+                print(masked(command))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("before", nargs="?")
+    parser.add_argument("after", nargs="?")
+    parser.add_argument("--detail-dir")
+    parser.add_argument("--corpus")
+    parser.add_argument("--show", nargs="*", type=int)
+    args = parser.parse_args()
+
+    if args.show is not None:
+        if not args.corpus:
+            sys.exit("--show requires --corpus")
+        show(args.corpus, set(args.show))
+        return
+    if not args.before or not args.after:
+        sys.exit("expected BEFORE AFTER result files (or --corpus/--show)")
+    analyze(args.before, args.after, args.detail_dir)
+
+
+if __name__ == "__main__":
+    main()
