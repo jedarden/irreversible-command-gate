@@ -75,8 +75,8 @@ pub enum HarnessId {
     /// OpenCode's in-process plugin API (`tool.execute.before`).
     /// Specified in the contract doc; adapter not yet implemented.
     OpenCode,
-    /// Gemini CLI's `BeforeTool` command hook. Specified in the contract
-    /// doc; adapter not yet implemented.
+    /// Gemini CLI's `BeforeTool` command hook
+    /// (`~/.gemini/settings.json` or project `.gemini/settings.json`).
     GeminiCli,
     /// Cursor's agent hooks (`hooks.json` schema version 1): the generic
     /// `preToolUse` event, plus the dedicated `beforeShellExecution` event
@@ -449,6 +449,46 @@ pub struct ClaudeCodeAdapter;
 /// pre-tool-use.command.input.schema.json`, re-checked 2026-09-18.
 pub struct CodexAdapter;
 
+/// Adapter for Gemini CLI's `BeforeTool` hook.
+///
+/// Payload: JSON on stdin with `tool_name`/`tool_input` (snake_case, the
+/// same aliases the engine already reads) plus Gemini-only context fields
+/// (`session_id`, `cwd`, `hook_event_name`, `timestamp`, `mcp_context`,
+/// `original_request_name`) that the engine's lenient parse ignores. The
+/// covered tool names are Gemini's spellings of the canonical actions:
+/// `run_shell_command` (shell), `write_file` (file creation/overwrite), and
+/// `replace` (text substitution). Response: a denial is Gemini's top-level
+/// `{"decision": "deny", "reason": ...}`; a rewrite is
+/// `hookSpecificOutput.tool_input`, which Gemini merges with and overrides
+/// the model's arguments with before execution. Exit code 0 with stdout JSON
+/// is the only channel ICG uses; exit 2 blocks via stderr, and every other
+/// exit is a non-fatal warning (fail-open) -- matching ICG's own posture.
+/// Source: `docs/hooks/reference.md` in `github.com/google-gemini/gemini-cli`
+/// at v0.60.0 (retrieved 2026-09-18) and `docs/tools/` for the tool
+/// parameter fields. The gemini-cli wire carries no version field, so the
+/// pin lives in the docs and in `docs/notes/harness-adapter-contract.md`.
+///
+/// MCP tools (named with the `mcp__` prefix) and Gemini's read-only tools
+/// are deliberately unmodeled: they classify to `Unsupported` and allow,
+/// which is why the ICG installer scopes its matcher to the three covered
+/// names. See `docs/notes/harness-adapter-contract.md` §6.4 for the full
+/// coverage statement.
+pub struct GeminiCliAdapter;
+
+/// Gemini CLI honors `hookSpecificOutput.tool_input` (rewrites) and the
+/// common `systemMessage` field (practice-mode and bypass reports ride it).
+/// A `BeforeTool` response has no model-directed context channel --
+/// `additionalContext` is documented for other events -- so warnings
+/// degrade to a bare allow with the text dropped. Deliberately absent from
+/// every ICG response: `decision: "allow"`, whose `BeforeTool` impact is
+/// unspecified and could stand in for Gemini's own confirmation flow.
+const GEMINI_CLI_CAPABILITIES: Capabilities = Capabilities {
+    supports_updated_input: true,
+    supports_additional_context: false,
+    honors_additional_context: false,
+    supports_system_message: true,
+};
+
 /// Claude Code honors `additionalContext`, `updatedInput`, and
 /// `systemMessage` on a `PreToolUse` response.
 const CLAUDE_CODE_CAPABILITIES: Capabilities = Capabilities {
@@ -539,6 +579,25 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
+impl HarnessAdapter for GeminiCliAdapter {
+    fn harness(&self) -> HarnessId {
+        HarnessId::GeminiCli
+    }
+
+    fn capabilities(&self) -> &'static Capabilities {
+        &GEMINI_CLI_CAPABILITIES
+    }
+
+    fn render(
+        &self,
+        result: &CanonicalResult,
+        original_input: Option<&Value>,
+        rewrite_key: &str,
+    ) -> Value {
+        render_gemini_envelope(result, original_input, rewrite_key, self.capabilities())
+    }
+}
+
 impl HarnessAdapter for CursorAdapter {
     fn harness(&self) -> HarnessId {
         HarnessId::Cursor
@@ -578,11 +637,11 @@ impl HarnessAdapter for CursorShellExecutionAdapter {
 }
 
 /// The adapter for a declared harness, or `None` for the harnesses whose
-/// adapters are specified but not yet implemented (`OpenCode`, `GeminiCli`)
-/// and for the payload-less `Wrapper` front end.
+/// adapters are specified but not yet implemented (`OpenCode`) and for the
+/// payload-less `Wrapper` front end.
 ///
 /// The front end refuses an unsupported harness rather than silently serving
-/// the wrong wire format: a Gemini CLI caller handed the Claude Code
+/// the wrong wire format: an OpenCode caller handed the Claude Code
 /// envelope would get a response its harness never reads. Cursor's
 /// dedicated `beforeShellExecution` event is selected through
 /// [`cursor_shell_execution_adapter`], not through this function: its
@@ -591,8 +650,9 @@ pub fn adapter_for(harness: HarnessId) -> Option<&'static dyn HarnessAdapter> {
     match harness {
         HarnessId::ClaudeCode => Some(&ClaudeCodeAdapter),
         HarnessId::CodexCli => Some(&CodexAdapter),
+        HarnessId::GeminiCli => Some(&GeminiCliAdapter),
         HarnessId::Cursor => Some(&CursorAdapter),
-        HarnessId::OpenCode | HarnessId::GeminiCli | HarnessId::Wrapper => None,
+        HarnessId::OpenCode | HarnessId::Wrapper => None,
     }
 }
 
@@ -751,6 +811,62 @@ pub fn render_cursor_envelope(
     }
 }
 
+/// Render one canonical result in Gemini CLI's `BeforeTool` response schema,
+/// degraded according to the given capabilities.
+///
+/// Gemini's schema differs from the Claude/Codex envelope in both channels
+/// ICG uses. A denial is the common top-level pair `{"decision": "deny",
+/// "reason": ...}` -- `reason` is required when denied and is delivered to
+/// the agent as the tool error, which stops the tool while letting the turn
+/// continue. A rewrite is `hookSpecificOutput.tool_input`, an object Gemini
+/// merges with and overrides the model's arguments with, so the renderer
+/// emits the complete replacement input and lets Gemini merge it.
+///
+/// What is deliberately never emitted: a top-level `decision: "allow"`,
+/// whose `BeforeTool` impact is unspecified and could stand in for Gemini's
+/// own confirmation flow. An allow -- and a warning, which has no
+/// advisory-context channel on this event and degrades to a bare allow per
+/// §5 -- therefore renders the permissive object with no `decision` field
+/// at all: Gemini proceeds unless told otherwise. The warning's attributed
+/// reason rides the common `systemMessage` field, which Gemini shows its
+/// user.
+pub fn render_gemini_envelope(
+    result: &CanonicalResult,
+    original_input: Option<&Value>,
+    rewrite_key: &str,
+    capabilities: &Capabilities,
+) -> Value {
+    match result.verdict {
+        CanonicalVerdict::Allow => serde_json::json!({}),
+        CanonicalVerdict::Warn => {
+            serde_json::json!({ "systemMessage": result.attributed_reason() })
+        }
+        CanonicalVerdict::Rewrite if capabilities.supports_updated_input => {
+            // `tool_input` overrides the model's arguments field-by-field,
+            // so the replacement must be complete: every field the harness
+            // sent -- modeled or not -- with only the rewrite key
+            // substituted.
+            let mut tool_input = original_input
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(rewrite) = &result.rewrite {
+                tool_input.insert(rewrite_key.to_string(), Value::String(rewrite.clone()));
+            }
+            serde_json::json!({ "hookSpecificOutput": { "tool_input": tool_input } })
+        }
+        // Degradation (§5): a harness with no input-modification channel
+        // cannot run a call whose arguments the policy said to change. The
+        // deny is the fail-safe, and `reason` is required when denied.
+        CanonicalVerdict::Rewrite | CanonicalVerdict::Deny => {
+            serde_json::json!({
+                "decision": "deny",
+                "reason": result.attributed_reason(),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,11 +929,11 @@ mod tests {
     fn only_shipped_adapters_are_selectable() {
         assert!(adapter_for(HarnessId::ClaudeCode).is_some());
         assert!(adapter_for(HarnessId::CodexCli).is_some());
+        assert!(adapter_for(HarnessId::GeminiCli).is_some());
         assert!(adapter_for(HarnessId::Cursor).is_some());
         // Specified but unimplemented: the front end must refuse these
         // rather than serve the wrong wire format.
         assert!(adapter_for(HarnessId::OpenCode).is_none());
-        assert!(adapter_for(HarnessId::GeminiCli).is_none());
         assert!(adapter_for(HarnessId::Wrapper).is_none());
         let default = default_adapter();
         assert!(std::ptr::eq(
@@ -1358,6 +1474,231 @@ mod tests {
              command must not run unreplaced, so the rewrite degrades to a \
              deny carrying the rewrite's reason"
         );
+    }
+
+    #[test]
+    fn gemini_tools_classify_through_the_engine_not_alongside_it() {
+        let engine = Engine::new();
+        let gemini = adapter_for(HarnessId::GeminiCli).expect("gemini adapter exists");
+
+        // Shell: `run_shell_command` carries the Bash payload shape, and the
+        // adapter's classification is the engine's own.
+        let direct = Engine::input_source_from_pre_tool_use(payload(
+            "run_shell_command",
+            json!({ "command": "git status" }),
+        ))
+        .expect("engine parses run_shell_command")
+        .expect("run_shell_command is supported");
+        let shell = gemini.build_request(
+            &engine,
+            payload("run_shell_command", json!({ "command": "git status" })),
+            None,
+        );
+        assert_eq!(shell.harness, HarnessId::GeminiCli);
+        assert_eq!(shell.tool_name, "run_shell_command");
+        assert_eq!(shell.input_source, Some(direct));
+        assert_eq!(shell.rewrite_key(), "command");
+
+        // Full-file write: `write_file` carries the Write payload shape.
+        let write = gemini.build_request(
+            &engine,
+            payload(
+                "write_file",
+                json!({ "file_path": "deploy/app.yaml", "content": "x" }),
+            ),
+            None,
+        );
+        assert_eq!(
+            write.action(),
+            CanonicalAction::WriteFile {
+                file_path: "deploy/app.yaml".to_string(),
+                content: "x".to_string(),
+            }
+        );
+        assert_eq!(write.rewrite_key(), "content");
+
+        // Text substitution: `replace` carries the Edit payload shape, and
+        // the rewrite follows the incoming snake_case spelling.
+        let edit_input = json!({
+            "file_path": "deploy/app.yaml",
+            "old_string": "storageClassName: sata",
+            "new_string": "storageClassName: ssd"
+        });
+        let replace = gemini.build_request(
+            &engine,
+            payload("replace", edit_input.clone()),
+            Some(&edit_input),
+        );
+        assert!(matches!(replace.action(), CanonicalAction::EditFile { .. }));
+        assert_eq!(replace.rewrite_key(), "new_string");
+    }
+
+    #[test]
+    fn gemini_renders_the_native_decision_envelope() {
+        let gemini = adapter_for(HarnessId::GeminiCli).unwrap();
+        let input = json!({ "command": "git push --force origin main" });
+
+        // An allow is the permissive object: no `decision` field at all --
+        // `decision: "allow"` is never emitted, because its BeforeTool
+        // impact is unspecified.
+        let allow = gemini.render(
+            &CanonicalResult::from_engine(&CheckResult::Allowed, None),
+            None,
+            "command",
+        );
+        assert_eq!(allow, json!({}));
+
+        // A deny is the top-level pair; `reason` is required when denied and
+        // is what Gemini delivers to the agent as the tool error -- which
+        // stops the tool while letting the turn continue. No Claude
+        // envelope may leak into the native schema.
+        let deny = gemini.render(
+            &CanonicalResult::from_engine(&denied("git", "git-force-push"), None),
+            Some(&input),
+            "command",
+        );
+        assert_eq!(
+            deny,
+            json!({
+                "decision": "deny",
+                "reason": "denied by policy [pack=git, pattern=git-force-push]",
+            })
+        );
+        assert!(deny.get("hookSpecificOutput").is_none());
+        assert!(deny.get("permissionDecision").is_none());
+        assert!(deny.get("updatedInput").is_none());
+    }
+
+    #[test]
+    fn a_gemini_warning_is_a_bare_allow_plus_system_message() {
+        let gemini = adapter_for(HarnessId::GeminiCli).unwrap();
+        let warning = CanonicalResult {
+            verdict: CanonicalVerdict::Warn,
+            reason: Some("check the target".to_string()),
+            pack_id: Some("warning-verdict-e2e".to_string()),
+            pattern_id: Some("warn-worktree-add".to_string()),
+            matched_path: None,
+            rewrite: None,
+            subject: None,
+        };
+        let response = gemini.render(&warning, None, "command");
+
+        assert_eq!(
+            response,
+            json!({
+                "systemMessage":
+                    "check the target [pack=warning-verdict-e2e, pattern=warn-worktree-add]",
+            }),
+            "the warning text degrades onto systemMessage -- never into a \
+             decision, and never into a block"
+        );
+        assert!(response.get("decision").is_none());
+        assert!(response.get("additionalContext").is_none());
+    }
+
+    #[test]
+    fn a_gemini_rewrite_rides_hook_specific_output_tool_input() {
+        let gemini = adapter_for(HarnessId::GeminiCli).unwrap();
+        // Harness-specific fields this contract does not model must survive
+        // into the replacement: Gemini merges `tool_input` over the model's
+        // arguments, so a partial object would leave the matched field
+        // intact underneath.
+        let original = json!({
+            "command": "git push --force origin main",
+            "description": "Push reviewed changes",
+            "timeout": 120000,
+        });
+        let response = gemini.render(
+            &CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            Some(&original),
+            "command",
+        );
+
+        assert_eq!(
+            response,
+            json!({
+                "hookSpecificOutput": {
+                    "tool_input": {
+                        "command": "git push origin main",
+                        "description": "Push reviewed changes",
+                        "timeout": 120000,
+                    }
+                }
+            })
+        );
+        assert!(
+            response.get("decision").is_none(),
+            "a rewrite allows the call with replacement arguments, and \
+             decision allow is never emitted"
+        );
+        assert!(
+            response.get("reason").is_none(),
+            "`reason` is required when denied and meaningless otherwise"
+        );
+    }
+
+    #[test]
+    fn gemini_declares_its_capability_set() {
+        let capabilities = adapter_for(HarnessId::GeminiCli)
+            .unwrap()
+            .capabilities();
+        assert!(
+            capabilities.supports_updated_input,
+            "hookSpecificOutput.tool_input is the rewrite channel"
+        );
+        assert!(
+            !capabilities.supports_additional_context,
+            "a BeforeTool response has no advisory-context channel"
+        );
+        assert!(!capabilities.honors_additional_context);
+        assert!(
+            capabilities.supports_system_message,
+            "the common systemMessage field carries warning and report text"
+        );
+    }
+
+    #[test]
+    fn a_gemini_harness_without_an_update_channel_degrades_rewrite_to_deny() {
+        let no_rewrite = Capabilities {
+            supports_updated_input: false,
+            ..GEMINI_CLI_CAPABILITIES
+        };
+        let response = render_gemini_envelope(
+            &CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            Some(&json!({ "command": "git push --force origin main" })),
+            "command",
+            &no_rewrite,
+        );
+        assert_eq!(
+            response,
+            json!({
+                "decision": "deny",
+                "reason": "use the safe form [pack=git, pattern=git-force-push]",
+            }),
+            "the matched input must not run unreplaced: without the \
+             tool_input channel the rewrite degrades to a deny"
+        );
+    }
+
+    #[test]
+    fn gemini_unmodeled_tools_classify_unsupported_and_allow() {
+        let engine = Engine::new();
+        let gemini = adapter_for(HarnessId::GeminiCli).unwrap();
+        let request = gemini.build_request(
+            &engine,
+            payload("mcp__github__merge_pull_request", json!({ "pr": 7 })),
+            Some(&json!({ "pr": 7 })),
+        );
+        assert_eq!(request.action(), CanonicalAction::Unsupported);
+
+        // §3.4/§8: an unmodeled tool is a contract allow, not a failure --
+        // the permissive object, with no diagnostic implied.
+        let response = gemini.render(
+            &CanonicalResult::from_engine(&CheckResult::Allowed, None),
+            None,
+            "command",
+        );
+        assert_eq!(response, json!({}));
     }
 
     /// `PreToolUseInput` is not `Clone`; rebuild an equal input for the

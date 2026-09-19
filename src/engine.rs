@@ -1564,7 +1564,11 @@ impl Engine {
 
         // Validate known tool names
         match tool_name.as_str() {
-            "Bash" | "Shell" | "Write" | "Edit" | "apply_patch" => {
+            "Bash" | "Shell" | "Write" | "Edit" | "apply_patch"
+            // Gemini CLI's BeforeTool spellings of the same three actions
+            // (run_shell_command, write_file, replace -- docs/reference/tools
+            // in google-gemini/gemini-cli, v0.60.0, checked 2026-09-18).
+            | "run_shell_command" | "write_file" | "replace" => {
                 // Known tools - continue validation
             }
             _ => {
@@ -1580,11 +1584,17 @@ impl Engine {
     }
 
     /// Validate tool input based on tool type
+    ///
+    /// Harnesses share field shapes across aliases: `run_shell_command`
+    /// (Gemini CLI) carries the same `command` payload as `Bash`,
+    /// `write_file` the same `file_path`/`content` pair as `Write`, and
+    /// `replace` the same `old_string`/`new_string` pair as `Edit`.
     fn validate_tool_input(tool_name: &str, input: &ToolInput) -> PreToolUseResult<()> {
         match tool_name {
-            // Cursor names its shell tool `Shell`; the payload shape is the
-            // Bash shape (`command`), so both spellings validate identically.
-            "Bash" | "Shell" => {
+            // Cursor names its shell tool `Shell` and Gemini CLI names it
+            // `run_shell_command`; the payload shape is the Bash shape
+            // (`command`), so all three spellings validate identically.
+            "Bash" | "Shell" | "run_shell_command" => {
                 if input.command.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1601,7 +1611,7 @@ impl Engine {
                     }
                 }
             }
-            "Write" => {
+            "Write" | "write_file" => {
                 if input.file_path.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1622,7 +1632,7 @@ impl Engine {
                     });
                 }
             }
-            "Edit" => {
+            "Edit" | "replace" => {
                 if input.file_path.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1663,14 +1673,21 @@ impl Engine {
     /// Convert PreToolUseInput to InputSource
     ///
     /// Maps the validated PreToolUse input to the appropriate InputSource
-    /// for engine evaluation.
+    /// for engine evaluation. The tool-name vocabulary is the union of the
+    /// shipped harnesses' spellings: Claude Code / Codex CLI name the same
+    /// three actions `Bash`/`Write`/`Edit`, Cursor names its shell tool
+    /// `Shell` and delivers edits under `Write`, Gemini CLI names them
+    /// `run_shell_command`/`write_file`/`replace`, and Codex's `apply_patch`
+    /// arrives as patch text. An unknown name classifies to `None`, which
+    /// the hook treats as fail-open allow.
     pub fn input_source_from_pre_tool_use(
         input: PreToolUseInput,
     ) -> PreToolUseResult<Option<InputSource>> {
         match input.tool_name.as_str() {
-            // Cursor names its shell tool `Shell`; the payload is the Bash
-            // shape, so both spellings classify as a command.
-            "Bash" | "Shell" => {
+            // Cursor names its shell tool `Shell` and Gemini CLI names it
+            // `run_shell_command`; the payload is the Bash shape, so all
+            // three spellings classify as a command.
+            "Bash" | "Shell" | "run_shell_command" => {
                 let command = input.tool_input.command.ok_or_else(|| {
                     PreToolUseError::InvalidInput {
                         tool: input.tool_name.clone(),
@@ -1680,12 +1697,12 @@ impl Engine {
 
                 Ok(Some(InputSource::Command(CommandSource::Hook(command))))
             }
-            "Write" => {
+            "Write" | "write_file" => {
                 let file_path = input
                     .tool_input
                     .file_path
                     .ok_or_else(|| PreToolUseError::InvalidInput {
-                        tool: "Write".to_string(),
+                        tool: input.tool_name.clone(),
                         reason: "missing file_path".to_string(),
                     })?;
 
@@ -1709,12 +1726,12 @@ impl Engine {
                     })))
                 } else {
                     Err(PreToolUseError::InvalidInput {
-                        tool: "Write".to_string(),
+                        tool: input.tool_name.clone(),
                         reason: "missing content".to_string(),
                     })
                 }
             }
-            "Edit" => {
+            "Edit" | "replace" => {
                 let file_path =
                     input
                         .tool_input
