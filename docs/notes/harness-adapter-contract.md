@@ -48,7 +48,7 @@ state is touched.
 | `CodexCli` | `codex-cli` | `CodexAdapter` (shipped) | `PreToolUse` hook, JSON on stdin/stdout |
 | `OpenCode` | `opencode` | none yet (§6.3) | in-process plugin API |
 | `GeminiCli` | `gemini-cli` | none yet (§6.4) | `BeforeTool` command hook, JSON on stdin/stdout |
-| `Cursor` | `cursor` | none yet (§6.5) | agent hooks, JSON on stdin/stdout |
+| `Cursor` | `cursor` | `CursorAdapter` (shipped), `CursorShellExecutionAdapter` (§6.5) | agent hooks, JSON on stdin/stdout |
 | `Wrapper` | `wrapper` | none (no payload) | shadowed argv via `execvp` |
 
 Rules the enum enforces:
@@ -279,7 +279,7 @@ exact official source it was taken from.
   (the official hooks specification: global mechanics, base input schema,
   `BeforeTool` input/output), retrieved 2026-09-18.
 
-### 6.5 Cursor (specified, not implemented)
+### 6.5 Cursor (implemented)
 
 - **Protocol:** Cursor agent hooks, configured in `.cursor/hooks.json`
   (project) or `~/.cursor/hooks.json` (user), plus enterprise-managed files;
@@ -289,25 +289,50 @@ exact official source it was taken from.
   (input: `tool_name`, `tool_input`, `tool_use_id`, `cwd`),
   `beforeShellExecution` (`command`, `cwd`, `sandbox`),
   `beforeReadFile`, `afterFileEdit`, `beforeMCPExecution`.
+- **Adapters (shipped):** `CursorAdapter` serves the generic `preToolUse`
+  event — `icg hook --harness cursor` — and `CursorShellExecutionAdapter`
+  serves the dedicated shell event — `icg hook --harness cursor --event
+  before-shell-execution` (the event is refused under any other harness).
+  The engine classifies Cursor's spellings for every harness: its shell
+  tool is named `Shell` (Bash payload shape), and its edits arrive under
+  the `Write` tool name shaped as an `old_string`/`new_string` pair with
+  no `content` — classified as an edit so the introduced content is
+  evaluated (§3.2).
 - **Output (stdout JSON):** `permission`: `"allow"` / `"deny"` / `"ask"`
-  (ICG would emit only `allow`/`deny`), `user_message`, `agent_message`,
+  (ICG emits only `allow`/`deny`), `user_message`, `agent_message`,
   `updated_input` (preToolUse input substitution — the rewrite channel).
-  `additional_context` exists but only as an **after-tool** channel on the
-  `postToolUse` events — it is not part of a permission decision — so a
-  Cursor adapter's capabilities declare `supports_additional_context: false`
-  and a Warn degrades to a bare allow (§5). Exit code 2 = deny, Claude
-  Code-compatible. Exit 0 = stdout parsed as JSON.
+  The native envelope is **flat** — no `hookSpecificOutput` wrapper — and
+  a permission decision carries **no advisory-context channel**
+  (`additional_context` exists only on the after-tool `postToolUse`
+  events), so the adapter's capabilities declare
+  `supports_additional_context: false`, a Warn degrades to a bare allow,
+  and nothing outside the documented schema is ever emitted: Cursor's
+  permission hooks **block a response that does not match the schema**.
+  `updated_input` is a complete replacement input — every field the
+  harness sent is copied through with only the rewrite key substituted.
+  `beforeShellExecution` output has **no `updated_input` field**, so that
+  event's capabilities declare `supports_updated_input: false` and a
+  Rewrite degrades to a Deny carrying the rewrite's attributed reason (§5)
+  — the event can refuse a command but cannot replace it. Exit code 2 =
+  deny, Claude Code-compatible. Exit 0 = stdout parsed as JSON.
 - **Failure semantics:** **invalid JSON or a schema mismatch on a permission
   hook blocks the call** (a natively fail-closed posture); other non-zero
   exits fail open unless the hook sets `failClosed: true`. A Cursor adapter
   must therefore treat stdout correctness as safety-critical to a degree the
-  other harnesses do not — one more reason its adapter is implemented
-  deliberately, not by aliasing the Claude Code one.
+  other harnesses do not — which is why it renders its own flat envelope
+  rather than aliasing the Claude Code one, and why
+  `beforeShellExecution` — whose payload has no `tool_name` and would fail
+  the PreToolUse stdin parse fail-open unchecked — has its own admission
+  path. The `beforeShellExecution` payload that is not valid JSON, or
+  carries no non-empty `command`, fails open with a stderr diagnostic like
+  the shared stdin boundary (§8).
 - **Versioning:** hooks schema `version: 1` (required field in
   `hooks.json`).
 - **Source:** <https://cursor.com/docs/agent/hooks> (official agent-hooks
   documentation: config paths, merge order, event payloads, output schema,
-  exit codes, `failClosed`), retrieved 2026-09-18.
+  exit codes, `failClosed`) and
+  <https://cursor.com/docs/reference/third-party-hooks> (Claude Code
+  compatibility), re-checked 2026-09-19.
 
 ## 7. Timeouts
 

@@ -1464,6 +1464,77 @@ impl Engine {
         Ok((parsed, tool_input))
     }
 
+    /// Read Cursor's `beforeShellExecution` payload from stdin and shape it
+    /// as the PreToolUse input the shared hook front end already evaluates:
+    /// the event's `command` field becomes a `Shell` tool call.
+    ///
+    /// The event's payload is `{command, cwd, sandbox}` with **no
+    /// `tool_name`**, so the plain PreToolUse reader would reject it and the
+    /// call would fail open unchecked; this reader is the event's admission
+    /// path. The fail-open posture is the stdin boundary's: input that is
+    /// not valid JSON, or carries no non-empty `command`, is reported on
+    /// stderr (naming the fail-open mode) and yields `None` -- the front end
+    /// then renders a plain allow. The raw payload travels with the shaped
+    /// input so a response can preserve the event's own fields.
+    pub fn read_before_shell_execution_payload_from_stdin(
+        &self,
+    ) -> Result<Option<(PreToolUseInput, serde_json::Value)>> {
+        use std::io::{self, Read};
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut input = String::new();
+            io::stdin()
+                .read_to_string(&mut input)
+                .context("Failed to read stdin")?;
+            self.shape_shell_execution_payload(&input)
+        }));
+        match result {
+            Ok(Ok(input)) => Ok(input),
+            Ok(Err(error)) => {
+                report_failure(self.fail_closed, &format!("stdin input failure: {error}"));
+                Ok(None)
+            }
+            Err(_) => {
+                report_failure(self.fail_closed, "stdin input panicked");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Shape one already-read `beforeShellExecution` payload. Split from the
+    /// stdin read so the admission rules are unit-testable; the caller owns
+    /// the fail-open boundary.
+    fn shape_shell_execution_payload(
+        &self,
+        input: &str,
+    ) -> Result<Option<(PreToolUseInput, serde_json::Value)>> {
+        let raw: serde_json::Value =
+            serde_json::from_str(input).context("Failed to parse hook input JSON")?;
+        let command = raw
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .filter(|command| !command.trim().is_empty())
+            .context("beforeShellExecution payload carries no non-empty 'command'")?;
+
+        let shaped = PreToolUseInput {
+            tool_name: "Shell".to_string(),
+            tool_input: ToolInput {
+                command: Some(command),
+                file_path: None,
+                content: None,
+                old_string: None,
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+        Ok(Some((shaped, raw)))
+    }
+
     /// Read command from PreToolUse JSON on stdin (legacy method for backward compatibility)
     ///
     /// Returns None if the input isn't a Bash command (e.g., Write/Edit)
@@ -1493,7 +1564,7 @@ impl Engine {
 
         // Validate known tool names
         match tool_name.as_str() {
-            "Bash" | "Write" | "Edit" | "apply_patch" => {
+            "Bash" | "Shell" | "Write" | "Edit" | "apply_patch" => {
                 // Known tools - continue validation
             }
             _ => {
@@ -1511,7 +1582,9 @@ impl Engine {
     /// Validate tool input based on tool type
     fn validate_tool_input(tool_name: &str, input: &ToolInput) -> PreToolUseResult<()> {
         match tool_name {
-            "Bash" => {
+            // Cursor names its shell tool `Shell`; the payload shape is the
+            // Bash shape (`command`), so both spellings validate identically.
+            "Bash" | "Shell" => {
                 if input.command.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1535,7 +1608,14 @@ impl Engine {
                         reason: "missing 'filePath' field".to_string(),
                     });
                 }
-                if input.content.is_none() {
+                // A full-file write carries `content`. Cursor also delivers
+                // its *edits* under the `Write` tool name, shaped as an old /
+                // new string pair -- both spellings are accepted here and
+                // classified as an Edit below, so an edit-shaped Write is
+                // evaluated rather than rejected (a rejection would fail the
+                // whole payload open at the stdin boundary).
+                let is_edit_shape = input.old_string.is_some() && input.new_string.is_some();
+                if input.content.is_none() && !is_edit_shape {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
                         reason: "missing 'content' field".to_string(),
@@ -1588,41 +1668,51 @@ impl Engine {
         input: PreToolUseInput,
     ) -> PreToolUseResult<Option<InputSource>> {
         match input.tool_name.as_str() {
-            "Bash" => {
-                let command =
-                    input
-                        .tool_input
-                        .command
-                        .ok_or_else(|| PreToolUseError::InvalidInput {
-                            tool: "Bash".to_string(),
-                            reason: "missing command".to_string(),
-                        })?;
+            // Cursor names its shell tool `Shell`; the payload is the Bash
+            // shape, so both spellings classify as a command.
+            "Bash" | "Shell" => {
+                let command = input.tool_input.command.ok_or_else(|| {
+                    PreToolUseError::InvalidInput {
+                        tool: input.tool_name.clone(),
+                        reason: "missing command".to_string(),
+                    }
+                })?;
 
                 Ok(Some(InputSource::Command(CommandSource::Hook(command))))
             }
             "Write" => {
-                let file_path =
-                    input
-                        .tool_input
-                        .file_path
-                        .ok_or_else(|| PreToolUseError::InvalidInput {
-                            tool: "Write".to_string(),
-                            reason: "missing file_path".to_string(),
-                        })?;
+                let file_path = input
+                    .tool_input
+                    .file_path
+                    .ok_or_else(|| PreToolUseError::InvalidInput {
+                        tool: "Write".to_string(),
+                        reason: "missing file_path".to_string(),
+                    })?;
 
-                let content =
-                    input
-                        .tool_input
-                        .content
-                        .ok_or_else(|| PreToolUseError::InvalidInput {
-                            tool: "Write".to_string(),
-                            reason: "missing content".to_string(),
-                        })?;
-
-                Ok(Some(InputSource::Content(ContentSource::Write {
-                    file_path,
-                    content,
-                })))
+                // A full-file write carries `content`; an edit-shaped Write
+                // (Cursor delivers its edits under the `Write` tool name)
+                // carries the old/new string pair and classifies as an Edit
+                // so the introduced content is evaluated (§3.2 of the
+                // adapter contract).
+                if let Some(content) = input.tool_input.content {
+                    Ok(Some(InputSource::Content(ContentSource::Write {
+                        file_path,
+                        content,
+                    })))
+                } else if let (Some(old_content), Some(new_content)) =
+                    (input.tool_input.old_string, input.tool_input.new_string)
+                {
+                    Ok(Some(InputSource::Content(ContentSource::Edit {
+                        file_path,
+                        old_content,
+                        new_content,
+                    })))
+                } else {
+                    Err(PreToolUseError::InvalidInput {
+                        tool: "Write".to_string(),
+                        reason: "missing content".to_string(),
+                    })
+                }
             }
             "Edit" => {
                 let file_path =
@@ -4530,6 +4620,156 @@ mod tests {
             id: None,
             timestamp: None,
             session_id: None,
+        }
+    }
+
+    /// Cursor names its shell tool `Shell`; the payload shape is the Bash
+    /// shape, so it must classify as the same command source -- otherwise a
+    /// Cursor shell call would classify `Unsupported` and fail open with a
+    /// plain allow while looking guarded.
+    #[test]
+    fn cursor_shell_tool_classifies_as_a_command() {
+        let input = PreToolUseInput {
+            tool_name: "Shell".to_string(),
+            tool_input: ToolInput {
+                command: Some("git status".to_string()),
+                file_path: None,
+                content: None,
+                old_string: None,
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+        let source = Engine::input_source_from_pre_tool_use(input)
+            .expect("a well-formed Shell payload validates")
+            .expect("Shell is a supported tool");
+        assert_eq!(
+            source,
+            InputSource::Command(CommandSource::Hook("git status".to_string()))
+        );
+    }
+
+    /// Cursor delivers its edits under the `Write` tool name shaped as an
+    /// old/new string pair; the pair must classify as an Edit (whose
+    /// evaluation covers the introduced content), while a content-bearing
+    /// Write still classifies as a full-file write.
+    #[test]
+    fn an_edit_shaped_write_classifies_as_an_edit_and_a_full_write_stays_a_write() {
+        let edit_shaped = PreToolUseInput {
+            tool_name: "Write".to_string(),
+            tool_input: ToolInput {
+                command: None,
+                file_path: Some("deploy/app.yaml".to_string()),
+                content: None,
+                old_string: Some("storageClassName: sata".to_string()),
+                new_string: Some("storageClassName: ssd".to_string()),
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+        let source = Engine::input_source_from_pre_tool_use(edit_shaped)
+            .expect("an edit-shaped Write validates")
+            .expect("Write is a supported tool");
+        assert_eq!(
+            source,
+            InputSource::Content(ContentSource::Edit {
+                file_path: "deploy/app.yaml".to_string(),
+                old_content: "storageClassName: sata".to_string(),
+                new_content: "storageClassName: ssd".to_string(),
+            })
+        );
+
+        let full_write = PreToolUseInput {
+            tool_name: "Write".to_string(),
+            tool_input: ToolInput {
+                command: None,
+                file_path: Some("deploy/app.yaml".to_string()),
+                content: Some("storageClassName: sata\n".to_string()),
+                old_string: None,
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+        let source = Engine::input_source_from_pre_tool_use(full_write)
+            .expect("a full-file Write validates")
+            .expect("Write is a supported tool");
+        assert!(matches!(source, InputSource::Content(ContentSource::Write { .. })));
+    }
+
+    /// A Write carrying neither `content` nor a complete old/new pair is
+    /// still a validation error -- the stdin boundary fails it open with a
+    /// diagnostic, the contract's malformed-input behavior, never a crash.
+    #[test]
+    fn a_write_with_no_modeled_payload_is_a_validation_error() {
+        let empty = PreToolUseInput {
+            tool_name: "Write".to_string(),
+            tool_input: ToolInput {
+                command: None,
+                file_path: Some("deploy/app.yaml".to_string()),
+                content: None,
+                old_string: Some("storageClassName: sata".to_string()),
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            id: None,
+            timestamp: None,
+            session_id: None,
+        };
+        let error = Engine::input_source_from_pre_tool_use(empty)
+            .expect_err("a pair missing new_string must not classify");
+        assert!(
+            matches!(error, PreToolUseError::InvalidInput { ref tool, .. } if tool == "Write"),
+            "got: {error}"
+        );
+    }
+
+    /// The `beforeShellExecution` admission path shapes the event's
+    /// `command` field into a `Shell` tool call and keeps the raw payload;
+    /// input without a usable command fails the shaping (the caller's
+    /// boundary then fails open with a stderr diagnostic).
+    #[test]
+    fn shell_execution_payload_shapes_command_and_fails_open_without_one() {
+        let engine = default_engine();
+
+        let (shaped, raw) = engine
+            .shape_shell_execution_payload(
+                r#"{"hook_event_name":"beforeShellExecution","command":"git status","cwd":"/project","sandbox":false}"#,
+            )
+            .expect("a well-formed event payload shapes")
+            .expect("a payload with a command is Some");
+        assert_eq!(shaped.tool_name, "Shell");
+        assert_eq!(shaped.tool_input.command.as_deref(), Some("git status"));
+        assert_eq!(raw["sandbox"], false);
+
+        let source = Engine::input_source_from_pre_tool_use(shaped)
+            .expect("the shaped payload validates")
+            .expect("Shell is a supported tool");
+        assert!(matches!(source, InputSource::Command(CommandSource::Hook(_))));
+
+        for malformed in [
+            "not json at all",
+            r#"{"cwd":"/project","sandbox":false}"#,
+            r#"{"command":"   ","cwd":"/project"}"#,
+            r#"{"command":42}"#,
+        ] {
+            assert!(
+                engine
+                    .shape_shell_execution_payload(malformed)
+                    .is_err(),
+                "a payload without a usable command must fail shaping, got one for {malformed:?}"
+            );
         }
     }
 

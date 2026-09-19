@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "preToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "deploy/app.yaml",
+    "old_string": "storageClassName: sata",
+    "new_string": "storageClassName: ssd"
+  },
+  "tool_use_id": "abc123",
+  "cwd": "/project"
+}

@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "beforeShellExecution",
+  "command": "git push --force origin main",
+  "cwd": "/project",
+  "sandbox": false
+}

@@ -34,58 +34,121 @@ const WARNING_PACK: &str = "tests/fixtures/warning-verdict/warning-pack.json";
 const ADAPTER_CONTRACT_VERSION: u32 = 1;
 
 /// One golden case: (request fixture, harness to declare, pack to load,
-/// response fixture). Declaring the harness exercises the `--harness` flag
-/// on every golden; the undecorated hook is separately proven equivalent
-/// below.
-fn golden_cases() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+/// response fixture, event to declare). Declaring the harness exercises the
+/// `--harness` flag on every golden; the undecorated hook is separately
+/// proven equivalent below. The Cursor shell-event goldens additionally
+/// exercise `--event before-shell-execution`, the event's dedicated stdin
+/// admission path.
+fn golden_cases(
+) -> Vec<(&'static str, &'static str, &'static str, &'static str, &'static str)> {
     vec![
         (
             "claude-code-allow",
             "claude-code",
             SHIPPED_PACKS,
             "claude-code-allow",
+            "pre-tool-use",
         ),
         (
             "claude-code-rewrite",
             "claude-code",
             "command-rewrite-pack",
             "claude-code-rewrite",
+            "pre-tool-use",
         ),
         (
             "claude-code-deny-write",
             "claude-code",
             SHIPPED_PACKS,
             "claude-code-deny-write",
+            "pre-tool-use",
         ),
         (
             "claude-code-warning",
             "claude-code",
             WARNING_PACK,
             "claude-code-warning",
+            "pre-tool-use",
         ),
         (
             "claude-code-unsupported-tool",
             "claude-code",
             SHIPPED_PACKS,
             "claude-code-unsupported-tool",
+            "pre-tool-use",
         ),
         (
             "claude-code-edit-rewrite-preserved-fields",
             "claude-code",
             "edit-rewrite-pack",
             "claude-code-edit-rewrite-preserved-fields",
+            "pre-tool-use",
         ),
         (
             "codex-cli-deny-patch",
             "codex-cli",
             SHIPPED_PACKS,
             "codex-cli-deny-patch",
+            "pre-tool-use",
         ),
         (
             "codex-cli-deny-command",
             "codex-cli",
             SHIPPED_PACKS,
             "codex-cli-deny-command",
+            "pre-tool-use",
+        ),
+        // Cursor: the native flat envelope over its own tool spellings --
+        // `Shell` for commands, an edit-shaped `Write` -- and its dedicated
+        // shell event, whose rewrite degrades to a deny.
+        (
+            "cursor-allow-shell",
+            "cursor",
+            SHIPPED_PACKS,
+            "cursor-allow-shell",
+            "pre-tool-use",
+        ),
+        (
+            "cursor-deny-shell",
+            "cursor",
+            SHIPPED_PACKS,
+            "cursor-deny-shell",
+            "pre-tool-use",
+        ),
+        (
+            "cursor-rewrite-shell",
+            "cursor",
+            "command-rewrite-pack",
+            "cursor-rewrite-shell",
+            "pre-tool-use",
+        ),
+        (
+            "cursor-warning-shell",
+            "cursor",
+            WARNING_PACK,
+            "cursor-warning-shell",
+            "pre-tool-use",
+        ),
+        (
+            "cursor-deny-write-edit-shaped",
+            "cursor",
+            SHIPPED_PACKS,
+            "cursor-deny-write-edit-shaped",
+            "pre-tool-use",
+        ),
+        (
+            "cursor-shell-event-deny",
+            "cursor",
+            SHIPPED_PACKS,
+            "cursor-shell-event-deny",
+            "before-shell-execution",
+        ),
+        (
+            "cursor-shell-event-rewrite-degraded",
+            "cursor",
+            "command-rewrite-pack",
+            "cursor-shell-event-rewrite-degraded",
+            "before-shell-execution",
         ),
     ]
 }
@@ -108,14 +171,26 @@ fn pack_path(name: &str) -> PathBuf {
 
 /// Spawn the real hook front end over a request fixture and return its
 /// process output. The command line mirrors what a harness's hook config
-/// runs: `icg hook --rule-pack <packs> --harness <harness>`.
+/// runs: `icg hook --rule-pack <packs> --harness <harness> [--event <event>]`.
 fn run_hook(request: &Path, harness: Option<&str>, pack: &str) -> std::process::Output {
+    run_hook_with_event(request, harness, Some("pre-tool-use"), pack)
+}
+
+fn run_hook_with_event(
+    request: &Path,
+    harness: Option<&str>,
+    event: Option<&str>,
+    pack: &str,
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
     command
         .args(["hook", "--rule-pack"])
         .arg(pack_path(pack));
     if let Some(harness) = harness {
         command.args(["--harness", harness]);
+    }
+    if let Some(event) = event {
+        command.args(["--event", event]);
     }
     let request_json =
         std::fs::read_to_string(request).unwrap_or_else(|error| panic!("read {request:?}: {error}"));
@@ -150,10 +225,11 @@ fn stdout_json(output: &std::process::Output) -> Value {
 /// harness-specific fields on a rewrite all locked byte-for-byte.
 #[test]
 fn golden_fixtures_render_exactly_their_recorded_response() {
-    for (request_name, harness, pack, response_name) in golden_cases() {
-        let output = run_hook(
+    for (request_name, harness, pack, response_name, event) in golden_cases() {
+        let output = run_hook_with_event(
             &fixture_path(request_name, "request.json"),
             Some(harness),
+            Some(event),
             pack,
         );
         let actual = stdout_json(&output);
@@ -340,7 +416,10 @@ fn undeclared_hook_records_no_harness_identity() {
 
 /// A harness whose adapter is specified but not implemented is refused
 /// before any evaluation: a response the harness cannot read must never be
-/// emitted under its name.
+/// emitted under its name. (`open-code` is the declared slug for the
+/// specified-but-unimplemented OpenCode wire: it must *parse* -- the refusal
+/// under test is the adapter contract's, not clap's -- and then be refused
+/// because no adapter is implemented for it.)
 #[test]
 fn an_unimplemented_harness_is_refused_before_any_evaluation() {
     let temp = tempfile::tempdir().expect("temporary directory should be created");
@@ -352,7 +431,7 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
             "--rule-pack",
             &pack_path(SHIPPED_PACKS).to_string_lossy(),
             "--harness",
-            "cursor",
+            "open-code",
         ])
         .env("ICG_TELEMETRY_PATH", &telemetry_path)
         .stdin(Stdio::piped())
@@ -369,7 +448,10 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(
-        stderr.contains("cursor"),
+        // The refusal quotes `as_slug()` -- the telemetry slug `opencode` --
+        // while the flag spelling is clap's `open-code`; both name the same
+        // declared harness.
+        stderr.contains("opencode"),
         "the refusal names the harness so wiring is fixable, got: {stderr:?}"
     );
     assert!(
@@ -395,8 +477,136 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
         store["window"]["records"]
     );
     assert!(
-        !raw.contains("cursor"),
+        !raw.contains("open-code"),
         "a refused invocation records no harness identity"
+    );
+}
+
+/// The event declaration has its own admission gate: Cursor's
+/// `beforeShellExecution` reader is the only implemented `--event`, and an
+/// invocation asking for it under any other (or no) harness must fail fast
+/// rather than parse the tool-less payload with the wrong reader.
+#[test]
+fn an_event_without_a_matching_adapter_is_refused() {
+    for harness in [None, Some("claude-code"), Some("codex-cli")] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
+        command
+            .args([
+                "hook",
+                "--rule-pack",
+                &pack_path(SHIPPED_PACKS).to_string_lossy(),
+                "--event",
+                "before-shell-execution",
+            ]);
+        if let Some(harness) = harness {
+            command.args(["--harness", harness]);
+        }
+        let output = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("hook process should run");
+
+        assert!(
+            !output.status.success(),
+            "before-shell-execution without --harness cursor must refuse, got: {harness:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+        assert!(
+            stderr.contains("before-shell-execution") && stderr.contains("cursor"),
+            "the refusal names both the event and its only implemented harness: {stderr:?}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "no decision envelope is emitted for a refused event/harness pair"
+        );
+    }
+}
+
+/// The engine's tool spellings are shared, not adapter-scoped: the
+/// undecorated hook -- the invocation that predates `--harness` -- also
+/// classifies Cursor's `Shell` tool, so a Cursor install pointed at the
+/// bare hook (Cursor reads Claude Code's nested envelope through its
+/// third-party hooks compatibility) is still gated. The declared
+/// `--harness cursor` remains the path that answers in Cursor's own
+/// schema-exact flat envelope; this pin is the defense-in-depth one: the
+/// same command the declared cursor goldens deny is denied here too, in
+/// the envelope the bare hook has always emitted.
+#[test]
+fn the_engine_shell_alias_serves_the_undecorated_hook_too() {
+    let output = run_hook(
+        &fixture_path("cursor-deny-shell", "request.json"),
+        None,
+        SHIPPED_PACKS,
+    );
+    let response = stdout_json(&output);
+
+    assert_eq!(
+        response["hookSpecificOutput"]["permissionDecision"],
+        json!("deny"),
+        "the shared engine classifies Cursor's Shell tool regardless of \
+         harness declaration: the command the declared cursor goldens deny \
+         is denied through the undecorated hook as well"
+    );
+    assert_eq!(
+        response["hookSpecificOutput"]["hookEventName"],
+        json!("PreToolUse"),
+        "the undecorated hook keeps its own Claude envelope"
+    );
+    let reason = response["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("a deny carries its attributed reason");
+    assert!(
+        reason.contains("[pack=git, pattern=git-credential-fill-bare-stdout]"),
+        "the denial carries the same pack/pattern attribution, got: {reason:?}"
+    );
+}
+
+/// Cursor's permission hooks block a response that does not match the
+/// schema, and its schema has no `systemMessage`: practice mode's
+/// would-be-denial banner must go to stderr only, leaving stdout exactly
+/// the documented allow object. (The engine telemetry and the stderr
+/// diagnostic remain the operator's record that a denial was suppressed.)
+#[test]
+fn cursor_practice_mode_keeps_stdout_schema_exact() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "hook",
+            "--rule-pack",
+            &pack_path(SHIPPED_PACKS).to_string_lossy(),
+            "--harness",
+            "cursor",
+            "--practice",
+        ])
+        .env("ICG_PRACTICE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hook process should start");
+    let payload = std::fs::read_to_string(fixture_path("cursor-deny-shell", "request.json"))
+        .expect("request fixture should exist");
+    child
+        .stdin
+        .take()
+        .expect("hook stdin should be available")
+        .write_all(payload.as_bytes())
+        .expect("hook input should be written");
+    let output = child.wait_with_output().expect("hook process should finish");
+
+    let response: Value = serde_json::from_slice(&output.stdout)
+        .expect("stdout should be one JSON object");
+    assert_eq!(
+        response,
+        json!({ "permission": "allow" }),
+        "practice mode allows the call, and for Cursor it must not attach \
+         a systemMessage: the response stays exactly the schema shape"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("PRACTICE MODE"),
+        "the practice banner belongs on stderr for a schema-strict harness, got: {stderr:?}"
     );
 }
 

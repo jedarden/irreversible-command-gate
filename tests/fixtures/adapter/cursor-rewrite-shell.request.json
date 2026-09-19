@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "preToolUse",
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "git push --force origin main",
+    "working_directory": "/project"
+  },
+  "tool_use_id": "abc123",
+  "cwd": "/project"
+}

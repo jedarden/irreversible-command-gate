@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "preToolUse",
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "git credential fill"
+  },
+  "tool_use_id": "abc123",
+  "cwd": "/project"
+}

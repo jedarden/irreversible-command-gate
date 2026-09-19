@@ -1,0 +1,5 @@
+{
+  "permission": "deny",
+  "user_message": "Removed the force-push flags from git push; retrying as a normal push preserves the requested commits without rewriting the remote. [pack=adapter-command-rewrite, pattern=rewrite-force-push]",
+  "agent_message": "Removed the force-push flags from git push; retrying as a normal push preserves the requested commits without rewriting the remote. [pack=adapter-command-rewrite, pattern=rewrite-force-push]"
+}

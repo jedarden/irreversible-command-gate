@@ -1,0 +1,7 @@
+{
+  "permission": "allow",
+  "updated_input": {
+    "command": "git push origin main",
+    "working_directory": "/project"
+  }
+}

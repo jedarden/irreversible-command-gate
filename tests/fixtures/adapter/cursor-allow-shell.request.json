@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "preToolUse",
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "git status",
+    "working_directory": "/project"
+  },
+  "tool_use_id": "abc123",
+  "cwd": "/project",
+  "cursor_version": "1.7.2"
+}

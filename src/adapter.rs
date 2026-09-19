@@ -78,8 +78,9 @@ pub enum HarnessId {
     /// Gemini CLI's `BeforeTool` command hook. Specified in the contract
     /// doc; adapter not yet implemented.
     GeminiCli,
-    /// Cursor's agent hooks (`hooks.json` schema version 1). Specified in
-    /// the contract doc; adapter not yet implemented.
+    /// Cursor's agent hooks (`hooks.json` schema version 1): the generic
+    /// `preToolUse` event, plus the dedicated `beforeShellExecution` event
+    /// served by [`CursorShellExecutionAdapter`].
     Cursor,
     /// This binary's own PATH-wrapper front end. The wrapper never parses a
     /// payload -- its input is OS-parsed argv -- so it has no request
@@ -467,6 +468,57 @@ const CODEX_CAPABILITIES: Capabilities = Capabilities {
     supports_system_message: true,
 };
 
+/// Adapter for Cursor's native `preToolUse` agent hook.
+///
+/// Payload: JSON on stdin with `tool_name`/`tool_input`. Cursor names its
+/// shell tool `Shell` (the payload is the Bash shape), and delivers its
+/// edits under the `Write` tool name shaped as an old/new string pair --
+/// both spellings classify in the engine's alias handling. Response:
+/// Cursor's flat envelope -- `permission`, `user_message`, `agent_message`,
+/// and `updated_input` at the top level, with no `hookSpecificOutput`
+/// wrapper. Cursor also accepts Claude Code's nested envelope on this event
+/// (third-party imports), but the declared adapter speaks the native shape
+/// so the response never depends on a compatibility layer. Sources:
+/// <https://cursor.com/docs/agent/hooks> and
+/// <https://cursor.com/docs/reference/third-party-hooks>, re-checked
+/// 2026-09-19.
+pub struct CursorAdapter;
+
+/// Adapter for Cursor's dedicated `beforeShellExecution` agent hook,
+/// selected with `icg hook --harness cursor --event before-shell-execution`.
+///
+/// The event's payload is `{command, cwd, sandbox}` -- **no `tool_name`** --
+/// so it would fail the PreToolUse stdin parse and fail open unchecked;
+/// `--event` gives it its own admission path, which shapes the payload into
+/// the `Shell` tool call the shared front end already evaluates. The
+/// event's response schema has **no `updated_input` field**, so its
+/// capabilities declare `supports_updated_input: false` and a Rewrite
+/// degrades to a Deny carrying the rewrite's reason (§5 degradation): the
+/// event can refuse a command but cannot replace it.
+pub struct CursorShellExecutionAdapter;
+
+/// Cursor's `preToolUse` decision carries `permission`, `user_message`,
+/// `agent_message`, and `updated_input` -- but no advisory-context channel
+/// (`additional_context` exists only on the sessionStart/postToolUse
+/// events, never on a permission decision) and no `systemMessage`. Cursor's
+/// permission hooks **block on a response that does not match the hook's
+/// schema**, so nothing outside the documented schema may ever be emitted
+/// to it.
+const CURSOR_CAPABILITIES: Capabilities = Capabilities {
+    supports_updated_input: true,
+    supports_additional_context: false,
+    honors_additional_context: false,
+    supports_system_message: false,
+};
+
+/// `beforeShellExecution` output carries only the permission decision and
+/// the two messages: there is no `updated_input` field on this event, so a
+/// rewrite degrades to a deny.
+const CURSOR_SHELL_EVENT_CAPABILITIES: Capabilities = Capabilities {
+    supports_updated_input: false,
+    ..CURSOR_CAPABILITIES
+};
+
 impl HarnessAdapter for ClaudeCodeAdapter {
     fn harness(&self) -> HarnessId {
         HarnessId::ClaudeCode
@@ -487,21 +539,69 @@ impl HarnessAdapter for CodexAdapter {
     }
 }
 
+impl HarnessAdapter for CursorAdapter {
+    fn harness(&self) -> HarnessId {
+        HarnessId::Cursor
+    }
+
+    fn capabilities(&self) -> &'static Capabilities {
+        &CURSOR_CAPABILITIES
+    }
+
+    fn render(
+        &self,
+        result: &CanonicalResult,
+        original_input: Option<&Value>,
+        rewrite_key: &str,
+    ) -> Value {
+        render_cursor_envelope(result, original_input, rewrite_key, self.capabilities())
+    }
+}
+
+impl HarnessAdapter for CursorShellExecutionAdapter {
+    fn harness(&self) -> HarnessId {
+        HarnessId::Cursor
+    }
+
+    fn capabilities(&self) -> &'static Capabilities {
+        &CURSOR_SHELL_EVENT_CAPABILITIES
+    }
+
+    fn render(
+        &self,
+        result: &CanonicalResult,
+        original_input: Option<&Value>,
+        rewrite_key: &str,
+    ) -> Value {
+        render_cursor_envelope(result, original_input, rewrite_key, self.capabilities())
+    }
+}
+
 /// The adapter for a declared harness, or `None` for the harnesses whose
-/// adapters are specified but not yet implemented (`OpenCode`, `GeminiCli`,
-/// `Cursor`) and for the payload-less `Wrapper` front end.
+/// adapters are specified but not yet implemented (`OpenCode`, `GeminiCli`)
+/// and for the payload-less `Wrapper` front end.
 ///
 /// The front end refuses an unsupported harness rather than silently serving
 /// the wrong wire format: a Gemini CLI caller handed the Claude Code
-/// envelope would get a response its harness never reads.
+/// envelope would get a response its harness never reads. Cursor's
+/// dedicated `beforeShellExecution` event is selected through
+/// [`cursor_shell_execution_adapter`], not through this function: its
+/// payload and response differ from `preToolUse`'s.
 pub fn adapter_for(harness: HarnessId) -> Option<&'static dyn HarnessAdapter> {
     match harness {
         HarnessId::ClaudeCode => Some(&ClaudeCodeAdapter),
         HarnessId::CodexCli => Some(&CodexAdapter),
-        HarnessId::OpenCode | HarnessId::GeminiCli | HarnessId::Cursor | HarnessId::Wrapper => {
-            None
-        }
+        HarnessId::Cursor => Some(&CursorAdapter),
+        HarnessId::OpenCode | HarnessId::GeminiCli | HarnessId::Wrapper => None,
     }
+}
+
+/// The adapter for Cursor's `beforeShellExecution` event, served by
+/// `icg hook --harness cursor --event before-shell-execution`. Its
+/// capabilities degrade a Rewrite to a Deny: the event's response schema has
+/// no input-replacement channel.
+pub fn cursor_shell_execution_adapter() -> &'static dyn HarnessAdapter {
+    &CursorShellExecutionAdapter
 }
 
 /// The default adapter when a hook invocation declares no harness.
@@ -603,6 +703,54 @@ pub fn render_decision_envelope(
     response
 }
 
+/// Render one canonical result in Cursor's native flat envelope, degraded
+/// according to the given capabilities.
+///
+/// Cursor's permission hooks **block a response that does not match the
+/// hook's schema**, so this renderer emits exactly the documented fields and
+/// nothing else: `permission` always; `user_message` and `agent_message` on
+/// a deny; `updated_input` on a rewrite (when the event supports one). The
+/// degradation rules are the shared contract's: a Warning is a bare allow --
+/// the decision schema has no advisory-context channel (`additional_context`
+/// exists only on the sessionStart/postToolUse events) -- and a Rewrite
+/// under capabilities without `updated_input` becomes a deny carrying the
+/// rewrite's attributed reason, because the matched input must not run
+/// unreplaced.
+pub fn render_cursor_envelope(
+    result: &CanonicalResult,
+    original_input: Option<&Value>,
+    rewrite_key: &str,
+    capabilities: &Capabilities,
+) -> Value {
+    match result.verdict {
+        CanonicalVerdict::Allow | CanonicalVerdict::Warn => {
+            serde_json::json!({ "permission": "allow" })
+        }
+        CanonicalVerdict::Rewrite if capabilities.supports_updated_input => {
+            // `updated_input` is Cursor's "modified tool input to use
+            // instead": a complete replacement object, so every field the
+            // harness sent -- modeled or not -- is copied in and only the
+            // rewrite key is substituted.
+            let mut updated_input = original_input
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(rewrite) = &result.rewrite {
+                updated_input.insert(rewrite_key.to_string(), Value::String(rewrite.clone()));
+            }
+            serde_json::json!({ "permission": "allow", "updated_input": updated_input })
+        }
+        CanonicalVerdict::Rewrite | CanonicalVerdict::Deny => {
+            let reason = result.attributed_reason();
+            serde_json::json!({
+                "permission": "deny",
+                "user_message": reason,
+                "agent_message": reason,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,16 +813,22 @@ mod tests {
     fn only_shipped_adapters_are_selectable() {
         assert!(adapter_for(HarnessId::ClaudeCode).is_some());
         assert!(adapter_for(HarnessId::CodexCli).is_some());
+        assert!(adapter_for(HarnessId::Cursor).is_some());
         // Specified but unimplemented: the front end must refuse these
         // rather than serve the wrong wire format.
         assert!(adapter_for(HarnessId::OpenCode).is_none());
         assert!(adapter_for(HarnessId::GeminiCli).is_none());
-        assert!(adapter_for(HarnessId::Cursor).is_none());
         assert!(adapter_for(HarnessId::Wrapper).is_none());
         let default = default_adapter();
         assert!(std::ptr::eq(
             adapter_for(HarnessId::ClaudeCode).expect("claude adapter exists"),
             default
+        ));
+        // Cursor's dedicated shell event has its own adapter with its own
+        // capabilities; `--harness cursor` alone serves preToolUse.
+        assert!(!std::ptr::eq(
+            adapter_for(HarnessId::Cursor).expect("cursor adapter exists"),
+            cursor_shell_execution_adapter()
         ));
     }
 
@@ -1030,6 +1184,180 @@ mod tests {
         );
         assert!(capabilities.supports_system_message);
         assert!(capabilities.supports_updated_input);
+    }
+
+    #[test]
+    fn cursor_classifies_shell_and_edit_shaped_writes_through_the_engine() {
+        let engine = Engine::new();
+        let cursor = adapter_for(HarnessId::Cursor).expect("cursor adapter exists");
+
+        let shell = cursor.build_request(
+            &engine,
+            payload(
+                "Shell",
+                json!({ "command": "git status", "working_directory": "/project" }),
+            ),
+            None,
+        );
+        assert_eq!(shell.harness, HarnessId::Cursor);
+        assert_eq!(shell.tool_name, "Shell");
+        assert_eq!(shell.rewrite_key(), "command");
+
+        // Cursor's edits arrive under the `Write` tool name with an
+        // old/new pair; the rewrite must follow the incoming spelling.
+        let edit = cursor.build_request(
+            &engine,
+            payload(
+                "Write",
+                json!({
+                    "file_path": "deploy/app.yaml",
+                    "old_string": "storageClassName: sata",
+                    "new_string": "storageClassName: ssd"
+                }),
+            ),
+            Some(&json!({
+                "file_path": "deploy/app.yaml",
+                "old_string": "storageClassName: sata",
+                "new_string": "storageClassName: ssd"
+            })),
+        );
+        assert!(matches!(
+            edit.action(),
+            CanonicalAction::EditFile { .. }
+        ));
+        assert_eq!(edit.rewrite_key(), "new_string");
+    }
+
+    #[test]
+    fn cursor_declares_no_context_channel_and_no_system_message() {
+        let capabilities = adapter_for(HarnessId::Cursor)
+            .unwrap()
+            .capabilities();
+        assert!(capabilities.supports_updated_input);
+        assert!(
+            !capabilities.supports_additional_context,
+            "additional_context exists only on Cursor's after-tool events, \
+             never on a permission decision"
+        );
+        assert!(!capabilities.honors_additional_context);
+        assert!(
+            !capabilities.supports_system_message,
+            "Cursor's permission hooks block a response that does not match \
+             the schema; systemMessage is not in it"
+        );
+
+        let shell_event = cursor_shell_execution_adapter().capabilities();
+        assert!(
+            !shell_event.supports_updated_input,
+            "beforeShellExecution output has no updated_input field"
+        );
+        assert!(!shell_event.supports_system_message);
+    }
+
+    #[test]
+    fn cursor_renders_its_native_flat_envelope() {
+        let cursor = adapter_for(HarnessId::Cursor).unwrap();
+        let input = json!({
+            "command": "git push --force origin main",
+            "working_directory": "/project"
+        });
+
+        let allow = cursor.render(
+            &CanonicalResult::from_engine(&CheckResult::Allowed, None),
+            None,
+            "command",
+        );
+        assert_eq!(allow, json!({ "permission": "allow" }));
+
+        let deny = cursor.render(
+            &CanonicalResult::from_engine(&denied("git", "git-force-push"), None),
+            Some(&input),
+            "command",
+        );
+        assert_eq!(
+            deny,
+            json!({
+                "permission": "deny",
+                "user_message": "denied by policy [pack=git, pattern=git-force-push]",
+                "agent_message": "denied by policy [pack=git, pattern=git-force-push]",
+            })
+        );
+
+        let rewrite = cursor.render(
+            &CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            Some(&input),
+            "command",
+        );
+        assert_eq!(
+            rewrite,
+            json!({
+                "permission": "allow",
+                "updated_input": {
+                    "command": "git push origin main",
+                    "working_directory": "/project"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn a_cursor_warning_is_a_bare_allow_and_a_deny_is_schema_exact() {
+        let cursor = adapter_for(HarnessId::Cursor).unwrap();
+        let warning = CanonicalResult {
+            verdict: CanonicalVerdict::Warn,
+            reason: Some("check the target".to_string()),
+            pack_id: Some("warning-verdict-e2e".to_string()),
+            pattern_id: Some("warn-worktree-add".to_string()),
+            matched_path: None,
+            rewrite: None,
+            subject: None,
+        };
+        let response = cursor.render(&warning, None, "command");
+        assert_eq!(
+            response,
+            json!({ "permission": "allow" }),
+            "the decision schema has no advisory-context channel; the warning \
+             text is dropped, never turned into a block or an unknown field"
+        );
+
+        let deny = cursor.render(
+            &CanonicalResult::from_engine(&denied("git", "git-force-push"), None),
+            None,
+            "command",
+        );
+        assert!(
+            deny.get("updated_input").is_none(),
+            "a deny never carries a replacement input"
+        );
+        assert!(
+            deny.get("hookSpecificOutput").is_none(),
+            "the native envelope is flat: no Claude envelope may leak into it"
+        );
+    }
+
+    #[test]
+    fn the_cursor_shell_event_degrades_a_rewrite_to_a_deny() {
+        let shell_event = cursor_shell_execution_adapter();
+        let input = json!({ "command": "git push --force origin main", "sandbox": false });
+        let response = shell_event.render(
+            &CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            Some(&input),
+            "command",
+        );
+
+        assert_eq!(
+            response,
+            json!({
+                "permission": "deny",
+                "user_message":
+                    "use the safe form [pack=git, pattern=git-force-push]",
+                "agent_message":
+                    "use the safe form [pack=git, pattern=git-force-push]",
+            }),
+            "beforeShellExecution has no updated_input field: the matched \
+             command must not run unreplaced, so the rewrite degrades to a \
+             deny carrying the rewrite's reason"
+        );
     }
 
     /// `PreToolUseInput` is not `Clone`; rebuild an equal input for the

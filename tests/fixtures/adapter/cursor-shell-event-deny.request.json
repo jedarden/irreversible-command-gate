@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "beforeShellExecution",
+  "command": "git credential fill",
+  "cwd": "/project",
+  "sandbox": false
+}

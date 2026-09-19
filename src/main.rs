@@ -243,6 +243,12 @@ enum Commands {
         /// shipped wire formats exactly as before and records no harness.
         #[arg(long, value_name = "HARNESS")]
         harness: Option<adapter::HarnessId>,
+        /// Which hook event is calling, for harnesses whose events have
+        /// distinct payload shapes. Cursor's `beforeShellExecution` payload
+        /// carries `command` with no `tool_name`, so it has its own stdin
+        /// admission path; it requires `--harness cursor`.
+        #[arg(long, value_name = "EVENT", default_value = "pre-tool-use")]
+        event: HookEvent,
     },
     /// Wrapper mode: invoked under a shadowed binary name (e.g., vault, git, docker)
     #[command(hide = true)]
@@ -561,6 +567,21 @@ fn practice_response_result(
     }
 }
 
+/// The hook event an invocation serves. Most harnesses speak exactly one
+/// payload shape per front end; Cursor's dedicated `beforeShellExecution`
+/// event has its own payload (and response schema), so it is declared
+/// rather than guessed from the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum HookEvent {
+    /// A generic `PreToolUse` payload: `tool_name` plus `tool_input`.
+    #[value(name = "pre-tool-use")]
+    PreToolUse,
+    /// Cursor's `beforeShellExecution` payload: `command`/`cwd`/`sandbox`
+    /// with no `tool_name`.
+    #[value(name = "before-shell-execution")]
+    BeforeShellExecution,
+}
+
 /// Render the native Codex/Claude PreToolUse response envelope through the
 /// invocation's harness adapter. Both hook protocols consume the hook-specific
 /// decision under `hookSpecificOutput`; Codex additionally requires
@@ -595,7 +616,15 @@ fn render_hook_response(
     );
 
     if let Some(message) = practice_message {
-        response["systemMessage"] = serde_json::Value::String(message);
+        if harness_adapter.capabilities().supports_system_message {
+            response["systemMessage"] = serde_json::Value::String(message);
+        } else {
+            // A harness whose response schema has no `systemMessage` must
+            // never receive one: Cursor's permission hooks block a response
+            // that does not match the schema. The banner goes to stderr,
+            // which is diagnostics, not the response.
+            eprintln!("{message}");
+        }
     }
 
     response
@@ -604,15 +633,27 @@ fn render_hook_response(
 /// Render the successful native-hook response for an explicit operator
 /// emergency bypass. Do not parse or echo the request here: hook commands and
 /// content may contain credentials, and the bypass audit intentionally records
-/// only its activation and front end.
-fn render_emergency_bypass_hook_response() -> serde_json::Value {
-    serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow"
-        },
-        "systemMessage": emergency_bypass::WARNING
-    })
+/// only its activation and front end. The envelope is the invocation's own
+/// adapter's plain-allow render, so a bypass stays schema-exact for every
+/// harness; the warning travels on `systemMessage` only where the harness's
+/// schema has that field, and on stderr otherwise.
+fn render_emergency_bypass_hook_response(
+    harness_adapter: &dyn adapter::HarnessAdapter,
+) -> serde_json::Value {
+    let mut response = HarnessAdapter::render(
+        harness_adapter,
+        &CanonicalResult::from_engine(&engine::CheckResult::Allowed, None),
+        None,
+        "command",
+    );
+    if harness_adapter.capabilities().supports_system_message {
+        response["systemMessage"] = serde_json::Value::String(
+            emergency_bypass::WARNING.to_string(),
+        );
+    } else {
+        eprintln!("{}", emergency_bypass::WARNING);
+    }
+    response
 }
 
 /// Best-effort persistence for the explicitly enabled traffic recorder.
@@ -1512,6 +1553,7 @@ fn main() -> Result<()> {
             trusted_ref,
             record_as_test,
             harness,
+            event,
         } => {
             // Adapter selection happens before any state is touched: an
             // invocation declaring a harness whose adapter is not
@@ -1519,7 +1561,17 @@ fn main() -> Result<()> {
             // wire format -- nothing is evaluated, stdin is never read,
             // and no evaluation telemetry is recorded (see the adapter
             // contract).
+            if event == HookEvent::BeforeShellExecution && harness != Some(adapter::HarnessId::Cursor)
+            {
+                anyhow::bail!(
+                    "--event before-shell-execution is implemented for --harness cursor only; \
+                     no other shipped harness carries a shell-execution event"
+                );
+            }
             let harness_adapter: &'static dyn adapter::HarnessAdapter = match harness {
+                Some(adapter::HarnessId::Cursor) if event == HookEvent::BeforeShellExecution => {
+                    adapter::cursor_shell_execution_adapter()
+                }
                 Some(declared) => adapter::adapter_for(declared).ok_or_else(|| {
                     anyhow::anyhow!(
                         "no adapter is implemented for harness '{}' yet; the contract \
@@ -1535,7 +1587,7 @@ fn main() -> Result<()> {
                 // request parsing, and the fail-open/fail-closed availability
                 // boundary. Its telemetry deliberately contains no tool input.
                 emergency_bypass::record_activation(emergency_bypass::FrontEnd::Hook);
-                println!("{}", render_emergency_bypass_hook_response());
+                println!("{}", render_emergency_bypass_hook_response(harness_adapter));
                 let result = Ok(());
                 if let Some(run) = lifecycle.as_mut() {
                     run.finish_result(&result);
@@ -1602,7 +1654,15 @@ fn main() -> Result<()> {
 
             // Retain the original tool input so an updatedInput response can
             // replace one field without dropping the other tool arguments.
-            let hook_payload = engine.read_pre_tool_use_payload_from_stdin()?;
+            // The declared event owns the stdin admission path: Cursor's
+            // beforeShellExecution payload has no `tool_name`, so the plain
+            // PreToolUse reader would fail it open unchecked.
+            let hook_payload = match event {
+                HookEvent::PreToolUse => engine.read_pre_tool_use_payload_from_stdin()?,
+                HookEvent::BeforeShellExecution => {
+                    engine.read_before_shell_execution_payload_from_stdin()?
+                }
+            };
             let (hook_input, original_input) = match hook_payload {
                 Some((input, original_input)) => (Some(input), Some(original_input)),
                 None => (None, None),
