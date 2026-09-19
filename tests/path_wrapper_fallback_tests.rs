@@ -156,10 +156,35 @@ fn code_of(output: &Output) -> i32 {
 
 /// Resolve the real git binary the way a shell would, WITHOUT the wrapper
 /// directory -- the absolute path an agent could invoke directly.
+/// True when a PATH candidate is one of ICG's own wrapper symlinks rather
+/// than the tool it shadows. See the twin in `no_network_boundary_tests`.
+///
+/// The release image (`argo-guarded-builder`) symlinks `git` and friends in
+/// `/usr/local/bin` to the `icg` binary and puts that directory first in
+/// PATH, so the first `git` on PATH there is the wrapper, not git.
+fn is_icg_wrapper(candidate: &Path) -> bool {
+    fs::canonicalize(candidate)
+        .ok()
+        .and_then(|resolved| {
+            resolved
+                .file_name()
+                .map(|name| name == std::ffi::OsStr::new("icg"))
+        })
+        .unwrap_or(false)
+}
+
+/// The genuine `git`, skipping ICG's wrapper symlinks.
+///
+/// Skipping them is what makes `absolute_path_invocation_bypasses_the_wrapper`
+/// mean anything: that test invokes this path directly to prove an absolute
+/// -path call never reaches icg. In the guarded builder the unfiltered scan
+/// returns `/usr/local/bin/git` -- a symlink to icg -- so the "bypass" ran the
+/// wrapper, was denied, and the assertion failed. The test was right; the
+/// helper was handing it the wrapper.
 fn real_git_binary() -> PathBuf {
     for dir in std::env::var("PATH").unwrap_or_default().split(':') {
         let candidate = Path::new(dir).join("git");
-        if candidate.is_file() {
+        if candidate.is_file() && !is_icg_wrapper(&candidate) {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
