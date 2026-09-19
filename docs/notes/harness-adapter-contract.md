@@ -333,6 +333,16 @@ exact official source it was taken from.
   exit codes, `failClosed`) and
   <https://cursor.com/docs/reference/third-party-hooks> (Claude Code
   compatibility), re-checked 2026-09-19.
+- **End-to-end proof:** [`scripts/cursor-dispatch-e2e`](../../scripts/cursor-dispatch-e2e)
+  plays Cursor's side of this wire from the same two documentation pages —
+  a scratch project `.cursor/hooks.json`, the documented stdin payloads,
+  and the documented interpretation of exit codes, invalid JSON, schema
+  mismatches, and `failClosed` — and executes the surviving commands
+  against harmless fake targets (a marker-creating denied command, a
+  deliberately diverged scratch clone for the force-push rewrite, and the
+  unchanged Claude hook under the third-party-import interpretation). It
+  is the executable form of this section's claims about what Cursor's
+  dispatch does with ICG's responses.
 
 ## 7. Timeouts
 

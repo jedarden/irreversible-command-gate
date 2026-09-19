@@ -1,0 +1,1078 @@
+#!/usr/bin/env python3
+"""Prove Cursor deny/rewrite gate execution end-to-end against harmless fake targets.
+
+The adapter contract (docs/notes/harness-adapter-contract.md §6.5) ships a
+Cursor `preToolUse` adapter and a `beforeShellExecution` adapter, and its
+tests pin the envelopes they render -- but unit tests assert what OUR code
+emits, not what Cursor's harness does with it. This script is the missing
+half: it plays Cursor's side of the wire, built strictly from Cursor's
+published dispatch semantics, and proves by execution that a deny blocks a
+harmless fake target, that a rewrite's `updated_input` is the command that
+actually runs, and that the shell event degrades a rewrite to a deny.
+
+Cursor itself is a GUI IDE and is not installed here, so the harness-side
+interpretation is implemented from the official documentation (both pages
+re-checked 2026-09-19):
+
+  https://cursor.com/docs/agent/hooks
+    - `.cursor/hooks.json` is `{"version": 1, "hooks": {<event>:
+      [{command, matcher, timeout, failClosed}]}}`; project hooks run from
+      the project root.
+    - Exit 0: stdout is parsed as the decision JSON. Invalid JSON or a
+      schema mismatch on a permission hook BLOCKS the call natively, even
+      with failClosed unset.
+    - Exit 2: block, equivalent to permission "deny".
+    - Any other exit, a crash, a timeout, or no output: the action
+      proceeds (fail open) unless the hook sets failClosed: true, which
+      promotes those failures to a block.
+    - preToolUse output schema: permission allow/deny/ask, user_message,
+      agent_message, updated_input (a complete replacement tool_input).
+      beforeShellExecution output schema: the same minus updated_input.
+    - matcher: preToolUse filters by tool name (Shell, Read, Write, ...);
+      beforeShellExecution matches the full command string; "" / "*"
+      match everything. `ask` is accepted by the preToolUse schema but
+      not enforced today.
+
+  https://cursor.com/docs/reference/third-party-hooks
+    - Claude Code hooks run UNCHANGED (same command string); PreToolUse
+      maps to preToolUse, tool names translate (Bash -> Shell, Edit ->
+      Write), and the nested envelope is accepted: permissionDecision ->
+      permission, permissionDecisionReason -> user_message, updatedInput ->
+      updated_input. Exit codes keep the same meaning.
+
+What gets proven here, against the SHIPPED packs (not a synthetic one) and
+harmless fake targets only:
+
+  S0  The dispatch interpretation itself, self-checked against stub hooks
+      (exit 2, invalid JSON, exit 3, timeout, failClosed, and the two
+      schema-mismatch controls that show ICG's envelope choices are
+      load-bearing), so the ICG scenarios below are known to run through
+      faithful semantics.
+  S1  Native preToolUse DENY: `bao kv put ... password=hunter2` (the
+      openbao inline-secret-literal rule) wrapping a marker-creating
+      redirection. The deny means the command never reaches a shell: the
+      marker file does not exist afterwards.
+  S2  Native preToolUse ALLOW control: an unremarkable `touch` runs and
+      creates its marker, proving the executor really executes what the
+      gate lets through (S1's absent marker is the deny, not a dead
+      executor).
+  S3  Native preToolUse REWRITE: `git push --force origin main` in a
+      deliberately diverged scratch clone. The substituted
+      `git push origin main` is the command that actually runs (recorded
+      by a PATH-shim `git`), it is rejected as non-fast-forward, and the
+      baseline commit survives on the scratch remote. Had the original
+      run, the remote would now carry the divergent commit.
+  S4  The same force-push through beforeShellExecution: the event's
+      response schema has no updated_input, so the rewrite degrades to a
+      deny and nothing runs at all. An allow control through the same
+      event shows it gates rather than blanket-denies.
+  S5  The unchanged Claude Code hook (no --harness), driven through the
+      third-party-import interpretation, denies the same-shaped payload;
+      the nested and flat envelopes are printed side by side.
+  S6  Hygiene: verdict-shaped telemetry only, the denial recorded in the
+      operational log, every artifact under the scratch tree.
+
+Every artifact lives under one mktemp -d scratch tree (under /tmp) which
+is removed on success (all targets harmless, nothing left behind) and
+deliberately left on failure for diagnosis. Hook-side state (telemetry,
+denial log, session state, health) is redirected into the scratch tree so
+the run never touches the host's live caches. Exit code is 0 only when
+every assertion held.
+
+Usage:
+  scripts/cursor-dispatch-e2e [--icg-bin PATH] [--keep] [--repo-root DIR]
+
+  --icg-bin     skip the build and drive this binary instead
+  --keep        keep the scratch tree on success for inspection
+  --repo-root   defaults to the parent of this script's directory
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Cursor's documented dispatch semantics
+# ---------------------------------------------------------------------------
+
+#: Documented top-level fields of a permission-decision response, per event.
+#: Anything else on stdout at exit 0 is a schema mismatch, which blocks.
+NATIVE_RESPONSE_KEYS = {
+    "preToolUse": {"permission", "user_message", "agent_message", "updated_input"},
+    "beforeShellExecution": {"permission", "user_message", "agent_message"},
+}
+
+#: Documented permission values. `ask` is accepted by the preToolUse schema
+#: but "not enforced ... today", so it proceeds.
+PERMISSION_VALUES = {"allow", "deny", "ask"}
+
+#: The Claude Code decision envelope Cursor's third-party import accepts.
+#: The import docs describe a field mapping rather than a strict schema;
+#: these are the fields the mapping names (plus the always-present
+#: hookEventName and the tolerated additionalContext), and a response
+#: outside them is treated as a mismatch.
+CLAUDE_NESTED_KEYS = {
+    "hookEventName",
+    "permissionDecision",
+    "permissionDecisionReason",
+    "updatedInput",
+    "additionalContext",
+}
+
+
+class Decision:
+    """One hook run interpreted the way Cursor's docs say to interpret it."""
+
+    def __init__(self, permission, reason="", updated_input=None, detail=""):
+        self.permission = permission
+        self.reason = reason
+        self.updated_input = updated_input
+        self.detail = detail
+
+    def as_dict(self):
+        out = {"permission": self.permission, "interpretation": self.detail}
+        if self.reason:
+            out["reason"] = self.reason
+        if self.updated_input is not None:
+            out["updated_input"] = self.updated_input
+        return out
+
+
+def interpret_command_hook(event, rc, stdout, stderr, timed_out, fail_closed):
+    """Interpret one native Cursor command hook result per the docs.
+
+    Returns a Decision. This is the load-bearing function of the proof: it
+    encodes exit 0 / exit 2 / other-exit, the native block on invalid JSON
+    or schema mismatch, and the failClosed promotion of crash, timeout,
+    non-zero exit, and no output.
+    """
+    if timed_out or rc is None or rc < 0 or rc not in (0, 2):
+        # Crash (signal), timeout, or a non-2 non-zero exit: the hook
+        # failed. Fail open unless the hook declared failClosed.
+        failure = f"hook failure (rc={rc}, timed_out={timed_out})"
+        if fail_closed:
+            return Decision("deny", f"{failure} promoted to block by failClosed: true", detail=failure)
+        return Decision("allow", detail=f"{failure}; documented fail-open")
+    if rc == 2:
+        return Decision("deny", stderr.strip(), detail="exit 2 blocks, equivalent to permission deny")
+    # Exit 0: stdout is the decision document.
+    text = stdout.strip()
+    if not text:
+        # "no output" sits in the failClosed promotion list, so without it
+        # the action proceeds.
+        if fail_closed:
+            return Decision("deny", "no output promoted to block by failClosed: true", detail="no output")
+        return Decision("allow", detail="no output; documented fail-open")
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as error:
+        return Decision(
+            "deny",
+            f"invalid JSON: {error}",
+            detail="invalid JSON blocks a permission hook natively",
+        )
+    allowed_keys = NATIVE_RESPONSE_KEYS[event]
+    if not isinstance(doc, dict):
+        return Decision(
+            "deny",
+            f"response is {type(doc).__name__}, not an object",
+            detail="schema mismatch blocks a permission hook natively",
+        )
+    extra = sorted(set(doc) - allowed_keys)
+    if extra:
+        return Decision(
+            "deny",
+            f"fields outside the {event} schema: {extra}",
+            detail="schema mismatch blocks a permission hook natively",
+        )
+    permission = doc.get("permission")
+    if permission not in PERMISSION_VALUES:
+        return Decision(
+            "deny",
+            f"permission={permission!r} is not an allowed value",
+            detail="schema mismatch blocks a permission hook natively",
+        )
+    if permission == "deny":
+        return Decision(
+            "deny",
+            doc.get("user_message") or doc.get("agent_message") or "",
+            detail="permission deny",
+        )
+    if permission == "ask":
+        return Decision("allow", detail="ask accepted by schema but not enforced today; proceeding")
+    decision = Decision("allow", detail="permission allow")
+    if "updated_input" in doc:
+        updated = doc["updated_input"]
+        if not isinstance(updated, dict) or not isinstance(updated.get("command"), str):
+            return Decision(
+                "deny",
+                "updated_input is not a tool-input object carrying a command",
+                detail="schema mismatch blocks a permission hook natively",
+            )
+        decision.updated_input = updated
+        decision.detail = "permission allow with updated_input substitution"
+    return decision
+
+
+def interpret_claude_import(rc, stdout, stderr, timed_out, fail_closed):
+    """Interpret an unchanged Claude Code hook's result per the import docs.
+
+    Exit codes keep their meaning; the nested hookSpecificOutput envelope
+    maps permissionDecision -> permission, permissionDecisionReason ->
+    user_message, updatedInput -> updated_input.
+    """
+    if timed_out or rc is None or rc < 0 or rc not in (0, 2):
+        failure = f"hook failure (rc={rc}, timed_out={timed_out})"
+        if fail_closed:
+            return Decision("deny", f"{failure} promoted to block by failClosed: true", detail=failure)
+        return Decision("allow", detail=f"{failure}; documented fail-open")
+    if rc == 2:
+        return Decision("deny", stderr.strip(), detail="exit 2 blocks, equivalent to permission deny")
+    text = stdout.strip()
+    if not text:
+        if fail_closed:
+            return Decision("deny", "no output promoted to block by failClosed: true", detail="no output")
+        return Decision("allow", detail="no output; documented fail-open")
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as error:
+        return Decision("deny", f"invalid JSON: {error}", detail="invalid JSON blocks a permission hook")
+    nested = doc.get("hookSpecificOutput") if isinstance(doc, dict) else None
+    if not isinstance(nested, dict):
+        return Decision(
+            "deny",
+            "response carries no hookSpecificOutput decision envelope",
+            detail="not the Claude Code decision format",
+        )
+    extra = sorted(set(nested) - CLAUDE_NESTED_KEYS)
+    if extra:
+        return Decision(
+            "deny",
+            f"fields outside the mapped envelope: {extra}",
+            detail="schema mismatch blocks a permission hook",
+        )
+    permission = nested.get("permissionDecision")
+    if permission == "deny":
+        return Decision(
+            "deny",
+            nested.get("permissionDecisionReason", ""),
+            detail="nested permissionDecision deny (mapped to permission deny)",
+        )
+    if permission not in ("allow", "ask"):
+        return Decision(
+            "deny",
+            f"permissionDecision={permission!r} is not an allowed value",
+            detail="schema mismatch blocks a permission hook",
+        )
+    decision = Decision("allow", detail=f"nested permissionDecision {permission} (mapped to permission)")
+    if "updatedInput" in nested:
+        updated = nested["updatedInput"]
+        if not isinstance(updated, dict) or not isinstance(updated.get("command"), str):
+            return Decision(
+                "deny",
+                "updatedInput is not a tool-input object carrying a command",
+                detail="schema mismatch blocks a permission hook",
+            )
+        decision.updated_input = updated
+        decision.detail = "nested updatedInput (mapped to updated_input) substitution"
+    return decision
+
+
+def translate_claude_matcher(matcher):
+    """Translate a Claude Code matcher to Cursor's tool names (Bash -> Shell,
+    Edit -> Write), as the third-party import does before matching."""
+    matcher = re.sub(r"\bBash\b", "Shell", matcher)
+    return re.sub(r"\bEdit\b", "Write", matcher)
+
+
+def hook_matches(matcher, subject):
+    """Cursor matcher semantics: "" and "*" match everything, else regex."""
+    if matcher in ("", "*"):
+        return True
+    return re.search(matcher, subject) is not None
+
+
+# ---------------------------------------------------------------------------
+# Evidence plumbing
+# ---------------------------------------------------------------------------
+
+CHECKS = []
+
+
+def check(label, condition, detail=""):
+    CHECKS.append((label, bool(condition)))
+    print(f"    [{'PASS' if condition else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""))
+    return bool(condition)
+
+
+def show(title, payload):
+    print(f"    {title}: {json.dumps(payload)}")
+
+
+# ---------------------------------------------------------------------------
+# The dispatch harness (what Cursor does between the agent and the shell)
+# ---------------------------------------------------------------------------
+
+class Dispatcher:
+    """Drives hooks exactly as Cursor's dispatch would and executes the
+    surviving command. One instance carries the scratch-tree paths."""
+
+    def __init__(self, project, exec_log, hook_env, exec_env):
+        self.project = project
+        self.exec_log = exec_log
+        self.hook_env = hook_env
+        self.exec_env = exec_env
+
+    def run_hook(self, command, payload, timeout):
+        """Run one hook: payload on stdin, cwd = project root, per-hook timeout."""
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=self.project,
+                input=payload.encode(),
+                capture_output=True,
+                timeout=timeout,
+                env=self.hook_env,
+            )
+            return proc.returncode, proc.stdout.decode(errors="replace"), proc.stderr.decode(errors="replace"), False
+        except subprocess.TimeoutExpired as expired:
+            stdout = (expired.stdout or b"").decode(errors="replace")
+            stderr = (expired.stderr or b"").decode(errors="replace")
+            return None, stdout, stderr, True
+
+    def dispatch_native(self, hooks_file, event, payload):
+        """Select the event's hooks from a Cursor hooks.json, run them, merge
+        their decisions, and execute what survives."""
+        config = json.loads(hooks_file.read_text())
+        if config.get("version") != 1:
+            raise SystemExit(f"hooks.json must carry version 1, got {config.get('version')!r}")
+        subject = payload["tool_name"] if event == "preToolUse" else payload["command"]
+        original = payload["tool_input"]["command"] if event == "preToolUse" else payload["command"]
+        return self._dispatch(
+            config["hooks"].get(event, []),
+            event,
+            payload,
+            subject,
+            original,
+            lambda rc, out, err, timed_out, fail_closed: interpret_command_hook(
+                event, rc, out, err, timed_out, fail_closed
+            ),
+            translate=False,
+        )
+
+    def dispatch_claude_import(self, settings_file, payload):
+        """Select PreToolUse hooks from a Claude Code settings.json, run them
+        UNCHANGED, and interpret the nested envelope per the import docs."""
+        config = json.loads(settings_file.read_text())
+        entries = []
+        for group in config["hooks"].get("PreToolUse", []):
+            for hook in group.get("hooks", []):
+                entry = dict(hook)
+                entry["matcher"] = group.get("matcher", "")
+                entries.append(entry)
+        return self._dispatch(
+            entries,
+            "preToolUse",
+            payload,
+            payload["tool_name"],
+            payload["tool_input"]["command"],
+            interpret_claude_import,
+            translate=True,
+        )
+
+    def _dispatch(self, hooks, event, payload, subject, original, interpret, translate):
+        runs = []
+        merged = "allow"
+        updated_input = None
+        for hook in hooks:
+            matcher = hook.get("matcher", "")
+            if translate:
+                matcher = translate_claude_matcher(matcher)
+            if not hook_matches(matcher, subject):
+                continue
+            rc, stdout, stderr, timed_out = self.run_hook(
+                hook["command"], json.dumps(payload), hook.get("timeout", 30)
+            )
+            decision = interpret(rc, stdout, stderr, timed_out, bool(hook.get("failClosed", False)))
+            runs.append(
+                {
+                    "command": hook["command"],
+                    "matcher": matcher,
+                    "exit": rc,
+                    "timed_out": timed_out,
+                    "stdout": stdout.strip(),
+                    "decision": decision.as_dict(),
+                }
+            )
+            # Documented merge: any deny wins, then ask, then allow. A
+            # replacement from a later hook only counts while no deny has
+            # been seen.
+            if decision.permission == "deny":
+                merged = "deny"
+                updated_input = None
+            elif decision.permission == "ask" and merged == "allow":
+                merged = "ask"
+            elif merged != "deny" and decision.updated_input is not None:
+                updated_input = decision.updated_input
+        executed = None
+        exec_rc = None
+        if merged in ("allow", "ask"):
+            # `ask` is not enforced today, so it proceeds like an allow.
+            executed = updated_input["command"] if updated_input else original
+            cwd = payload.get("cwd") or self.project
+            proc = subprocess.run(
+                executed,
+                shell=True,
+                cwd=cwd,
+                capture_output=True,
+                env=self.exec_env,
+            )
+            exec_rc = proc.returncode
+        return {
+            "event": event,
+            "matched_hooks": len(runs),
+            "merged_permission": merged,
+            "runs": runs,
+            "executed": executed,
+            "exec_rc": exec_rc,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Scratch-tree construction
+# ---------------------------------------------------------------------------
+
+def write_executable(path, text):
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def build_icg(repo_root, target_dir):
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target_dir))
+    proc = subprocess.run(
+        ["cargo", "build", "--release", "--locked"],
+        cwd=repo_root,
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"cargo build --release failed with exit {proc.returncode}")
+    binary = target_dir / "release" / "icg"
+    if not binary.exists():
+        raise SystemExit(f"build reported success but {binary} is missing")
+    return binary
+
+
+def git_env(base_env):
+    return dict(
+        base_env,
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_SYSTEM="/dev/null",
+    )
+
+
+def make_git_fixture(scratch, base_env):
+    """A diverged clone: the remote holds BASELINE, the clone holds DIVERGENT.
+
+    Only a force-push could move the remote to DIVERGENT; a plain push is
+    rejected as non-fast-forward. That asymmetry is what makes the rewrite
+    substitution observable in S3.
+    """
+    remote = scratch / "remote.git"
+    work = scratch / "work"
+    env = git_env(base_env)
+    identity = ["-c", "user.name=icg-e2e", "-c", "user.email=icg-e2e@invalid"]
+
+    def git(*args, cwd=None):
+        subprocess.run(
+            ["git", *identity, *args],
+            cwd=cwd or scratch,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+
+    def head(cwd):
+        return subprocess.run(
+            ["git", *identity, "rev-parse", "HEAD"],
+            cwd=cwd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("-c", "init.defaultBranch=main", "init", "--bare", str(remote))
+    git("clone", str(remote), str(work))
+    (work / "file.txt").write_text("baseline\n")
+    git("add", "file.txt", cwd=work)
+    git("commit", "-m", "baseline", cwd=work)
+    git("push", "origin", "main", cwd=work)
+    baseline = head(work)
+    git("commit", "--amend", "-m", "divergent", cwd=work)
+    divergent = head(work)
+    assert baseline != divergent, "amend must produce a divergent commit"
+    return remote, work, baseline, divergent
+
+
+def rev_parse(cwd, ref, base_env):
+    """Resolve a ref in a repository directory (work tree or bare)."""
+    return subprocess.run(
+        ["git", "rev-parse", ref],
+        cwd=cwd,
+        env=git_env(base_env),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def exec_log_lines(exec_log):
+    if not exec_log.exists():
+        return []
+    return [line for line in exec_log.read_text().splitlines() if line.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Scenarios
+# ---------------------------------------------------------------------------
+
+def scenario_stubs(scratch, project, dispatcher):
+    """S0: prove the dispatch interpretation against stub hooks first, so the
+    ICG scenarios are known to run through faithful semantics. None of these
+    involve ICG; they pin exit 2, invalid JSON, fail-open, failClosed,
+    timeout, and the two schema-mismatch controls."""
+    print("\nS0  dispatch semantics, self-checked against stub hooks (no ICG)")
+    stub_dir = scratch / "stubs"
+    stub_dir.mkdir()
+    marker = scratch / "markers" / "stub-open"
+    stubs = {
+        "exit2.sh": "#!/bin/sh\nprintf 'rejected by policy' >&2\nexit 2\n",
+        "garbage.sh": "#!/bin/sh\nprintf 'this is not json'\n",
+        "exit3.sh": "#!/bin/sh\nexit 3\n",
+        "sleep.sh": "#!/bin/sh\nsleep 5\n",
+        "nested.sh": (
+            '#!/bin/sh\nprintf \'{"hookSpecificOutput":{"permissionDecision":"deny"}}\'\n'
+        ),
+        "bse-rewrite.sh": (
+            '#!/bin/sh\nprintf \'{"permission":"allow","updated_input":{"command":"true"}}\'\n'
+        ),
+    }
+    for name, text in stubs.items():
+        write_executable(stub_dir / name, text)
+
+    def hook(name, **extra):
+        entry = {"command": str(stub_dir / name), "matcher": "Shell"}
+        entry.update(extra)
+        return entry
+
+    pre_hooks = [
+        hook("exit2.sh"),                                   # 0
+        hook("garbage.sh"),                                 # 1
+        hook("exit3.sh"),                                   # 2
+        hook("exit3.sh", failClosed=True),                  # 3
+        hook("sleep.sh", timeout=1),                        # 4
+        hook("sleep.sh", timeout=1, failClosed=True),       # 5
+        hook("nested.sh"),                                  # 6
+    ]
+    cases = [
+        (0, "exit 2 blocks", "deny", False),
+        (1, "invalid JSON at exit 0 blocks natively", "deny", False),
+        (2, "exit 3 fails open", "allow", True),
+        (3, "exit 3 with failClosed blocks", "deny", False),
+        (4, "timeout fails open", "allow", True),
+        (5, "timeout with failClosed blocks", "deny", False),
+        (6, "Claude nested envelope to a native hook is a schema mismatch", "deny", False),
+    ]
+    payload = {
+        "hook_event_name": "preToolUse",
+        "tool_name": "Shell",
+        "tool_input": {"command": f"touch {marker}"},
+        "tool_use_id": "stub-open",
+        "cwd": str(project),
+    }
+    # One hook at a time, so each interpretation rule is observed alone.
+    for index, label, expected, should_execute in cases:
+        record = dispatcher._dispatch(
+            [pre_hooks[index]],
+            "preToolUse",
+            payload,
+            payload["tool_name"],
+            payload["tool_input"]["command"],
+            lambda rc, out, err, timed_out, fail_closed: interpret_command_hook(
+                "preToolUse", rc, out, err, timed_out, fail_closed
+            ),
+            translate=False,
+        )
+        got = record["merged_permission"]
+        executed = record["executed"] is not None
+        check(
+            f"S0.{index} {label}",
+            got == expected and executed == should_execute,
+            f"merged={got!r} executed={record['executed']!r} "
+            f"({record['runs'][0]['decision'].get('interpretation')})",
+        )
+    check(
+        "S0 the fail-open cases really executed the tool call",
+        marker.exists(),
+        f"{marker} created by the fail-open dispatches",
+    )
+    marker.unlink()
+
+    # The beforeShellExecution schema has no updated_input: a hook that emits
+    # one is a schema mismatch and blocks. This is the control that makes
+    # ICG's omission of updated_input on that event load-bearing.
+    bse_payload = {
+        "command": payload["tool_input"]["command"],
+        "cwd": str(project),
+        "sandbox": False,
+    }
+    record = dispatcher._dispatch(
+        [hook("bse-rewrite.sh", matcher="")],
+        "beforeShellExecution",
+        bse_payload,
+        bse_payload["command"],
+        bse_payload["command"],
+        lambda rc, out, err, timed_out, fail_closed: interpret_command_hook(
+            "beforeShellExecution", rc, out, err, timed_out, fail_closed
+        ),
+        translate=False,
+    )
+    check(
+        "S0.bse updated_input on beforeShellExecution is a schema mismatch and blocks",
+        record["merged_permission"] == "deny"
+        and "schema mismatch" in record["runs"][0]["decision"].get("interpretation", ""),
+        f"got {record['merged_permission']!r}",
+    )
+
+
+def scenario_native(dispatcher, project, packs, icg_bin, scratch, git_fixture):
+    """S1-S4: the shipped adapters driven through native Cursor dispatch."""
+    remote, work, baseline, divergent = git_fixture
+    markers = scratch / "markers"
+    exec_log = scratch / "exec-log"
+
+    hooks_file = project / ".cursor" / "hooks.json"
+    hook_pre = f"{icg_bin} hook --harness cursor --rule-pack {packs}"
+    hook_bse = f"{icg_bin} hook --harness cursor --event before-shell-execution --rule-pack {packs}"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hooks": {
+                    "preToolUse": [{"command": hook_pre, "matcher": "Shell", "timeout": 30}],
+                    "beforeShellExecution": [{"command": hook_bse, "matcher": "", "timeout": 30}],
+                },
+            },
+            indent=2,
+        )
+    )
+    print(f"\n    scratch project hooks.json ({hooks_file}):")
+    for line in hooks_file.read_text().splitlines():
+        print(f"      {line}")
+
+    # -- S1: deny blocks a harmless fake target ------------------------------
+    print("\nS1  native preToolUse DENY (openbao/openbao-inline-secret-literal)")
+    deny_marker = markers / "deny"
+    deny_command = (
+        f"bao kv put secret/icg-cursor-e2e/demo password=hunter2 > {deny_marker} 2>&1"
+    )
+    payload = {
+        "hook_event_name": "preToolUse",
+        "tool_name": "Shell",
+        "tool_input": {"command": deny_command, "working_directory": str(project)},
+        "tool_use_id": "icg-e2e-deny",
+        "cwd": str(project),
+    }
+    show("payload", payload)
+    record = dispatcher.dispatch_native(hooks_file, "preToolUse", payload)
+    response = json.loads(record["runs"][0]["stdout"])
+    show("response", response)
+    check(
+        "S1 hook exited 0 with a schema-exact flat deny",
+        record["runs"][0]["exit"] == 0
+        and response.get("permission") == "deny"
+        and set(response) <= {"permission", "user_message", "agent_message"}
+        and "user_message" in response,
+        f"permission={response.get('permission')!r}",
+    )
+    check(
+        "S1 deny names the matched rule",
+        "pack=openbao" in response.get("user_message", "")
+        and "openbao-inline-secret-literal" in response.get("user_message", ""),
+        response.get("user_message", "")[:120],
+    )
+    check("S1 dispatch blocked the call", record["merged_permission"] == "deny")
+    check("S1 nothing was executed", record["executed"] is None)
+    check("S1 marker file does not exist", not deny_marker.exists(), str(deny_marker))
+    check(
+        "S1 the bao binary was never invoked",
+        not any(line.startswith("bao ") for line in exec_log_lines(exec_log)),
+    )
+
+    # -- S2: allow control actually executes ---------------------------------
+    print("\nS2  native preToolUse ALLOW control (executor sanity)")
+    control_marker = markers / "control"
+    payload = {
+        "hook_event_name": "preToolUse",
+        "tool_name": "Shell",
+        "tool_input": {"command": f"touch {control_marker}", "working_directory": str(project)},
+        "tool_use_id": "icg-e2e-control",
+        "cwd": str(project),
+    }
+    record = dispatcher.dispatch_native(hooks_file, "preToolUse", payload)
+    response = json.loads(record["runs"][0]["stdout"])
+    show("response", response)
+    check(
+        "S2 unremarkable command is allowed",
+        record["merged_permission"] == "allow" and response == {"permission": "allow"},
+    )
+    check(
+        "S2 the allowed command ran and created its marker",
+        control_marker.exists() and record["exec_rc"] == 0,
+        f"executed {record['executed']!r}",
+    )
+
+    # -- S3: rewrite substitutes updated_input ------------------------------
+    print("\nS3  native preToolUse REWRITE (git/git-force-push)")
+    payload = {
+        "hook_event_name": "preToolUse",
+        "tool_name": "Shell",
+        "tool_input": {
+            "command": "git push --force origin main",
+            "working_directory": str(work),
+        },
+        "tool_use_id": "icg-e2e-rewrite",
+        "cwd": str(work),
+    }
+    show("payload", payload)
+    git_before = [line for line in exec_log_lines(exec_log) if line.startswith("git ")]
+    record = dispatcher.dispatch_native(hooks_file, "preToolUse", payload)
+    response = json.loads(record["runs"][0]["stdout"])
+    show("response", response)
+    updated = response.get("updated_input", {})
+    check(
+        "S3 allow with updated_input substituting the force-push",
+        record["runs"][0]["exit"] == 0
+        and response.get("permission") == "allow"
+        and updated.get("command") == "git push origin main",
+        f"updated_input.command={updated.get('command')!r}",
+    )
+    check(
+        "S3 updated_input is a complete replacement (working_directory preserved)",
+        updated.get("working_directory") == str(work),
+    )
+    check(
+        "S3 the substituted command is what actually ran",
+        record["executed"] == "git push origin main",
+    )
+    git_after = [line for line in exec_log_lines(exec_log) if line.startswith("git ")]
+    new_git = [line for line in git_after if line not in git_before]
+    check(
+        "S3 the PATH-shim git observed exactly `push origin main`, never --force",
+        new_git == ["git push origin main"],
+        f"shim log delta: {new_git}",
+    )
+    check(
+        "S3 the substituted plain push was rejected non-fast-forward "
+        "(only the original could have moved the remote)",
+        record["exec_rc"] not in (0, None),
+        f"exec_rc={record['exec_rc']}",
+    )
+    check(
+        "S3 the scratch remote still holds the baseline commit",
+        rev_parse(remote, "refs/heads/main", dispatcher.exec_env) == baseline,
+    )
+    check(
+        "S3 the clone still holds the divergent commit (nothing rewrote local state)",
+        rev_parse(work, "refs/heads/main", dispatcher.exec_env) == divergent,
+    )
+
+    # -- S4: beforeShellExecution degrades a rewrite to a deny ---------------
+    print("\nS4  beforeShellExecution REWRITE degrades to DENY")
+    bse_payload = {
+        "command": "git push --force origin main",
+        "cwd": str(work),
+        "sandbox": False,
+    }
+    show("payload", bse_payload)
+    log_before = exec_log_lines(exec_log)
+    record = dispatcher.dispatch_native(hooks_file, "beforeShellExecution", bse_payload)
+    response = json.loads(record["runs"][0]["stdout"])
+    show("response", response)
+    check(
+        "S4 the event denies (no updated_input exists on this event's schema)",
+        record["runs"][0]["exit"] == 0
+        and response.get("permission") == "deny"
+        and "updated_input" not in response,
+        f"permission={response.get('permission')!r}, keys={sorted(response)}",
+    )
+    check(
+        "S4 the deny carries the rewrite's reason, not a bare block",
+        "pack=git" in response.get("user_message", "")
+        and "force" in response.get("user_message", "").lower(),
+        response.get("user_message", "")[:120],
+    )
+    check("S4 dispatch blocked the call", record["merged_permission"] == "deny")
+    check("S4 nothing was executed", record["executed"] is None)
+    check(
+        "S4 the shim log shows no new invocation at all",
+        exec_log_lines(exec_log) == log_before,
+    )
+    check(
+        "S4 the scratch remote still holds the baseline commit",
+        rev_parse(remote, "refs/heads/main", dispatcher.exec_env) == baseline,
+    )
+
+    # S4 control: the event gates, it does not blanket-deny.
+    bse_marker = markers / "bse-allow"
+    payload = {
+        "command": f"touch {bse_marker}",
+        "cwd": str(project),
+        "sandbox": False,
+    }
+    record = dispatcher.dispatch_native(hooks_file, "beforeShellExecution", payload)
+    check(
+        "S4 control: an unremarkable command passes the shell event and runs",
+        record["merged_permission"] == "allow" and bse_marker.exists(),
+    )
+
+
+def scenario_claude_import(dispatcher, project, packs, icg_bin, scratch):
+    """S5: the unchanged Claude Code hook through the third-party import."""
+    print("\nS5  unchanged Claude Code hook via third-party import (comparison)")
+    settings_file = project / ".claude" / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": f"{icg_bin} hook --rule-pack {packs}",
+                                    "timeout": 30,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+            indent=2,
+        )
+    )
+    print(f"    scratch .claude/settings.json ({settings_file}): unchanged hook command, no --harness")
+    import_marker = scratch / "markers" / "import"
+    payload = {
+        "hook_event_name": "preToolUse",
+        # Cursor's wire names its shell tool Shell; the import layer
+        # translates the Claude `Bash` matcher before matching it.
+        "tool_name": "Shell",
+        "tool_input": {
+            "command": (
+                f"bao kv put secret/icg-cursor-e2e/import password=hunter2 "
+                f"> {import_marker} 2>&1"
+            ),
+            "working_directory": str(project),
+        },
+        "tool_use_id": "icg-e2e-import",
+        "cwd": str(project),
+    }
+    show("payload", payload)
+    record = dispatcher.dispatch_claude_import(settings_file, payload)
+    run = record["runs"][0]
+    show("response", json.loads(run["stdout"]))
+    nested = json.loads(run["stdout"]).get("hookSpecificOutput", {})
+    check(
+        "S5 the unchanged hook renders the nested Claude envelope",
+        run["exit"] == 0
+        and nested.get("permissionDecision") == "deny"
+        and "permissionDecisionReason" in nested
+        and "hookEventName" in nested,
+        f"hookSpecificOutput keys: {sorted(nested)}",
+    )
+    check(
+        "S5 the imported matcher (Bash -> Shell) selected the hook",
+        record["matched_hooks"] == 1,
+    )
+    check(
+        "S5 the nested deny maps to a block under the import interpretation",
+        record["merged_permission"] == "deny",
+    )
+    check("S5 nothing was executed", record["executed"] is None)
+    check("S5 marker file does not exist", not import_marker.exists(), str(import_marker))
+    print(
+        "    comparison: the native Cursor envelope is flat "
+        '({"permission": "deny", "user_message", "agent_message"}); the\n'
+        "    unchanged Claude hook emits the nested "
+        '{"hookSpecificOutput": {"permissionDecision": "deny", ...}} --\n'
+        "    both block under Cursor's documented interpretation."
+    )
+
+
+def scenario_hygiene(scratch):
+    """S6: state hygiene -- verdict-shaped telemetry, denial recorded, and
+    nothing written outside the scratch tree."""
+    print("\nS6  hygiene")
+    state = scratch / "state"
+    telemetry = state / "telemetry.json"
+    if telemetry.exists():
+        text = telemetry.read_text()
+        check(
+            "S6 telemetry carries no command text (verdict-shaped only)",
+            "hunter2" not in text and "--force" not in text,
+        )
+        try:
+            store = json.loads(text)
+            records = store["window"]["records"]
+            check(
+                "S6 telemetry records are verdict-shaped only",
+                all(
+                    set(record) <= {"timestamp", "verdict", "release_ref", "session_id", "harness"}
+                    for record in records
+                ),
+                f"{len(records)} records",
+            )
+            harnesses = {record.get("harness") for record in records}
+            check(
+                "S6 telemetry names the declared harness only (cursor); the "
+                "undeclared claude-import invocation records no identity",
+                harnesses <= {"cursor", None} and "cursor" in harnesses,
+                f"harness values: {sorted(str(h) for h in harnesses)}",
+            )
+        except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
+            check("S6 telemetry parses into window.records", False, "unreadable telemetry store")
+    else:
+        check("S6 telemetry store exists in scratch", False, str(telemetry))
+    denials = state / "denials.jsonl"
+    if denials.exists():
+        text = denials.read_text()
+        check(
+            "S6 the operational denial log recorded the denial with rule attribution",
+            "openbao-inline-secret-literal" in text,
+        )
+        check(
+            "S6 the denial log redacts the denied command text",
+            "hunter2" not in text,
+        )
+    else:
+        check("S6 denial log exists in scratch", False, str(denials))
+    # Markers were confined to the scratch tree by construction; the caller
+    # removes the whole tree on success.
+    check(
+        "S6 all markers lived under the scratch tree",
+        all(str(path).startswith(str(scratch)) for path in (scratch / "markers").rglob("*")),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+    )
+    parser.add_argument("--icg-bin", type=Path)
+    parser.add_argument("--keep", action="store_true")
+    args = parser.parse_args()
+
+    repo_root = args.repo_root.resolve()
+    packs = repo_root / "packs"
+    if not packs.is_dir():
+        raise SystemExit(f"no packs directory under {repo_root}")
+
+    scratch = Path(tempfile.mkdtemp(prefix="icg-cursor-e2e.")).resolve()
+    print(f"scratch tree: {scratch}")
+    print(f"repo: {repo_root}")
+
+    if args.icg_bin:
+        icg_bin = args.icg_bin.resolve()
+        print(f"using provided binary: {icg_bin}")
+    else:
+        build_dir = scratch / "target"
+        print("building icg (cargo build --release --locked)...")
+        icg_bin = build_icg(repo_root, build_dir)
+        print(f"built: {icg_bin}")
+
+    # Scratch layout.
+    project = scratch / "project"
+    (project / ".cursor").mkdir(parents=True)
+    (project / ".claude").mkdir(parents=True)
+    (project / "bin").mkdir(parents=True)
+    (scratch / "markers").mkdir()
+    state = scratch / "state"
+    state.mkdir()
+    home = scratch / "home"
+    home.mkdir()
+    exec_log = scratch / "exec-log"
+
+    # PATH shims: the ground-truth record of what the dispatch actually
+    # executed. `git` logs then execs the real binary; `bao` logs and
+    # refuses, so even a gate failure could not reach a real OpenBao client.
+    real_git = shutil.which("git")
+    if real_git is None:
+        raise SystemExit("git is required for the rewrite scenario")
+    write_executable(
+        project / "bin" / "git",
+        f"#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> {exec_log}\nexec {real_git} \"$@\"\n",
+    )
+    write_executable(
+        project / "bin" / "bao",
+        f"#!/bin/sh\nprintf 'bao %s\\n' \"$*\" >> {exec_log}\n"
+        "printf 'bao shim: refusing to reach a real OpenBao client during the proof\\n' >&2\n"
+        "exit 77\n",
+    )
+
+    # Every environment the hooks or the executed commands run under keeps
+    # state inside the scratch tree and practice mode off (a practice flag
+    # would convert denies to allows and hollow out the whole proof).
+    base_env = dict(
+        os.environ,
+        HOME=str(home),
+        ICG_PRACTICE="0",
+        ICG_TELEMETRY_PATH=str(state / "telemetry.json"),
+        ICG_DENIAL_LOG=str(state / "denials.jsonl"),
+        ICG_STATE_PATH=str(state / "session-state.json"),
+        ICG_HEALTH_PATH=str(state / "health-state.json"),
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_SYSTEM="/dev/null",
+    )
+    exec_env = dict(base_env, PATH=f"{project / 'bin'}:{os.environ['PATH']}")
+    dispatcher = Dispatcher(project=project, exec_log=exec_log, hook_env=base_env, exec_env=exec_env)
+
+    git_fixture = make_git_fixture(scratch, base_env)
+
+    scenario_stubs(scratch, project, dispatcher)
+    scenario_native(dispatcher, project, packs, icg_bin, scratch, git_fixture)
+    scenario_claude_import(dispatcher, project, packs, icg_bin, scratch)
+    scenario_hygiene(scratch)
+
+    failed = [label for label, ok in CHECKS if not ok]
+    print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} checks passed")
+    if failed:
+        for label in failed:
+            print(f"  FAILED: {label}")
+        print(f"scratch tree left for diagnosis: {scratch}")
+        return 1
+    if args.keep:
+        print(f"scratch tree kept (--keep): {scratch}")
+    else:
+        shutil.rmtree(scratch)
+        print(f"scratch tree removed: {scratch}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
