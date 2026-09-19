@@ -223,25 +223,29 @@ fn quick_start() -> String {
 }
 
 #[test]
-fn quick_start_makes_no_kubectl_coverage_claim() {
+fn quick_start_describes_the_kubectl_pack_as_it_ships() {
     let doc = quick_start();
 
-    // kubectl is deliberately not a pack (plan.md "Explicitly not
-    // attempted"): mutating-verb blocking stays org-rule-guard.py's job.
-    // These exact claims are what the 2026-08-25 audit found in the wild.
+    // The 2026-08-25 audit found these fictional kubectl claims in the wild.
+    // The real pack (ADR-001, 2026-09-19) uses different ids, so they must
+    // stay absent.
     for stale in ["kubectl delete pvc", "kubectl-delete-pvc", "**Kubernetes**"] {
         assert!(
             !doc.contains(stale),
-            "quick-start.md must not claim kubectl coverage ({stale:?}): \
-             kubectl is explicitly not a pack"
+            "quick-start.md still cites the fictional kubectl claim {stale:?}"
         );
     }
 
-    // The doc should say the quiet part out loud: who owns kubectl instead.
+    // The pack is blanket; ArgoCD-aware narrowing is still not attempted,
+    // and operators need to know the org hook denies the same commands
+    // during coexistence.
+    assert!(
+        doc.contains("ArgoCD-aware kubectl scoping"),
+        "quick-start.md should say the kubectl pack is blanket, not ArgoCD-aware"
+    );
     assert!(
         doc.contains("org-rule-guard.py"),
-        "quick-start.md should state that kubectl mutation blocking stays \
-         with org-rule-guard.py"
+        "quick-start.md should name org-rule-guard.py as the coexisting hook"
     );
 }
 

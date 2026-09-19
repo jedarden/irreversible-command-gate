@@ -12,10 +12,10 @@
 //!   writes), and rule 2 (kind:Job/CronJob YAML content) are all covered by icg; the rest
 //!   are probed only to document expected divergence
 //!
-//! Rule 4 (mutating kubectl) legitimately diverges because icg doesn't absorb it. Rule 5
-//! (credential values) is only partially absorbed (Bash channel only). Rules 1
-//! (.github/workflows) and 2 (kind:Job/CronJob) are now absorbed by icg as well (see
-//! coexistence_scope_limited_to_rule_3_overlap_only).
+//! Rule 4 (mutating kubectl) is absorbed by the kubectl pack (ADR-001, 2026-09-19), so it
+//! double-denies too. Rule 5 (credential values) is only partially absorbed (Bash channel
+//! only). Rules 1 (.github/workflows) and 2 (kind:Job/CronJob) are now absorbed by icg as
+//! well (see coexistence_scope_limited_to_rule_3_overlap_only).
 
 use icg::engine::{CheckResult, ContentSource, Engine, InputSource, PreToolUseInput, ToolInput};
 use icg::github_workflows::UNGUARDED_PATHS as WORKFLOWS_LOOKALIKE_PATHS;
@@ -132,16 +132,16 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
     // - Rule 1 (.github/workflows) → now absorbed by icg (both systems deny)
     // - Rule 2 (kind:Job/CronJob) → now absorbed by icg (both systems deny)
     // - Rule 3 (:latest in .yaml) → BOTH systems, this test's original focus
-    // - Rule 4 (mutating kubectl) → org-rule-guard.py only, PERMANENTLY not absorbed (plan.md)
+    // - Rule 4 (mutating kubectl) → BOTH systems since the kubectl pack (ADR-001)
     // - Rule 5 (credential values) → org-rule-guard.py Write/Edit only, Bash absorbed by icg
     //
-    // Divergent verdicts on rules 4-5 are EXPECTED and NOT a coexistence failure.
-    // This test probes the absorbed rules for their consistent double-deny.
+    // A divergent verdict on rule 5's Write/Edit channel is EXPECTED and NOT a
+    // coexistence failure. This test probes the absorbed rules for their
+    // consistent double-deny.
 
     let engine = load_image_tag_engine();
 
-    // Verify icg DOES cover rules 1-2 (consistent with org-rule-guard.py), and
-    // DOESN'T cover rules 4-5 (expected divergence)
+    // Verify icg DOES cover rules 1, 2 and 4 (consistent with org-rule-guard.py)
     //
     // Rule 1: .github/workflows/* writes
     let result = engine.evaluate_content(&ContentSource::Write {
@@ -167,14 +167,31 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
     // Rule 3: :latest in .yaml (covered by both systems, tested elsewhere in this file)
     // Both deny → consistent, PASS
 
-    // Rule 4: mutating kubectl commands
-    let result = engine.evaluate_command(&icg::engine::CommandSource::Hook(
-        "kubectl apply -f deploy.yaml".to_string(),
-    ));
-    // icg allows this (command-mode packs don't exist yet)
-    // org-rule-guard.py rule 4 denies this
-    // This DIVERGENCE is EXPECTED (permanently not absorbed per plan.md) and NOT a failure
-    assert!(matches!(result, CheckResult::Allowed));
+    // Rule 4: mutating kubectl commands, judged by the kubectl pack
+    let mut kubectl_engine = Engine::new();
+    kubectl_engine
+        .load_pack(load_pack("packs/kubectl.json").expect("kubectl pack loads"))
+        .expect("kubectl pack validates");
+    for command in [
+        "kubectl apply -f deploy.yaml",
+        "kubectl -n prod delete pod foo",
+        "kubectl rollout restart deploy/api",
+    ] {
+        let result =
+            kubectl_engine.evaluate_command(&icg::engine::CommandSource::Hook(command.to_string()));
+        // org-rule-guard.py rule 4 also denies this → consistent, PASS
+        assert!(
+            matches!(result, CheckResult::Denied { .. }),
+            "{command:?} should double-deny, got {result:?}"
+        );
+    }
+    // ...and both allow the Argo Workflow submission carve-out.
+    assert_eq!(
+        kubectl_engine.evaluate_command(&icg::engine::CommandSource::Hook(
+            "kubectl create -f wf.yaml -n argo-workflows".to_string()
+        )),
+        CheckResult::Allowed
+    );
 
     // Rule 5: credential values (PARTIAL absorption)
     // Write/Edit path: org-rule-guard.py still handles it

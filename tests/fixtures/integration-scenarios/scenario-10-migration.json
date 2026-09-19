@@ -50,9 +50,7 @@
       "icg_denies": true,
       "icg_pack": "job-cronjob-yaml",
       "icg_pattern": "kind-job-cronjob"
-    }
-  ],
-  "org_guard_only_probes": [
+    },
     {
       "name": "mutating kubectl command",
       "tool_name": "Bash",
@@ -60,9 +58,12 @@
         "command": "kubectl apply -f deploy.yaml"
       },
       "org_guard_denies": true,
-      "icg_denies": false
+      "icg_denies": true,
+      "icg_pack": "kubectl",
+      "icg_pattern": "kubectl-mutating-verb"
     }
   ],
+  "org_guard_only_probes": [],
   "icg_only_probes": [
     {
       "name": "OpenBao destructive command",

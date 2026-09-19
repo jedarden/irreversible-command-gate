@@ -148,11 +148,12 @@ scaffolds a pack and its regression test together.
 - **It does not reach cloud-hosted agent sessions** — ChatGPT web, Codex
   cloud tasks, claude.ai. Only local CLIs invoke local hooks. See
   [multi-harness-integration.md](docs/notes/multi-harness-integration.md).
-- **It does not cover `kubectl` mutations.** Those stay with the org-level
-  Python hook by decision, not by omission —
-  [existing-enforcement-infrastructure.md](docs/notes/existing-enforcement-infrastructure.md).
-  `.github/workflows/*` writes and `kind: Job`/`CronJob` manifest content,
-  by contrast, *are* covered: built-in guards deny them on Write/Edit and
+- **Its `kubectl` rules are blanket, not ArgoCD-aware.** The `kubectl` pack
+  denies mutating verbs whatever the target; scoping them to ArgoCD-managed
+  resources would need live cluster state —
+  [ADR-001](docs/adr/001-kubectl-mutation-pack.md).
+  `.github/workflows/*` writes and `kind: Job`/`CronJob` manifest content
+  are covered too: built-in guards deny them on Write/Edit and
   Codex `apply_patch` —
   [github-workflows-detection-seam.md](docs/notes/github-workflows-detection-seam.md)
   — redundantly with the org-level hook for as long as both run.

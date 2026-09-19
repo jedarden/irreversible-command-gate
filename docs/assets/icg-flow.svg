@@ -92,7 +92,7 @@
   <rect class="inner" x="536" y="404" width="286" height="120" rx="10"/>
   <text class="t" x="556" y="430" font-size="13" font-weight="600">/etc/icg/packs/*.json</text>
   <text class="dim t" x="556" y="450" font-size="11.5">root-owned policy the guarded agent</text>
-  <text class="dim t" x="556" y="466" font-size="11.5">cannot rewrite — 10 packs, 26 rules</text>
+  <text class="dim t" x="556" y="466" font-size="11.5">cannot rewrite — 11 packs, 29 rules</text>
   <text class="m dim" x="556" y="492" font-size="11">openbao · git · secrets · docker</text>
   <text class="m dim" x="556" y="508" font-size="11">image-tag · storage-class · beads · …</text>
   <path class="arrow" d="M679 400 L679 374" marker-end="url(#a)" stroke-width="1.6"/>

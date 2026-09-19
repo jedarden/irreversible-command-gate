@@ -41,7 +41,7 @@ sudo chown -R root:root /etc/icg/packs
 
 # Verify
 icg --version          # icg 0.1.3
-icg coverage --list    # all ten packs
+icg coverage --list    # all eleven packs
 ```
 
 Building from source works too and needs only a Rust toolchain. Full

@@ -15,7 +15,7 @@ not writing Rust.
 
 ```bash
 cargo build --release                       # no system deps; rustls, not OpenSSL
-./target/release/icg coverage --list        # confirm the 10 packs load
+./target/release/icg coverage --list        # confirm the 11 packs load
 ./target/release/icg check --command "git push --force origin main"
 cargo test                                  # 526 tests, 0 failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards

@@ -150,6 +150,7 @@ fn the_release_gate_corpus_is_unchanged() {
         "git-commit-without-pathspec",
         "image-tag-bare-sha",
         "image-tag-latest",
+        "kubectl-delete",
         "needle-cleanup",
         "openbao-destructive-verb",
         "storage-class-ssd",

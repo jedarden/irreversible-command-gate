@@ -248,7 +248,7 @@ sudo chown -R root:root /etc/icg/packs
 
 # Verify
 icg --version          # icg 0.1.3
-icg coverage --list    # all ten packs
+icg coverage --list    # all eleven packs
 ```
 
 #### Method 2: Build from source
@@ -296,7 +296,7 @@ packs are byte-identical to what was reviewed:
 
 ```bash
 icg pack-manifest --verify pack-manifest.json --pack-dir /etc/icg/packs
-# Pack directory matches manifest (10 packs)
+# Pack directory matches manifest (11 packs)
 ```
 
 Thereafter, `icg update` is the sanctioned way to change the directory's
@@ -396,10 +396,10 @@ icg health --verbose
 # ✓ All rule packs valid
 # ✓ Claude Code hook configured
 # ✓ icg binary: /usr/local/bin/icg v0.1.61
-# ✓ Rule packs: 10 packs loaded
+# ✓ Rule packs: 11 packs loaded
 #   - argocd-topology (1 patterns)
 #   - beads (3 patterns)
-#   ... ten packs
+#   ... eleven packs
 # ✓ Claude Code hook: Configured
 # ✓ State store: /var/lib/icg/state.db
 # ✓ Denial log: /var/log/icg/denials.log

@@ -61,9 +61,10 @@ refuses to proceed over a foreign non-symlink entry in the wrapper
 directory rather than clobber it, and refuses an empty pack set (an empty
 directory guards nothing).
 
-`kubectl` is never shadowed: it appears in no shipped pack, and
-`icg install` skips it even if a future pack lists it. Cluster triage stays
-un-intercepted on purpose; see [Blind spots](#blind-spots).
+`kubectl` is never shadowed: the shipped `kubectl` pack lists it in
+`tool_keywords`, but `icg install` skips that keyword, so the pack guards
+the hook front-end only. Cluster triage stays un-intercepted by a wrapper
+on purpose; see [Blind spots](#blind-spots).
 
 ### 2. Run the canaries
 

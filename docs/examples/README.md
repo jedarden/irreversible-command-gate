@@ -43,7 +43,7 @@ sudo chown -R root:root /etc/icg/packs
 
 # Verify
 icg --version          # icg 0.1.3
-icg coverage --list    # all ten packs
+icg coverage --list    # all eleven packs
 ```
 
 > Building from source is equally supported and needs only a Rust
@@ -51,18 +51,18 @@ icg coverage --list    # all ten packs
 
 #### Step 2: Install Rule Packs
 
-Step 1's tarball already placed all ten under `/etc/icg/packs/`. Confirm
+Step 1's tarball already placed all eleven under `/etc/icg/packs/`. Confirm
 they load, and that they are byte-identical to the reviewed release:
 
 ```bash
 icg coverage --list
 # ✓ pack argocd-topology (1 patterns)
 # ✓ pack beads (3 patterns)
-# ... ten packs
+# ... eleven packs
 
 icg health --check-packs
 icg pack-manifest --verify pack-manifest.json --pack-dir /etc/icg/packs
-# Pack directory matches manifest (10 packs)
+# Pack directory matches manifest (11 packs)
 ```
 
 Cherry-picking individual packs out of the tree is not an install path: the
@@ -956,11 +956,12 @@ cat > migration-plan.md <<'EOF'
 - Test thoroughly
 
 ## Phase 3: Keep org-rule-guard.py for Uncovered Rules (Ongoing)
-- kind: Job/CronJob (no icg equivalent planned)
-- mutating kubectl (permanent exclusion)
+- credential values in Write/Edit content (icg's secrets pack scans Bash only)
 
 Already absorbed (both hooks deny during coexistence):
 - .github/workflows/ (icg built-in guard, not a pack)
+- kind: Job/CronJob (icg built-in guard, not a pack)
+- mutating kubectl (kubectl pack, ADR-001)
 EOF
 ```
 

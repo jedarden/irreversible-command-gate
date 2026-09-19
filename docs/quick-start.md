@@ -25,12 +25,12 @@ process. Keep the harness's own approval and sandbox controls enabled.
 
 ### What icg does NOT cover
 
-- **kubectl.** There is deliberately no kubectl pack and there will not be
-  one: mutating-verb blocking (`kubectl delete`, `patch`, `apply`, …) stays
-  with the existing org-level hook (`org-rule-guard.py`), per the plan's
-  "Explicitly not attempted" decision. `icg check --command "kubectl delete
-  pvc data-volume"` returns `ALLOW: no configured rule matched` — that is
-  expected, not a gap.
+- **ArgoCD-aware kubectl scoping.** The `kubectl` pack blocks mutating
+  verbs *blanket*, whether or not ArgoCD manages the target; telling the two
+  apart needs live cluster state, which the zero-I/O engine will not fetch.
+  The pack itself left this list in 2026-09
+  ([ADR-001](adr/001-kubectl-mutation-pack.md)); until then kubectl
+  mutations were `org-rule-guard.py`'s job alone.
 - **`kind: Job`/`CronJob` manifests** used to sit on this list beside
   kubectl; they no longer do — a built-in guard (pack attribution
   `job-cronjob-yaml`, not a pack file) denies YAML content declaring them
@@ -81,7 +81,7 @@ sudo chown -R root:root /etc/icg/packs
 
 # Verify
 icg --version          # icg 0.1.3
-icg coverage --list    # all ten packs
+icg coverage --list    # all eleven packs
 ```
 
 The release also carries `pack-manifest.json` (byte-level checksums for
@@ -176,13 +176,14 @@ into your existing `hooks` object — do not overwrite unrelated settings:
 ### Step 3: Smoke-Test the Installation
 
 ```bash
-# 1. All ten packs should be listed
+# 1. All eleven packs should be listed
 icg coverage --list
 # ✓ pack argocd-topology (1 patterns)
 # ✓ pack beads (3 patterns)
 # ✓ pack docker (3 patterns)
 # ✓ pack git (4 patterns)
 # ✓ pack image-tag (2 patterns)
+# ✓ pack kubectl (3 patterns)
 # ✓ pack misc (2 patterns)
 # ✓ pack openbao (3 patterns)
 # ✓ pack secrets (6 patterns)
@@ -347,7 +348,7 @@ installed pack plus the repository's `packs/` directory when present). The
 
 ## What Gets Protected
 
-Ten packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
+Eleven packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
 
 | Pack | Patterns | Scope | What it blocks |
 | --- | --- | --- | --- |
@@ -356,6 +357,7 @@ Ten packs ship today. Pattern IDs below are the IDs `icg explain` accepts.
 | `secrets` | 6 | General | Credential literals in commands and file content: `github-token`, `github-fine-grained-pat`, `aws-access-key-id`, `slack-token`, `anthropic-api-key`, `pem-private-key-header` (all Critical) |
 | `docker` | 3 | General | `docker system prune --all` — `docker-system-prune-all`; `docker volume rm` — `docker-volume-rm`; `docker image rm --force` — `docker-image-rm-force` (all Critical) |
 | `image-tag` | 2 | Fleet-flavoured | `:latest` in a manifest — `image-tag-latest` (High); a bare git SHA where a semver tag belongs — `image-tag-bare-sha` (High). The rule generalises; the redirect names this fleet's `containers/<name>/VERSION` convention |
+| `kubectl` | 3 | Fleet-flavoured | `kubectl delete` — `kubectl-delete` (Critical); mutating verbs such as `apply`, `patch`, `scale`, `rollout restart` — `kubectl-mutating-verb` (High); `kubectl create` outside Argo Workflow submission — `kubectl-create-outside-argo` (High). Blanket, not ArgoCD-aware; the redirect names this fleet's `declarative-config` GitOps repo. Hook front-end only — never PATH-wrapped |
 | `storage-class` | 1 | Fleet-specific | `ssd`/`ssd-large` storage classes in manifests — `storage-class-ssd` (High). Rackspace Spot's defaults; use `sata`/`sata-large` |
 | `beads` | 3 | Fleet-specific | Hand-editing the shared `.beads` store — `beads-shared-checkout-write` (Critical); recovery misordering — `beads-repair-requires-flush`, `beads-flush-requires-pull` (High) |
 | `misc` | 2 | Fleet-specific | `needle cleanup` against a live fleet — `needle-cleanup` (Critical); deprecated bead CLIs `bf`/`br` — `deprecated-bead-cli` (Medium) |
@@ -370,16 +372,18 @@ authoring, but their deny text names conventions a visitor does not have.
 Nothing about the engine is fleet-specific: `icg new-pack` scaffolds your own.
 
 **Not covered by icg** (see [What icg does NOT cover](#what-icg-does-not-cover)):
-kubectl mutations remain the org-level hook's job. `.github/workflows/*`
-writes and `kind: Job`/`CronJob` manifests are covered twice over — by the
-built-in `github-workflows` and `job-cronjob-yaml` guards and by the
-org-level hook — so both deny the same write during coexistence.
+ArgoCD-aware kubectl scoping — the `kubectl` pack is blanket. Mutating
+kubectl commands, `.github/workflows/*` writes and `kind: Job`/`CronJob`
+manifests are covered twice over — by icg (the `kubectl` pack and the
+built-in `github-workflows` and `job-cronjob-yaml` guards) and by the
+org-level hook `org-rule-guard.py` — so both deny the same call during
+coexistence.
 
 **Safe operations** are not enumerated in a blocklist-facing doc — anything
 no pattern matches is allowed (`git status`, `kubectl get`, `bao kv get -field=…`
 into a config, semver image tags, `sata` storage classes, …). The
-`openbao` and `git` packs additionally carry explicit safe-pattern lists that
-keep read-only verbs fast.
+`openbao`, `git` and `kubectl` packs additionally carry explicit safe-pattern
+lists that keep read-only verbs fast.
 
 ---
 

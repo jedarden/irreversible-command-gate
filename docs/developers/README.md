@@ -561,7 +561,9 @@ sudo icg install                      # or --dir <path>, --uninstall to remove
 
 It derives the names from the packs' `tool_keywords`, so the set tracks the
 installed policy rather than a hand-maintained list. There is no `kubectl`
-symlink and there will not be one — kubectl stays with the org-level hook.
+symlink and there will not be one: `icg install` skips the `kubectl`
+keyword, so the `kubectl` pack guards the hook front-end only
+([ADR-001](../adr/001-kubectl-mutation-pack.md)).
 
 #### Wrapper Detection
 

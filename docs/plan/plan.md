@@ -10,21 +10,22 @@ the existing `org-rule-guard.py` PreToolUse hook, not replacing it, but
 project's coverage supersedes it** (per user direction 2026-08-13) —
 coexistence is an interim state, not the intended end state. **Realistic
 end state, stated precisely rather than aspirationally**: not full
-removal. Two things keep it alive under the plan's *current*, actually
-scheduled scope: (1) its kubectl-mutation rule is **permanently** excluded
-from absorption ("Explicitly not attempted" — zero-I/O determinism
-reasons that don't go away), and (2) its Write/Edit credential-value rule
-has no absorbed channel yet, so it stays with the hook until one exists
-(see `docs/notes/existing-enforcement-infrastructure.md`).
+removal. One thing keeps it alive under the plan's *current*, actually
+scheduled scope: its Write/Edit credential-value rule has no absorbed
+channel yet, so it stays with the hook until one exists (see
+`docs/notes/existing-enforcement-infrastructure.md`).
 Its `.github/workflows` rule and its `kind: Job`/`CronJob` rule once sat
-in that unscheduled category beside it; both have since been absorbed —
+in that unscheduled category; both have since been absorbed —
 built-in engine guards (pack attributions `github-workflows` and
 `job-cronjob-yaml`) deny workflow-definition writes and Job/CronJob
 manifest content on Write/Edit and Codex `apply_patch` (2026-09),
-redundantly with the hook during coexistence. So today's accurate
-claim is "shrinks to a kubectl-only rump plus the Write/Edit
-credential-value rule" — not "kubectl-only,"
-until a future phase actually picks up the credential channel. "Deprecated" means
+redundantly with the hook during coexistence. Its kubectl-mutation rule
+was recorded here as **permanently** excluded until 2026-09-19, when
+[ADR-001](../adr/001-kubectl-mutation-pack.md) absorbed it as the blanket
+`kubectl` pack: the exclusion's zero-I/O reason only ever ruled out
+*ArgoCD-aware narrowing*, which stays not attempted. So today's accurate
+claim is "shrinks to the Write/Edit credential-value rule" until a future
+phase actually picks up that channel. "Deprecated" means
 "superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is
 framed accordingly. Covers both **Claude Code and Codex CLI** as guarded
@@ -133,10 +134,11 @@ the wrapper is only ever invoked as one specific shadowed binary via
 `argv[0]`, so it never sees a command line for a binary it doesn't
 shadow, e.g. `echo "ghp_..." >> file`. Only the hook, which receives every
 Bash call's full command text regardless of executable, can realize
-this), and `misc` (`needle cleanup`, deprecated-bead-CLI usage). `kubectl`
-is deliberately **not** a pack here — its mutating-verb coverage stays
-`org-rule-guard.py`'s job (see "Explicitly not attempted" below), so it's
-not one of the binaries the PATH-wrapper needs its own rules for. The
+this), `misc` (`needle cleanup`, deprecated-bead-CLI usage), and — since
+[ADR-001](../adr/001-kubectl-mutation-pack.md), 2026-09-19 — `kubectl`
+(blanket mutating-verb, `delete` and non-Argo `create` denial; **hook
+front-end only**: `icg install` skips the `kubectl` keyword, so it is never
+a PATH-wrapper binary). The
 `:latest`/secrets/kubectl claims above are grounded in
 `docs/notes/existing-enforcement-infrastructure.md`'s direct read of
 `org-rule-guard.py`'s source — re-check that note if the source ever
@@ -231,8 +233,8 @@ engine:
   loaded* rule packs cover — `vault`/`bao` (the `openbao` pack) and `git`
   from Phase 1, `docker`
   once Phase 4's `irrevers-54d477dd` pack ships (not before; shadowing a binary with
-  no pack behind it yet is a pure no-op) — never `kubectl` (see
-  Architecture's pack list). Harness-agnostic by construction, proven
+  no pack behind it yet is a pure no-op) — never `kubectl`, even though the
+  `kubectl` pack ships (see Architecture's pack list and ADR-001). Harness-agnostic by construction, proven
   pattern already running in this
   environment (`~/.local/bin/cargo` transparently intercepts `cargo test`;
   see `CLAUDE.md`'s "Rust Build/Test Offloading"). Confirmed to work for
@@ -871,12 +873,15 @@ GuardedPattern:
       user direction — same treatment as run 1's finalist #10. See
       `docs/notes/ideas-ledger.md`'s second-run section for their full
       reasoning if revisited later.
-- [ ] **Explicitly not attempted:** narrowing the existing `org-rule-guard.py`
-      kubectl-mutation block down to "only ArgoCD-managed resources" —
-      doing so accurately requires live cluster state, which trades away
-      the zero-I/O determinism that makes the current blanket block
-      trustworthy. The blanket version stays as-is; this project doesn't
-      touch it.
+- [ ] **Explicitly not attempted:** narrowing the kubectl-mutation block
+      down to "only ArgoCD-managed resources" — doing so accurately
+      requires live cluster state, which trades away the zero-I/O
+      determinism that makes the blanket block trustworthy. **Amended
+      2026-09-19 by [ADR-001](../adr/001-kubectl-mutation-pack.md):** the
+      blanket block itself *is* now absorbed, as the `kubectl` pack
+      (`irrevers-3fc0fbce`); only this narrowing stays not attempted. The
+      original wording ("this project doesn't touch it") read as a ban on
+      absorbing the blanket rule, which its reasoning never supported.
 
 ## Open Questions
 

@@ -112,12 +112,14 @@ absorbs pieces of the five rules above rather than avoiding them:
   the interim, so the two run redundantly during coexistence — the pack is
   the permanent form; the stopgap retires with the hook. The Write/Edit
   path itself isn't moving yet.
-- **Rule 4 (mutating `kubectl`)** — deliberately excluded, not scheduled for
-  absorption at all: plan.md's "Explicitly not attempted" phase item rules
-  out narrowing the blanket kubectl-mutation block, because doing so
-  accurately needs live cluster state that would break this project's
-  zero-I/O determinism. This rule stays `org-rule-guard.py`'s alone even
-  after the others are absorbed.
+- **Rule 4 (mutating `kubectl`)** — absorbed 2026-09-19 as the `kubectl`
+  pack ([ADR-001](../adr/001-kubectl-mutation-pack.md)), redundantly with
+  the hook for as long as both run. This note previously recorded it as
+  permanently excluded; that generalized plan.md's "Explicitly not
+  attempted" item, which only rules out *narrowing* the block to
+  ArgoCD-managed resources (that needs live cluster state and would break
+  zero-I/O determinism). The pack is the blanket rule, so the narrowing
+  stays not attempted.
 - **Rule 1 (`.github/workflows`)** — absorbed 2026-09: a built-in guard in
   the engine (pack attribution `github-workflows` /
   `github-workflows-protected`, not a pack file) denies workflow-definition

@@ -24,7 +24,7 @@ icg supersedes most of these rules and adds new coverage:
 | No `.github/workflows/*` | Built-in `github-workflows` guard (shipped) | **Covered by both** — redundant double-deny |
 | No `kind: Job`/`CronJob` | Built-in `job-cronjob-yaml` guard (shipped) | **Covered by both** — redundant double-deny |
 | No `:latest` image tags | `image-tag` pack (includes bare-SHA) | **MIGRATED** |
-| No mutating `kubectl` | Explicitly not implemented | Remains with org-rule-guard.py |
+| No mutating `kubectl` | `kubectl` pack (blanket; [ADR-001](../adr/001-kubectl-mutation-pack.md)) | **Covered by both** — redundant double-deny |
 | No credential values (Write/Edit) | Remains with org-rule-guard.py | Coexistence |
 | (New) Credential values in Bash | `secrets` pack | **NEW** |
 | (New) OpenBao destructive ops | `openbao` pack | **NEW** |
@@ -45,11 +45,13 @@ icg supersedes most of these rules and adds new coverage:
   (both hooks deny during coexistence)
 - `kind: Job`/`CronJob` absorbed by icg's built-in `job-cronjob-yaml` guard
   (both hooks deny during coexistence)
-- org-rule-guard.py still owns kubectl and Write/Edit credential rules
+- Mutating `kubectl` absorbed by icg's `kubectl` pack (both hooks deny
+  during coexistence)
+- org-rule-guard.py still solely owns the Write/Edit credential rule
 
 **Phase 3: Deprecation** (Future)
-- org-rule-guard.py reduced to kubectl (plus the Write/Edit credential rule
-  until icg covers that channel)
+- org-rule-guard.py reduced to the Write/Edit credential rule until icg
+  covers that channel
 - icg handles all other rules
 
 ## Pre-Migration Checklist
@@ -88,7 +90,9 @@ cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
 
 ### Review Known Limitations
 
-- [ ] Understood that `kubectl` mutations remain with org-rule-guard.py
+- [ ] Understood that mutating `kubectl` commands are denied by both icg
+      (`kubectl` pack, blanket rather than ArgoCD-aware) and
+      org-rule-guard.py during coexistence
 - [ ] Understood that `.github/workflows` writes are denied by both icg
       (built-in guard) and org-rule-guard.py during coexistence
 - [ ] Understood that double denials are expected during coexistence
@@ -453,13 +457,13 @@ Monitor denial rates for BOTH systems during coexistence:
 
 - [ ] Evaluate icg's effectiveness
 - [ ] Plan migration of remaining rules (if applicable)
-- [ ] Consider deprecating org-rule-guard.py for non-kubectl rules
+- [ ] Consider deprecating org-rule-guard.py for every rule but Write/Edit credentials
 - [ ] Document lessons learned
 
 ### Long-Term (Quarter 1)
 
 - [ ] Complete migration of all planned rules
-- [ ] Reduce org-rule-guard.py to kubectl-only
+- [ ] Reduce org-rule-guard.py to the Write/Edit credential rule
 - [ ] Archive migration documentation
 - [ ] Establish icg-only operational procedures
 

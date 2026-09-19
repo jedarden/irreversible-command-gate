@@ -1,0 +1,74 @@
+{
+  "id": "kubectl",
+  "tool_keywords": [
+    "kubectl"
+  ],
+  "applies_to": [],
+  "safe_patterns": [
+    {
+      "id": "safe-kubectl-read-verb",
+      "type": "command_regex",
+      "regex": "(?i)^kubectl[^\\n;|&]{0,200}?\\s(?:get|describe|logs|top|version|explain|api-resources|api-versions|cluster-info|events|diff|wait|auth|config|exec|cp|port-forward|proxy|debug)\\b"
+    },
+    {
+      "id": "safe-kubectl-rollout-read",
+      "type": "command_regex",
+      "regex": "(?i)^kubectl[^\\n;|&]{0,200}?\\srollout\\s+(?:status|history)\\b"
+    },
+    {
+      "id": "safe-kubectl-argo-workflow-create",
+      "type": "command_regex",
+      "regex": "(?i)^kubectl[^\\n;|&]{0,200}?\\screate\\b[^\\n;|&]{0,200}?\\b(?:argo-workflows|iad-ci)\\b"
+    }
+  ],
+  "guarded_patterns": [
+    {
+      "id": "kubectl-delete",
+      "enabled": true,
+      "type": "command_regex",
+      "regex": "(?i)^kubectl[^\\n;|&]{0,200}?\\sdelete\\b",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "kubectl delete removes live cluster objects. For an ArgoCD-managed resource the deletion also fights the controller, which recreates it on the next sync; for anything holding data (PVC, namespace, StatefulSet) it is irreversible and takes the data with it.",
+      "destructive": true,
+      "example_command": "kubectl delete pvc data-postgres-0 -n commitgraph-production",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "`kubectl delete` is blocked: desired state lives in jedarden/declarative-config, and ArgoCD recreates anything it manages on the next sync. Remove the resource from the manifest, commit, push, and let ArgoCD prune it. Deleting data-bearing objects (PVC, namespace, StatefulSet) needs a human-approved plan with a restore path first. Genuinely orphaned objects ArgoCD does not own are the one exception and still need explicit human approval.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "kubectl-mutating-verb",
+      "enabled": true,
+      "type": "command_regex",
+      "regex": "(?i)^kubectl[^\\n;|&]{0,200}?\\s(?:apply|patch|edit|replace|set|annotate|label|scale|autoscale|expose|run|cordon|uncordon|drain|taint|evict|rollout\\s+(?:restart|undo|pause|resume))\\b",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Mutating kubectl verbs change live cluster state outside GitOps. ArgoCD selfHeal reverts the change, so it does not stick, and in the meantime it fights the controller and hides the real desired state from the repository that is supposed to describe it.",
+      "destructive": false,
+      "example_command": "kubectl apply -f deployment.yaml -n commitgraph-production",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "Mutating kubectl verbs are blocked: the only sanctioned way to change desired state is to edit the manifest in jedarden/declarative-config, commit, push, and let ArgoCD sync (force the sync from the ArgoCD Application if it lags -- that applies the repo rather than bypassing it). Read-only verbs (get/describe/logs/top/events/diff) plus exec, cp and port-forward stay allowed, as does `kubectl create` of an Argo Workflow in the argo-workflows namespace.",
+        "rewrite_template": null
+      }
+    },
+    {
+      "id": "kubectl-create-outside-argo",
+      "enabled": true,
+      "type": "command_regex",
+      "regex": "(?i)^kubectl[^\\n;|&]{0,200}?\\screate\\b",
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "kubectl create makes a live object that no manifest describes, so ArgoCD never owns it and never prunes it. The one sanctioned use is submitting an Argo Workflow to the argo-workflows namespace, which the safe pattern above allows.",
+      "destructive": false,
+      "example_command": "kubectl create deployment web --image=nginx -n prod",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "`kubectl create` is blocked outside Argo Workflow submission: an object created this way is not ArgoCD-owned and is never pruned. Add the resource to jedarden/declarative-config and let ArgoCD create it. Submitting a one-shot Argo Workflow (`kubectl create -f - ... -n argo-workflows`) is the sanctioned exception and is allowed.",
+        "rewrite_template": null
+      }
+    }
+  ]
+}
