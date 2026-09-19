@@ -39,8 +39,13 @@ const ADAPTER_CONTRACT_VERSION: u32 = 1;
 /// proven equivalent below. The Cursor shell-event goldens additionally
 /// exercise `--event before-shell-execution`, the event's dedicated stdin
 /// admission path.
-fn golden_cases(
-) -> Vec<(&'static str, &'static str, &'static str, &'static str, &'static str)> {
+fn golden_cases() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+)> {
     vec![
         (
             "claude-code-allow",
@@ -89,6 +94,20 @@ fn golden_cases(
             "codex-cli",
             SHIPPED_PACKS,
             "codex-cli-deny-patch",
+            "pre-tool-use",
+        ),
+        (
+            "codex-cli-allow",
+            "codex-cli",
+            SHIPPED_PACKS,
+            "codex-cli-allow",
+            "pre-tool-use",
+        ),
+        (
+            "codex-cli-rewrite-degraded",
+            "codex-cli",
+            "command-rewrite-pack",
+            "codex-cli-rewrite-degraded",
             "pre-tool-use",
         ),
         (
@@ -165,7 +184,9 @@ fn pack_path(name: &str) -> PathBuf {
     } else if name == WARNING_PACK {
         Path::new(ROOT).join(WARNING_PACK)
     } else {
-        Path::new(ROOT).join(ADAPTER_FIXTURES).join(format!("{name}.json"))
+        Path::new(ROOT)
+            .join(ADAPTER_FIXTURES)
+            .join(format!("{name}.json"))
     }
 }
 
@@ -183,17 +204,15 @@ fn run_hook_with_event(
     pack: &str,
 ) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
-    command
-        .args(["hook", "--rule-pack"])
-        .arg(pack_path(pack));
+    command.args(["hook", "--rule-pack"]).arg(pack_path(pack));
     if let Some(harness) = harness {
         command.args(["--harness", harness]);
     }
     if let Some(event) = event {
         command.args(["--event", event]);
     }
-    let request_json =
-        std::fs::read_to_string(request).unwrap_or_else(|error| panic!("read {request:?}: {error}"));
+    let request_json = std::fs::read_to_string(request)
+        .unwrap_or_else(|error| panic!("read {request:?}: {error}"));
 
     let mut child = command
         .stdin(Stdio::piped())
@@ -207,7 +226,9 @@ fn run_hook_with_event(
         .expect("hook stdin should be available")
         .write_all(request_json.as_bytes())
         .expect("hook input should be written");
-    child.wait_with_output().expect("hook process should finish")
+    child
+        .wait_with_output()
+        .expect("hook process should finish")
 }
 
 fn stdout_json(output: &std::process::Output) -> Value {
@@ -216,8 +237,7 @@ fn stdout_json(output: &std::process::Output) -> Value {
         "the hook must stay successful for every fixture verdict: {:?}",
         output.status
     );
-    serde_json::from_slice(&output.stdout)
-        .expect("hook stdout should be exactly one JSON object")
+    serde_json::from_slice(&output.stdout).expect("hook stdout should be exactly one JSON object")
 }
 
 /// Every golden request must render exactly its recorded response: allow,
@@ -248,8 +268,11 @@ fn golden_fixtures_render_exactly_their_recorded_response() {
 }
 
 /// A truncated payload is malformed input: the hook fails open with a
-/// successful process and a plain allow, the contract's malformed-input
-/// behavior.
+/// successful process and no decision at all, the contract's malformed-input
+/// behavior. Codex honors `permissionDecision: "deny"` alone and logs every
+/// other value as unsupported, so "fail open" is spelled there by omitting
+/// the field -- an absent decision leaves the call to Codex's own permission
+/// flow, which is exactly what failing open means.
 #[test]
 fn malformed_input_fails_open_with_a_successful_process() {
     let output = run_hook(
@@ -269,8 +292,7 @@ fn malformed_input_fails_open_with_a_successful_process() {
         response,
         json!({
             "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow"
+                "hookEventName": "PreToolUse"
             }
         })
     );
@@ -335,7 +357,9 @@ fn declared_harness_reaches_telemetry_as_a_slug_and_no_payload_does() {
         .expect("hook stdin should be available")
         .write_all(payload.to_string().as_bytes())
         .expect("hook input should be written");
-    let output = child.wait_with_output().expect("hook process should finish");
+    let output = child
+        .wait_with_output()
+        .expect("hook process should finish");
     assert!(output.status.success(), "hook process should succeed");
 
     let store: Value = serde_json::from_str(
@@ -357,7 +381,13 @@ fn declared_harness_reaches_telemetry_as_a_slug_and_no_payload_does() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        vec!["harness", "release_ref", "session_id", "timestamp", "verdict"],
+        vec![
+            "harness",
+            "release_ref",
+            "session_id",
+            "timestamp",
+            "verdict"
+        ],
         "evaluation records stay verdict-shaped; a new key must be justified \
          against the no-payload-data rule before it lands"
     );
@@ -400,7 +430,9 @@ fn undeclared_hook_records_no_harness_identity() {
         .expect("hook stdin should be available")
         .write_all(payload.to_string().as_bytes())
         .expect("hook input should be written");
-    let output = child.wait_with_output().expect("hook process should finish");
+    let output = child
+        .wait_with_output()
+        .expect("hook process should finish");
     assert!(output.status.success());
 
     let store: Value = serde_json::from_str(
@@ -466,8 +498,7 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
     // consulted; what the refusal guarantees is that nothing about *this
     // call* lands in it.)
     let raw = std::fs::read_to_string(&telemetry_path).expect("telemetry store should be readable");
-    let store: Value =
-        serde_json::from_str(&raw).expect("telemetry store should parse");
+    let store: Value = serde_json::from_str(&raw).expect("telemetry store should parse");
     assert!(
         store["window"]["records"]
             .as_array()
@@ -490,14 +521,13 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
 fn an_event_without_a_matching_adapter_is_refused() {
     for harness in [None, Some("claude-code"), Some("codex-cli")] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
-        command
-            .args([
-                "hook",
-                "--rule-pack",
-                &pack_path(SHIPPED_PACKS).to_string_lossy(),
-                "--event",
-                "before-shell-execution",
-            ]);
+        command.args([
+            "hook",
+            "--rule-pack",
+            &pack_path(SHIPPED_PACKS).to_string_lossy(),
+            "--event",
+            "before-shell-execution",
+        ]);
         if let Some(harness) = harness {
             command.args(["--harness", harness]);
         }
@@ -593,10 +623,12 @@ fn cursor_practice_mode_keeps_stdout_schema_exact() {
         .expect("hook stdin should be available")
         .write_all(payload.as_bytes())
         .expect("hook input should be written");
-    let output = child.wait_with_output().expect("hook process should finish");
+    let output = child
+        .wait_with_output()
+        .expect("hook process should finish");
 
-    let response: Value = serde_json::from_slice(&output.stdout)
-        .expect("stdout should be one JSON object");
+    let response: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be one JSON object");
     assert_eq!(
         response,
         json!({ "permission": "allow" }),

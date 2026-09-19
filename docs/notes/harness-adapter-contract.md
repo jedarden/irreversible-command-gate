@@ -164,23 +164,31 @@ discretion**:
 
 | Verdict | Full-capability render | Degraded render |
 | --- | --- | --- |
-| `Allow` | `permissionDecision: "allow"` | same |
+| `Allow` | `permissionDecision: "allow"` | `supports_allow_decision: false` → **field omitted**, leaving no opinion — an allow is never spelled as a decision the harness rejects |
 | `Warn` | allow + `additionalContext: <attributed reason>` | `supports_additional_context: false` → **bare allow**, context dropped — never turned into a block |
 | `Rewrite` | allow + `updatedInput` (complete replacement object: original input with the rewrite value substituted under the request's rewrite key) + `additionalContext` | `supports_updated_input: false` → **deny** carrying the rewrite's attributed reason — the matched input must not run unreplaced |
 | `Deny` | `permissionDecision: "deny"` + `permissionDecisionReason` (no `updatedInput`, ever) | same |
 
+A deny is never degraded. Every capability above narrows what ICG may
+*grant*; the veto direction is always available, which is the direction that
+carries the safety.
+
 Shipped capabilities:
 
-| Adapter | `supports_updated_input` | `supports_additional_context` | `honors_additional_context` | `supports_system_message` |
-| --- | --- | --- | --- | --- |
-| Claude Code | yes | yes | yes | yes |
-| Codex CLI | yes | yes | **no** | yes |
+| Adapter | `supports_updated_input` | `supports_additional_context` | `honors_additional_context` | `supports_system_message` | `supports_allow_decision` |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | yes | yes | yes | yes | yes |
+| Codex CLI | **no** | yes | **no** | yes | **no** |
 
 `honors_additional_context` is informational: the Codex CLI parses
 `additionalContext` but does not yet act on it (see
 [`multi-harness-integration.md`](multi-harness-integration.md) for the
 timeline). The adapter still sends the field, so the day Codex honors it the
 warning text is already on the wire.
+
+`supports_updated_input` and `supports_allow_decision` are **not**
+informational, and both are false for Codex: see §6.2 for the runtime
+narrowing that forces them.
 
 ## 6. Per-harness specifications and official sources
 
@@ -215,6 +223,32 @@ exact official source it was taken from.
 - **Maturity:** shipped experimental ~v0.114 (March 2026), stable ~v0.124
   (April 2026). `additionalContext` is in the schema but not yet honored —
   encoded as `honors_additional_context: false` (§5).
+- **The schema is wider than the runtime.** Codex's generated
+  `pre-tool-use.command.output` schema accepts `permissionDecision` of
+  `allow|deny|ask`, but the runtime honors **`deny` alone**. Verified against
+  the shipped Codex CLI 0.154.0 binary, which carries these rejections:
+
+  ```
+  PreToolUse hook returned unsupported permissionDecision:allow
+  PreToolUse hook returned unsupported permissionDecision:ask
+  PreToolUse hook returned updatedInput without permissionDecision:allow
+  PreToolUse hook returned permissionDecision:deny without a non-empty permissionDecisionReason
+  PreToolUse hook returned unsupported decision:approve
+  PreToolUse hook returned unsupported continue:false / stopReason / suppressOutput
+  ```
+
+  So a hook can veto Codex but cannot grant to it, and `updatedInput` is
+  unreachable there — its only documented precondition is an accepted
+  `permissionDecision: "allow"`, which Codex refuses. Hence
+  `supports_updated_input: false` and `supports_allow_decision: false`, which
+  route a `Rewrite` into the deny degradation above rather than emitting a
+  rewrite Codex silently discards. **Validating against the published schema
+  is not sufficient for this harness**; the runtime is stricter, and the gap
+  is silent apart from a per-call hook error.
+- **Registration must declare the harness.** `default_adapter()` is Claude
+  Code, so a bare `icg hook` in `~/.codex/hooks.json` is served Claude Code's
+  wire format regardless of these capabilities. The command must be
+  `icg hook --harness codex-cli`.
 - **Config:** `~/.codex/hooks.json` or repo `.codex/hooks.json`, gated by
   project trust. Not to be confused with cloud-hosted Codex tasks, which are
   out of reach for any host-level guard.

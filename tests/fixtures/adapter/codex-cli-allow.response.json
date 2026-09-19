@@ -1,0 +1,5 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse"
+  }
+}

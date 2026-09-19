@@ -35,13 +35,19 @@ fn verdict_fields(result: &CheckResult) -> (&'static str, Option<&str>, Option<&
     match result {
         CheckResult::Allowed => ("allowed", None, None),
         CheckResult::Denied {
-            pack_id, pattern_id, ..
+            pack_id,
+            pattern_id,
+            ..
         } => ("denied", Some(pack_id), Some(pattern_id)),
         CheckResult::Rewrite {
-            pack_id, pattern_id, ..
+            pack_id,
+            pattern_id,
+            ..
         } => ("rewrite", Some(pack_id), Some(pattern_id)),
         CheckResult::Warning {
-            pack_id, pattern_id, ..
+            pack_id,
+            pattern_id,
+            ..
         } => ("warning", Some(pack_id), Some(pattern_id)),
     }
 }
@@ -90,7 +96,10 @@ fn main() -> ExitCode {
             Ok(value) => match value.get("command").and_then(|c| c.as_str()) {
                 Some(command) => command.to_string(),
                 None => {
-                    eprintln!("error: corpus line {} has no string \"command\"", line_no + 1);
+                    eprintln!(
+                        "error: corpus line {} has no string \"command\"",
+                        line_no + 1
+                    );
                     return ExitCode::from(2);
                 }
             },
@@ -115,7 +124,7 @@ fn main() -> ExitCode {
 
         *counts.entry(verdict).or_insert(0usize) += 1;
         index += 1;
-        if index % 5000 == 0 {
+        if index.is_multiple_of(5000) {
             eprintln!("... {index} evaluated");
         }
 

@@ -54,7 +54,9 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::engine::{CheckResult, CommandSource, ContentSource, Engine, InputSource, PreToolUseInput};
+use crate::engine::{
+    CheckResult, CommandSource, ContentSource, Engine, InputSource, PreToolUseInput,
+};
 
 /// Version of the canonical request/result schema in this module.
 pub const ADAPTER_CONTRACT_VERSION: u32 = 1;
@@ -137,6 +139,19 @@ pub struct Capabilities {
 
     /// The harness shows the top-level `systemMessage` field to its user.
     pub supports_system_message: bool,
+
+    /// The harness accepts `permissionDecision: "allow"` as a grant. When
+    /// false, an allowing verdict omits the field entirely rather than
+    /// asserting a decision the harness will reject: Codex CLI parses the
+    /// value on the wire but its runtime honors `deny` alone, logging
+    /// `PreToolUse hook returned unsupported permissionDecision:allow` for
+    /// every other value. An absent decision is "no opinion" in every
+    /// harness ICG speaks to, so omission is the portable spelling of an
+    /// allow; asserting one is an optimization that only Claude Code reads.
+    ///
+    /// This never gates a deny. A harness that cannot be granted to can
+    /// still be vetoed, which is the direction that carries the safety.
+    pub supports_allow_decision: bool,
 }
 
 /// Canonical classification of what a harness is about to do.
@@ -149,10 +164,7 @@ pub enum CanonicalAction {
     /// One shell command line to evaluate in command mode.
     Command { command: String },
     /// One full-file write.
-    WriteFile {
-        file_path: String,
-        content: String,
-    },
+    WriteFile { file_path: String, content: String },
     /// One in-place string replacement.
     EditFile {
         file_path: String,
@@ -204,13 +216,12 @@ impl CanonicalRequest {
             Some(InputSource::Command(CommandSource::Argv(argv))) => CanonicalAction::Command {
                 command: argv.join(" "),
             },
-            Some(InputSource::Content(ContentSource::Write {
-                file_path,
-                content,
-            })) => CanonicalAction::WriteFile {
-                file_path: file_path.clone(),
-                content: content.clone(),
-            },
+            Some(InputSource::Content(ContentSource::Write { file_path, content })) => {
+                CanonicalAction::WriteFile {
+                    file_path: file_path.clone(),
+                    content: content.clone(),
+                }
+            }
             Some(InputSource::Content(ContentSource::Edit {
                 file_path,
                 old_content,
@@ -487,6 +498,9 @@ const GEMINI_CLI_CAPABILITIES: Capabilities = Capabilities {
     supports_additional_context: false,
     honors_additional_context: false,
     supports_system_message: true,
+    // `decision: "allow"` is deliberately never emitted to Gemini (see the
+    // doc comment above); the flag records that as contract, not accident.
+    supports_allow_decision: false,
 };
 
 /// Claude Code honors `additionalContext`, `updatedInput`, and
@@ -496,16 +510,34 @@ const CLAUDE_CODE_CAPABILITIES: Capabilities = Capabilities {
     supports_additional_context: true,
     honors_additional_context: true,
     supports_system_message: true,
+    supports_allow_decision: true,
 };
 
-/// Codex accepts the same fields on the wire; its docs do not yet act on
-/// `additionalContext`, so the honoring flag is false even though the field
-/// is still sent.
+/// Codex parses the same envelope on the wire -- its
+/// `pre-tool-use.command.output` schema accepts `allow|deny|ask` -- but its
+/// runtime honors `deny` alone, and says so: verified against Codex CLI
+/// 0.154.0, which carries the rejections
+/// `PreToolUse hook returned unsupported permissionDecision:allow`,
+/// `... unsupported permissionDecision:ask`,
+/// `... updatedInput without permissionDecision:allow`, and
+/// `... permissionDecision:deny without a non-empty permissionDecisionReason`.
+///
+/// So Codex can be vetoed but not granted to, and `updatedInput` is
+/// unreachable there because its only documented precondition -- an
+/// accepted `permissionDecision: "allow"` -- is itself refused. A Rewrite
+/// therefore degrades to a Deny carrying the rewrite's reason, which is the
+/// fail-safe the shared renderer already implements: the alternative is the
+/// matched command running unrewritten, which is what shipped before.
+///
+/// `additionalContext` stays on: Codex's schema accepts the field and
+/// ignores it today, so the text costs nothing and is already in place the
+/// day Codex starts honoring it (irrevers-a0ced256).
 const CODEX_CAPABILITIES: Capabilities = Capabilities {
-    supports_updated_input: true,
+    supports_updated_input: false,
     supports_additional_context: true,
     honors_additional_context: false,
     supports_system_message: true,
+    supports_allow_decision: false,
 };
 
 /// Adapter for Cursor's native `preToolUse` agent hook.
@@ -549,6 +581,10 @@ const CURSOR_CAPABILITIES: Capabilities = Capabilities {
     supports_additional_context: false,
     honors_additional_context: false,
     supports_system_message: false,
+    // Cursor's flat envelope carries `permission` on every response,
+    // allow included; it is rendered by render_cursor_envelope, not by the
+    // shared `hookSpecificOutput` renderer this flag gates.
+    supports_allow_decision: true,
 };
 
 /// `beforeShellExecution` output carries only the permission decision and
@@ -702,13 +738,24 @@ pub fn render_decision_envelope(
         );
     };
 
-    let response = match result.verdict {
+    // An allowing verdict asserts `permissionDecision: "allow"` only where
+    // the harness reads it as a grant. Where it does not, the field is
+    // omitted rather than sent and rejected -- an absent decision is "no
+    // opinion", which is the same outcome without the per-call hook error.
+    // Deny is never routed through here: a veto is always spoken outright.
+    let allow_decision = |hook_output: &mut serde_json::Map<String, Value>| {
+        if capabilities.supports_allow_decision {
+            decision(hook_output, "allow");
+        }
+    };
+
+    match result.verdict {
         CanonicalVerdict::Allow => {
-            decision(&mut hook_output, "allow");
+            allow_decision(&mut hook_output);
             serde_json::json!({ "hookSpecificOutput": hook_output })
         }
         CanonicalVerdict::Warn => {
-            decision(&mut hook_output, "allow");
+            allow_decision(&mut hook_output);
             if capabilities.supports_additional_context {
                 hook_output.insert(
                     "additionalContext".to_string(),
@@ -718,7 +765,7 @@ pub fn render_decision_envelope(
             serde_json::json!({ "hookSpecificOutput": hook_output })
         }
         CanonicalVerdict::Rewrite if capabilities.supports_updated_input => {
-            decision(&mut hook_output, "allow");
+            allow_decision(&mut hook_output);
             // `updatedInput` replaces the whole tool-input object, so every
             // field the harness sent -- modeled or not -- must be copied
             // into the replacement, with only the rewrite key substituted.
@@ -758,9 +805,7 @@ pub fn render_decision_envelope(
             );
             serde_json::json!({ "hookSpecificOutput": hook_output })
         }
-    };
-
-    response
+    }
 }
 
 /// Render one canonical result in Cursor's native flat envelope, degraded
@@ -1142,18 +1187,18 @@ mod tests {
             rewrite: None,
             subject: Some("deploy/app.yaml".to_string()),
         };
-        assert!(with_path.attributed_reason().contains("path=.beads/beads.db"));
+        assert!(with_path
+            .attributed_reason()
+            .contains("path=.beads/beads.db"));
         assert!(!with_path.attributed_reason().contains("file="));
 
         let subject_only = CanonicalResult {
             matched_path: None,
             ..with_path.clone()
         };
-        assert!(
-            subject_only
-                .attributed_reason()
-                .contains("file=deploy/app.yaml")
-        );
+        assert!(subject_only
+            .attributed_reason()
+            .contains("file=deploy/app.yaml"));
     }
 
     #[test]
@@ -1180,8 +1225,7 @@ mod tests {
         assert_eq!(updated["timeout"], 120000);
         assert_eq!(updated["run_in_background"], false);
         assert_eq!(
-            response["hookSpecificOutput"]["permissionDecision"],
-            "allow",
+            response["hookSpecificOutput"]["permissionDecision"], "allow",
             "a rewrite allows the call with replacement arguments"
         );
         assert!(
@@ -1205,11 +1249,9 @@ mod tests {
         );
         assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
         assert!(response["hookSpecificOutput"].get("updatedInput").is_none());
-        assert!(
-            response["hookSpecificOutput"]
-                .get("additionalContext")
-                .is_none()
-        );
+        assert!(response["hookSpecificOutput"]
+            .get("additionalContext")
+            .is_none());
     }
 
     #[test]
@@ -1226,17 +1268,18 @@ mod tests {
         };
         let response = adapter.render(&warning, None, "command");
 
-        assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "allow");
+        assert_eq!(
+            response["hookSpecificOutput"]["permissionDecision"],
+            "allow"
+        );
         assert_eq!(
             response["hookSpecificOutput"]["additionalContext"],
             "check the target [pack=warning-verdict-e2e, pattern=warn-worktree-add]"
         );
         assert!(response["hookSpecificOutput"].get("updatedInput").is_none());
-        assert!(
-            response["hookSpecificOutput"]
-                .get("permissionDecisionReason")
-                .is_none()
-        );
+        assert!(response["hookSpecificOutput"]
+            .get("permissionDecisionReason")
+            .is_none());
     }
 
     #[test]
@@ -1264,7 +1307,7 @@ mod tests {
     fn a_harness_without_context_drops_the_warning_text_but_still_allows() {
         let no_context = Capabilities {
             supports_additional_context: false,
-            ..CODEX_CAPABILITIES
+            ..CLAUDE_CODE_CAPABILITIES
         };
         let warning = CanonicalResult {
             verdict: CanonicalVerdict::Warn,
@@ -1277,19 +1320,18 @@ mod tests {
         };
         let response = render_decision_envelope(&warning, None, "command", &no_context);
 
-        assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "allow");
-        assert!(
-            response["hookSpecificOutput"]
-                .get("additionalContext")
-                .is_none()
+        assert_eq!(
+            response["hookSpecificOutput"]["permissionDecision"],
+            "allow"
         );
+        assert!(response["hookSpecificOutput"]
+            .get("additionalContext")
+            .is_none());
     }
 
     #[test]
     fn codex_declares_its_context_limitation_without_losing_the_field() {
-        let capabilities = adapter_for(HarnessId::CodexCli)
-            .unwrap()
-            .capabilities();
+        let capabilities = adapter_for(HarnessId::CodexCli).unwrap().capabilities();
         assert!(
             capabilities.supports_additional_context,
             "the field is still sent"
@@ -1299,7 +1341,126 @@ mod tests {
             "Codex parses additionalContext but does not honor it yet"
         );
         assert!(capabilities.supports_system_message);
-        assert!(capabilities.supports_updated_input);
+        assert!(
+            !capabilities.supports_updated_input,
+            "Codex refuses updatedInput: its only precondition, an accepted \
+             permissionDecision:allow, is itself unsupported there"
+        );
+        assert!(
+            !capabilities.supports_allow_decision,
+            "Codex CLI 0.154.0 honors permissionDecision:deny alone"
+        );
+    }
+
+    /// Codex logs `PreToolUse hook returned unsupported permissionDecision:allow`
+    /// for every call ICG lets through, so an allowing verdict must assert no
+    /// decision at all there. The envelope still identifies the event.
+    #[test]
+    fn an_allow_omits_the_decision_where_the_harness_refuses_to_be_granted_to() {
+        let response = render_decision_envelope(
+            &CanonicalResult {
+                verdict: CanonicalVerdict::Allow,
+                reason: None,
+                pack_id: None,
+                pattern_id: None,
+                matched_path: None,
+                rewrite: None,
+                subject: None,
+            },
+            None,
+            "command",
+            &CODEX_CAPABILITIES,
+        );
+
+        assert!(
+            response["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none(),
+            "an allow Codex would reject is spelled as no opinion, not as allow"
+        );
+        assert_eq!(
+            response["hookSpecificOutput"]["hookEventName"],
+            "PreToolUse"
+        );
+    }
+
+    /// The same allow keeps asserting the grant on Claude Code: omission is a
+    /// per-harness degradation, not a change of default behavior.
+    #[test]
+    fn an_allow_still_asserts_the_grant_where_the_harness_reads_it() {
+        let response = render_decision_envelope(
+            &CanonicalResult {
+                verdict: CanonicalVerdict::Allow,
+                reason: None,
+                pack_id: None,
+                pattern_id: None,
+                matched_path: None,
+                rewrite: None,
+                subject: None,
+            },
+            None,
+            "command",
+            &CLAUDE_CODE_CAPABILITIES,
+        );
+
+        assert_eq!(
+            response["hookSpecificOutput"]["permissionDecision"],
+            "allow"
+        );
+    }
+
+    /// The regression this whole change exists for: under the shipped Codex
+    /// capabilities a force-push came back as `allow` + `updatedInput`, both
+    /// of which Codex refuses -- so the unstripped `--force` ran. It must now
+    /// be a deny carrying the rewrite's reason.
+    #[test]
+    fn codex_denies_a_force_push_instead_of_silently_failing_to_rewrite_it() {
+        let response = render_decision_envelope(
+            &CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            Some(&json!({ "command": "git push --force origin main" })),
+            "command",
+            &CODEX_CAPABILITIES,
+        );
+        let out = &response["hookSpecificOutput"];
+
+        assert_eq!(out["permissionDecision"], "deny");
+        assert_eq!(
+            out["permissionDecisionReason"],
+            "use the safe form [pack=git, pattern=git-force-push]"
+        );
+        assert!(
+            out.get("updatedInput").is_none(),
+            "Codex rejects updatedInput; sending it is what let the force-push through"
+        );
+    }
+
+    /// Codex requires a non-empty `permissionDecisionReason` on every deny --
+    /// it rejects a bare one -- so no deny path may render without text.
+    #[test]
+    fn every_deny_carries_a_non_empty_reason_for_codex() {
+        for result in [
+            CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            CanonicalResult {
+                verdict: CanonicalVerdict::Deny,
+                reason: Some("never force-push".to_string()),
+                pack_id: Some("git".to_string()),
+                pattern_id: Some("git-force-push".to_string()),
+                matched_path: None,
+                rewrite: None,
+                subject: None,
+            },
+        ] {
+            let out = render_decision_envelope(&result, None, "command", &CODEX_CAPABILITIES);
+            let out = &out["hookSpecificOutput"];
+
+            assert_eq!(out["permissionDecision"], "deny");
+            assert!(
+                out["permissionDecisionReason"]
+                    .as_str()
+                    .is_some_and(|reason| !reason.is_empty()),
+                "Codex rejects a deny whose reason is empty or absent"
+            );
+        }
     }
 
     #[test]
@@ -1337,18 +1498,13 @@ mod tests {
                 "new_string": "storageClassName: ssd"
             })),
         );
-        assert!(matches!(
-            edit.action(),
-            CanonicalAction::EditFile { .. }
-        ));
+        assert!(matches!(edit.action(), CanonicalAction::EditFile { .. }));
         assert_eq!(edit.rewrite_key(), "new_string");
     }
 
     #[test]
     fn cursor_declares_no_context_channel_and_no_system_message() {
-        let capabilities = adapter_for(HarnessId::Cursor)
-            .unwrap()
-            .capabilities();
+        let capabilities = adapter_for(HarnessId::Cursor).unwrap().capabilities();
         assert!(capabilities.supports_updated_input);
         assert!(
             !capabilities.supports_additional_context,
@@ -1639,9 +1795,7 @@ mod tests {
 
     #[test]
     fn gemini_declares_its_capability_set() {
-        let capabilities = adapter_for(HarnessId::GeminiCli)
-            .unwrap()
-            .capabilities();
+        let capabilities = adapter_for(HarnessId::GeminiCli).unwrap().capabilities();
         assert!(
             capabilities.supports_updated_input,
             "hookSpecificOutput.tool_input is the rewrite channel"

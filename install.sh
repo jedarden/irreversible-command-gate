@@ -389,7 +389,14 @@ else
     "PreToolUse": [ $HOOK_JSON ]
 
   For a local Codex CLI, the same shape in ~/.codex/hooks.json with
-  matcher "Bash|apply_patch".
+  matcher "Bash|apply_patch" -- and add --harness codex-cli to the command:
+
+    "command": "$HOOK_COMMAND --harness codex-cli"
+
+  Without that flag the hook is served Claude Code's wire format, which
+  Codex rejects: it honors permissionDecision:deny alone, so an allow is
+  logged as "unsupported permissionDecision:allow" on every call and a
+  rewrite (updatedInput) is dropped, running the unrewritten command.
 EOF
 fi
 
