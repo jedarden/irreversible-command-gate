@@ -7,9 +7,9 @@ use coverage::*;
 use engine::{Engine, InputSource};
 use fail_closed::PolicyStore;
 use icg::{
-    adapter, coverage, denial_log, emergency_bypass, engine, fail_closed, health, health_server,
-    monitoring, new_pack, overrides, pack_manifest, regex_safety, regression, rollback, rule_pack,
-    state_store, telemetry, trust_pointer, update,
+    adapter, coverage, cursor_hooks, denial_log, emergency_bypass, engine, fail_closed, health,
+    health_server, monitoring, new_pack, overrides, pack_manifest, regex_safety, regression,
+    rollback, rule_pack, state_store, telemetry, trust_pointer, update,
 };
 use adapter::{CanonicalResult, HarnessAdapter};
 use overrides::*;
@@ -279,6 +279,35 @@ enum Commands {
         #[arg(long)]
         force: bool,
         /// Remove existing symlinks instead of creating them
+        #[arg(long)]
+        uninstall: bool,
+    },
+    /// Merge ICG entries into a Cursor hooks.json, preserving unrelated hooks
+    ///
+    /// Manages the project file (.cursor/hooks.json) by default; pass --user
+    /// for ~/.cursor/hooks.json or --file for an exact path. Idempotent:
+    /// ICG-owned entries are recognized by their command line and replaced,
+    /// never duplicated, and every unrelated hook, matcher and key is left
+    /// untouched. The file's prior state is backed up once as
+    /// <target>.icg-backup. Placement matters: Cursor cloud agents read
+    /// project-level hooks only, never the user-level file.
+    InstallCursorHooks {
+        /// Manage the user-level ~/.cursor/hooks.json instead of the project file
+        #[arg(long, conflicts_with_all = ["project_dir", "file"])]
+        user: bool,
+        /// Project directory whose .cursor/hooks.json is managed (default: the current directory)
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["user", "file"])]
+        project_dir: Option<PathBuf>,
+        /// Manage this exact hooks.json path instead of deriving it from --user or --project-dir
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["user", "project_dir"])]
+        file: Option<PathBuf>,
+        /// Rule-pack file or directory recorded in the installed hook commands
+        #[arg(long, value_name = "PATH")]
+        rule_pack: Option<PathBuf>,
+        /// Set failClosed on the installed entries, so a crashed or timed-out hook blocks the action
+        #[arg(long)]
+        fail_closed: bool,
+        /// Remove ICG entries from the target file instead of installing them
         #[arg(long)]
         uninstall: bool,
     },
@@ -1854,6 +1883,21 @@ fn main() -> Result<()> {
             force,
             uninstall,
         } => documented_commands::run_install(dir, packs, force, uninstall),
+        Commands::InstallCursorHooks {
+            user,
+            project_dir,
+            file,
+            rule_pack,
+            fail_closed,
+            uninstall,
+        } => cursor_hooks::run_install(cursor_hooks::InstallOptions {
+            user,
+            project_dir,
+            file,
+            rule_pack,
+            fail_closed,
+            uninstall,
+        }),
         Commands::Trust(subcommand) => match subcommand {
             TrustSubcommand::Show { path, channel } => {
                 let store_path = configured_trust_pointer_path(path, channel.as_deref())?;

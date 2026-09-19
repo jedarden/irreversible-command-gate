@@ -9,6 +9,11 @@
 pub mod adapter;
 pub mod alerting;
 pub mod coverage;
+/// The idempotent Cursor `hooks.json` installer
+/// (`icg install-cursor-hooks`); merge semantics are documented on the
+/// module itself, the project-vs-user placement rule on the contract's
+/// Cursor section (§6.5).
+pub mod cursor_hooks;
 pub mod denial_log;
 pub mod documented_commands;
 pub mod emergency_bypass;

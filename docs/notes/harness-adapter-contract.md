@@ -289,6 +289,19 @@ exact official source it was taken from.
   (input: `tool_name`, `tool_input`, `tool_use_id`, `cwd`),
   `beforeShellExecution` (`command`, `cwd`, `sandbox`),
   `beforeReadFile`, `afterFileEdit`, `beforeMCPExecution`.
+- **Placement:** Cursor **cloud agents read project-level hooks only —
+  `~/.cursor/hooks.json` is not available to them** — so a cloud-agent
+  session is covered by `.cursor/hooks.json` in the repository, and the
+  user-level file covers local IDE sessions alone. Wire the layer the
+  session actually runs under. `icg install-cursor-hooks` manages this
+  wiring idempotently (project file by default; `--user` and `--file`
+  select the other layers): ICG-owned entries are recognized by their
+  command line (`<icg> hook --harness cursor …`) and replaced rather than
+  duplicated, every unrelated hook, matcher and key is preserved
+  verbatim, a missing file is created, and a file that does not parse —
+  or carries a `version` other than 1 — fails with a clear error and is
+  left unchanged. The prior file is backed up once as
+  `<target>.icg-backup`.
 - **Adapters (shipped):** `CursorAdapter` serves the generic `preToolUse`
   event — `icg hook --harness cursor` — and `CursorShellExecutionAdapter`
   serves the dedicated shell event — `icg hook --harness cursor --event
