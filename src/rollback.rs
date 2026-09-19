@@ -467,9 +467,12 @@ mod tests {
             return;
         }
 
-        let directory = tempdir().expect("temporary directory");
-        let state_store = StateStore::new(directory.path().join("state.json"));
-        let trust_store = TrustPointerStore::new(directory.path().join("trust-pointer.json"));
+        // Must use the secured fixture: a bare `tempdir()` inherits the
+        // runner's umask, and this test only executes as root -- whose umask
+        // in a CI container yields a 0777 directory that the artifact-dir
+        // check then correctly rejects, failing the test on the environment
+        // instead of on the behavior. store_and_pointer() pins 0o700.
+        let (_directory, state_store, trust_store) = store_and_pointer();
 
         check_and_rollback(&state_store, &trust_store, &PoisonPillConfig::default())
             .expect("a secured artifact directory is not a fault");
