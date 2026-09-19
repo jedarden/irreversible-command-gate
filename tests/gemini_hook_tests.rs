@@ -13,7 +13,7 @@
 //! `icg hook --harness gemini-cli` binary with the official payload on
 //! stdin, exactly as Gemini CLI delivers it.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
