@@ -331,7 +331,11 @@ exact official source it was taken from.
   `supports_system_message: true`. Malformed stdin keeps the shared
   fail-open boundary (§8): exit 0, the permissive object on stdout,
   diagnostic on stderr only. Locked by the `gemini-cli-*` golden fixtures
-  (`tests/fixtures/adapter/`) and the unit tests in `src/adapter.rs`.
+  (`tests/fixtures/adapter/`), the process-boundary suite in
+  `tests/gemini_hook_tests.rs` (schema shape per verdict, context-field
+  inertness, and fake-target canaries executing Gemini's documented
+  dispatch semantics for the denied, failed-adapter, and dead-adapter
+  cases), and the unit tests in `src/adapter.rs`.
 - **Versioning:** the hooks system has no wire-protocol version field; the
   hook reference in the repository is normative. Observed against the
   `main` documentation tree of `google-gemini/gemini-cli`; latest release at

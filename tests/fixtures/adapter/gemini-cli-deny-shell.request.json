@@ -1,7 +1,16 @@
 {
+  "session_id": "icg-golden-deny-shell",
+  "transcript_path": "/tmp/gemini-cli-fixtures/icg-golden-deny-shell/transcript.json",
+  "cwd": "/home/dev/app",
   "hook_event_name": "BeforeTool",
+  "timestamp": "2026-09-19T16:30:01Z",
   "tool_name": "run_shell_command",
   "tool_input": {
     "command": "git credential fill"
-  }
+  },
+  "mcp_context": {
+    "server_name": "fixture-only-unread-by-icg",
+    "invocation_id": "icg-golden-deny-shell"
+  },
+  "original_request_name": "run_shell_command"
 }

@@ -1,10 +1,19 @@
 {
+  "session_id": "icg-golden-replace-rewrite-preserved-fields",
+  "transcript_path": "/tmp/gemini-cli-fixtures/icg-golden-replace-rewrite-preserved-fields/transcript.json",
+  "cwd": "/home/dev/app",
   "hook_event_name": "BeforeTool",
+  "timestamp": "2026-09-19T16:30:05Z",
   "tool_name": "replace",
   "tool_input": {
     "file_path": "deploy/app.yaml",
     "old_string": "storageClassName: ssd",
     "new_string": "storageClassName: ssd",
     "reviewer_note": "pin for the spot cluster"
-  }
+  },
+  "mcp_context": {
+    "server_name": "fixture-only-unread-by-icg",
+    "invocation_id": "icg-golden-replace-rewrite-preserved-fields"
+  },
+  "original_request_name": "replace"
 }

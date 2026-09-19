@@ -1,9 +1,18 @@
 {
+  "session_id": "icg-golden-rewrite-shell",
+  "transcript_path": "/tmp/gemini-cli-fixtures/icg-golden-rewrite-shell/transcript.json",
+  "cwd": "/project",
   "hook_event_name": "BeforeTool",
+  "timestamp": "2026-09-19T16:30:02Z",
   "tool_name": "run_shell_command",
   "tool_input": {
     "command": "git push --force origin main",
     "description": "Push reviewed changes",
     "directory": "/project"
-  }
+  },
+  "mcp_context": {
+    "server_name": "fixture-only-unread-by-icg",
+    "invocation_id": "icg-golden-rewrite-shell"
+  },
+  "original_request_name": "run_shell_command"
 }

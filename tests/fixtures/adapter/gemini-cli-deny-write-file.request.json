@@ -1,8 +1,17 @@
 {
+  "session_id": "icg-golden-deny-write-file",
+  "transcript_path": "/tmp/gemini-cli-fixtures/icg-golden-deny-write-file/transcript.json",
+  "cwd": "/home/dev/app",
   "hook_event_name": "BeforeTool",
+  "timestamp": "2026-09-19T16:30:04Z",
   "tool_name": "write_file",
   "tool_input": {
     "file_path": "deploy/app.yaml",
     "content": "image: app:1.2.3\nstorageClassName: ssd\n"
-  }
+  },
+  "mcp_context": {
+    "server_name": "fixture-only-unread-by-icg",
+    "invocation_id": "icg-golden-deny-write-file"
+  },
+  "original_request_name": "write_file"
 }
