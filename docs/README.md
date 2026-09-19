@@ -55,7 +55,7 @@ Short, ordered procedures for a moment when something is on fire.
 | [plan/plan.md](plan/plan.md) | The complete plan — architecture, phases, and the decisions behind them. |
 | [notes/ideas-ledger.md](notes/ideas-ledger.md) | Two rounds of 100 ideas, with the kill reasons. Read this before proposing a feature. |
 | [notes/existing-enforcement-infrastructure.md](notes/existing-enforcement-infrastructure.md) | The coverage gap this project starts from, and what stays with the org hook. |
-| [notes/multi-harness-integration.md](notes/multi-harness-integration.md) | Claude Code and Codex CLI hook surfaces; the cloud-session gap. |
+| [notes/multi-harness-integration.md](notes/multi-harness-integration.md) | Claude Code, Codex CLI, and Cursor hook surfaces; the cloud-session gaps (Codex cloud tasks; Cursor's early read-only phase). |
 | [notes/fail-closed-policy.md](notes/fail-closed-policy.md) · [design/fail-closed-transition.md](design/fail-closed-transition.md) | Availability policy design. |
 | [notes/runtime-config-vs-hardcoded.md](notes/runtime-config-vs-hardcoded.md) | Why policy is data, and what that costs. |
 | [notes/release-integrity-verification.md](notes/release-integrity-verification.md) · [notes/self-update-and-release-gating.md](notes/self-update-and-release-gating.md) | Trust pointers, signed releases, auto-rollback. |

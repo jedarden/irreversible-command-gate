@@ -3,7 +3,8 @@
 Resolves the plan's "Integration shape" open question. Decision: run the
 PATH-wrapper binary *and* native PreToolUse hooks simultaneously, for both
 Claude Code and Codex CLI, as two independent defense layers rather than
-choosing one.
+choosing one. Cursor joined later as a third hook harness (below) under
+the same two-layer shape.
 
 ## Why both, not one
 
@@ -58,6 +59,60 @@ Researched directly against OpenAI's own docs
   built-in `execpolicy` covering a few destructive-git-op categories. This
   project sits alongside that, doesn't duplicate it.
 
+## Cursor: native hooks, cloud-agent limits, and the third-party import
+
+Cursor ships two ICG adapters — the generic `preToolUse` event
+(`icg hook --harness cursor`) and the dedicated `beforeShellExecution`
+event (`--event before-shell-execution`; its response schema has no
+`updated_input`, so a rewrite degrades to a deny) — wired idempotently by
+`icg install-cursor-hooks`. The wire-level details live in the contract's
+Cursor section; what matters at the integration level is the support
+boundaries, all from Cursor's own documentation (retrieved 2026-09-19):
+
+- **Cloud agents are covered, but narrowly.** Unlike OpenAI's cloud-hosted
+  Codex (next section), Cursor cloud agents *do* run hooks from the
+  repository — but only **command-based hooks from project-level
+  `.cursor/hooks.json`** (plus team/enterprise distribution on Enterprise
+  plans). Never the user-level file (cloud VMs see no home directory),
+  never prompt-based hooks, and none of `sessionStart`, `sessionEnd`,
+  `beforeMCPExecution`/`afterMCPExecution`, the Tab hooks
+  (`beforeTabFileRead`/`afterTabFileEdit`), or `workspaceOpen`.
+- **The early read-only phase is the gap.** Cursor's own words: cloud
+  agents "sometimes begin in a read-only environment for early exploratory
+  turns. Hooks do not run during those turns." Those turns are unguarded
+  by the hook layer — and the PATH wrapper has no reach inside the cloud
+  VM either. This is Cursor's partial analog of the Codex cloud gap:
+  coverage exists for the writable portion of the session, zero during
+  read-only exploration.
+- **The third-party import is a second, independent wiring path.** With
+  Cursor Settings → Agents → Third-Party Imports enabled (on by default),
+  Cursor loads Claude Code hooks from `.claude/settings.local.json` →
+  `.claude/settings.json` → `~/.claude/settings.json`, merged *below* the
+  four Cursor layers (Enterprise → Team → Project → User), translating
+  events (`PreToolUse` → `preToolUse`, `PostToolUse` → `postToolUse`,
+  `Stop` → `stop`, …; `Notification`/`PermissionRequest` unsupported) and
+  tool names (`Bash` → `Shell`, `Edit` → `Write`; `Glob` unsupported), and
+  accepting both response envelopes (`permissionDecision`/`permission`,
+  `permissionDecisionReason`/`user_message`, `updatedInput`/
+  `updated_input`). The unchanged undecorated ICG hook therefore covers
+  local Cursor sessions too — proven end-to-end by
+  [`scripts/cursor-dispatch-e2e`](../../scripts/cursor-dispatch-e2e)
+  (scenario S5). It stays the compatibility path, not the primary one: it
+  depends on a user-visible setting, imports cannot configure `loop_limit`
+  (default 5 for native Cursor hooks, `null` — unlimited — for
+  Claude-imported ones), and cloud agents read none of the Claude files —
+  only project-level `.cursor/hooks.json`.
+- **Hooks add a gate; they do not take Cursor's own away.** Cursor's
+  native approval and sandbox controls run regardless of hooks (a
+  `beforeShellExecution` input reports whether the command will be
+  sandboxed; shell/MCP durations exclude approval wait time), and a hook
+  `allow` bypasses none of them. The mirror-image boundary: the only
+  *gating* events are the permission hooks. `afterFileEdit` fires **after**
+  the edit is already applied — a formatter/audit surface with no
+  `beforeEditFile` counterpart — so pre-write/edit coverage under Cursor
+  is `preToolUse` matching `Write`, and is never claimed on the strength
+  of `afterFileEdit`.
+
 ## A gap neither layer covers
 
 **OpenAI's cloud-hosted Codex** (ChatGPT web / async "Codex cloud tasks")
@@ -66,7 +121,9 @@ wrapper has no reach there, and it's unconfirmed whether cloud tasks honor
 `hooks.json` at all. Only the local `codex` CLI is covered by either layer.
 Worth stating explicitly rather than silently assuming full coverage:
 anything routed through cloud-hosted Codex tasks is currently unguarded by
-this project.
+this project. Cursor cloud agents have a partial analog — repo-level hooks
+do run there, but not during the early read-only exploratory turns (see
+the Cursor section above).
 
 ## How to apply
 
@@ -96,3 +153,10 @@ taken from. The wrapper remains a separate, payload-less front end
   feature timeline)
 - <https://code.claude.com/docs/en/hooks.md#pretooluse> (Claude Code side,
   cross-referenced from `redirect-not-just-block.md`)
+- <https://cursor.com/docs/agent/hooks> (Cursor event payloads, output
+  schemas, exit codes, `failClosed`, `timeout`, cloud-agent support
+  tables; retrieved 2026-09-19)
+- <https://cursor.com/docs/reference/third-party-hooks> (Claude Code
+  import: load locations, merge priority, event/tool-name mapping,
+  response-format compatibility, `loop_limit` defaults; retrieved
+  2026-09-19)

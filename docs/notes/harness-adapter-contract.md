@@ -285,16 +285,30 @@ exact official source it was taken from.
   (project) or `~/.cursor/hooks.json` (user), plus enterprise-managed files;
   layers merge Enterprise → Team → Project → User. The schema carries a
   **required top-level `"version": 1`** (positive integer) — the one harness
-  here with an explicit protocol version. Relevant events: `preToolUse`
-  (input: `tool_name`, `tool_input`, `tool_use_id`, `cwd`),
-  `beforeShellExecution` (`command`, `cwd`, `sandbox`),
-  `beforeReadFile`, `afterFileEdit`, `beforeMCPExecution`.
+  here with an explicit protocol version. Agent hooks apply to Cmd+K and
+  Agent Chat sessions; Tab completions and workspace lifecycle have their
+  own separate hook surfaces. Relevant events: `preToolUse`
+  (input: `tool_name`, `tool_input`, `tool_use_id`, `cwd`, plus the common
+  base fields `model`, `model_id`, `model_params`, `agent_message`,
+  `hook_event_name`, `cursor_version`, `workspace_roots`, `user_email`,
+  `transcript_path`), `beforeShellExecution` (`command`, `cwd`, `sandbox`
+  — **no `tool_name`**), `beforeReadFile`, `afterFileEdit`,
+  `beforeMCPExecution`. When several layers match the same event, **all
+  matching hooks from every source run** and Cursor merges the responses:
+  any `deny` wins over `ask`, and `ask` wins over `allow`, regardless of
+  source; `user_message`/`agent_message` concatenate; every other field is
+  last-response-wins in the priority walk.
+- **Timeout:** per-script `timeout` in **seconds** (platform default when
+  unset). A timeout is one of Cursor's hook-failure modes — crash,
+  timeout, non-zero exit, no output — which fail open unless the hook sets
+  `failClosed: true` (below).
 - **Placement:** Cursor **cloud agents read project-level hooks only —
-  `~/.cursor/hooks.json` is not available to them** — so a cloud-agent
-  session is covered by `.cursor/hooks.json` in the repository, and the
-  user-level file covers local IDE sessions alone. Wire the layer the
-  session actually runs under. `icg install-cursor-hooks` manages this
-  wiring idempotently (project file by default; `--user` and `--file`
+  `~/.cursor/hooks.json` is not available to them** (see *Cloud agents*
+  below) — so a cloud-agent session is covered by `.cursor/hooks.json` in
+  the repository, and the user-level file covers local IDE sessions alone.
+  Wire the layer the session actually runs under. `icg install-cursor-hooks`
+  manages this wiring idempotently (project file by default; `--user` and
+  `--file`
   select the other layers): ICG-owned entries are recognized by their
   command line (`<icg> hook --harness cursor …`) and replaced rather than
   duplicated, every unrelated hook, matcher and key is preserved
@@ -302,6 +316,73 @@ exact official source it was taken from.
   or carries a `version` other than 1 — fails with a clear error and is
   left unchanged. The prior file is backed up once as
   `<target>.icg-backup`.
+- **Cloud agents:** coverage is real but bounded. Cloud agents run
+  **command-based hooks only** — prompt-based hooks do not execute in the
+  cloud environment — loading them from **project-level `.cursor/hooks.json`
+  at the repo root**, plus team and enterprise-managed hooks on Enterprise
+  plans; the user-level file is never read (cloud VMs have no access to the
+  local home directory). Hooks that do not run in cloud agents at all:
+  `sessionStart` (hooks don't load in the read-only start, so a cloud
+  sessionStart would fire too late to mean session start),
+  `sessionEnd` (no editor-lifetime session boundary),
+  `beforeMCPExecution`/`afterMCPExecution` (deferred, timing unclear),
+  `beforeTabFileRead`/`afterTabFileEdit` (Tab is an IDE feature),
+  and `workspaceOpen` (IDE lifecycle). And cloud agents **sometimes begin
+  in a read-only environment for early exploratory turns where hooks do
+  not run at all** — they start only once the agent has a writable
+  environment. That early read-only phase is unguarded by this adapter,
+  and the PATH-wrapper layer has no reach inside the cloud VM either
+  ([`multi-harness-integration.md`](multi-harness-integration.md)).
+- **Native approval controls:** hooks run **alongside** Cursor's own
+  approval and sandbox controls; neither layer replaces the other. The
+  `beforeShellExecution` input reports whether the command will run
+  sandboxed (`sandbox`), and shell/MCP execution durations explicitly
+  exclude approval wait time — the native approval step still happens no
+  matter what any hook returns. A hook's `allow` bypasses none of Cursor's
+  own gates, and nothing in the documented response schema could suppress
+  them.
+- **Pre-write coverage boundary:** the only events that gate *before*
+  execution are the permission hooks — for agent sessions `preToolUse`,
+  `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile` (plus
+  `subagentStart` for subagent creation and `beforeTabFileRead` on the
+  separate Tab surface). Cursor has **no `beforeEditFile` event**:
+  `afterFileEdit` fires after the edit is already applied and is a
+  formatter/audit surface. ICG
+  claims no pre-write protection through it — under Cursor, edit coverage
+  is `preToolUse` matching the `Write` tool (§3.2) and nothing else. A
+  Cursor deployment must never be reported as pre-write-capable on the
+  strength of `afterFileEdit`.
+- **Third-party Claude import:** Cursor can also load Claude Code hooks
+  directly, gated by Cursor Settings → Agents → Third-Party Imports
+  ("Include Third-Party Plugins, Skills, and Other Configs", **on by
+  default**). Claude hooks load from `.claude/settings.local.json`
+  (project-local) → `.claude/settings.json` (project) →
+  `~/.claude/settings.json` (user), and merge **below** all four Cursor
+  layers — Enterprise → Team → Project → User → Claude project-local →
+  Claude project → Claude user — with all matching hooks from every source
+  run and higher-priority sources winning conflicts. Events map
+  `PreToolUse` → `preToolUse`, `PostToolUse` → `postToolUse`,
+  `UserPromptSubmit` → `beforeSubmitPrompt`, `Stop` → `stop`,
+  `SubagentStop` → `subagentStop`, `SessionStart` → `sessionStart`,
+  `SessionEnd` → `sessionEnd`, `PreCompact` → `preCompact`;
+  `Notification` and `PermissionRequest` are not supported. Tool names
+  translate `Bash` → `Shell` and `Edit` → `Write`, with `Read`, `Write`,
+  `Grep`, `Task`, `WebFetch`, `WebSearch` passing through unchanged;
+  **`Glob` is unsupported**. Cursor accepts both response envelopes on
+  these events — the nested Claude `hookSpecificOutput`
+  (`permissionDecision` → `permission`, `permissionDecisionReason` →
+  `user_message`, `updatedInput` → `updated_input`) and Cursor's native
+  flat one — which is why the undecorated ICG hook works under the import
+  unchanged (proven end-to-end by the script below). Exit codes keep
+  their meaning across both tools. The import has native-format-only
+  gaps: `subagentStart`, team/enterprise dashboard distribution, and
+  `loop_limit` configuration — `loop_limit` (the stop/`subagentStop`
+  follow-up cap) defaults to **5 for native Cursor hooks** and to
+  **`null` — no limit — for Claude-imported hooks**. An ICG hook wired
+  only in `.claude/settings.json` therefore also covers local Cursor
+  sessions, but the native `.cursor/hooks.json` wiring stays the primary
+  path: it does not depend on a user-visible setting, and cloud agents
+  read only the project-level Cursor file.
 - **Adapters (shipped):** `CursorAdapter` serves the generic `preToolUse`
   event — `icg hook --harness cursor` — and `CursorShellExecutionAdapter`
   serves the dedicated shell event — `icg hook --harness cursor --event
@@ -311,9 +392,12 @@ exact official source it was taken from.
   the `Write` tool name shaped as an `old_string`/`new_string` pair with
   no `content` — classified as an edit so the introduced content is
   evaluated (§3.2).
-- **Output (stdout JSON):** `permission`: `"allow"` / `"deny"` / `"ask"`
-  (ICG emits only `allow`/`deny`), `user_message`, `agent_message`,
+- **Output (stdout JSON):** `permission`: `"allow"` / `"deny"` / `"ask"`,
+  `user_message`, `agent_message`,
   `updated_input` (preToolUse input substitution — the rewrite channel).
+  `"ask"` is **accepted by the `preToolUse` schema but not enforced there
+  today** (on `subagentStart` it is treated as `deny`); ICG emits only
+  `allow`/`deny`, and the engine has no `ask` verdict to translate (§4).
   The native envelope is **flat** — no `hookSpecificOutput` wrapper — and
   a permission decision carries **no advisory-context channel**
   (`additional_context` exists only on the after-tool `postToolUse`
@@ -330,7 +414,8 @@ exact official source it was taken from.
   deny, Claude Code-compatible. Exit 0 = stdout parsed as JSON.
 - **Failure semantics:** **invalid JSON or a schema mismatch on a permission
   hook blocks the call** (a natively fail-closed posture); other non-zero
-  exits fail open unless the hook sets `failClosed: true`. A Cursor adapter
+  exits fail open unless the hook sets `failClosed: true` — which promotes
+  crashes, timeouts, and empty output to blocks as well. A Cursor adapter
   must therefore treat stdout correctness as safety-critical to a degree the
   other harnesses do not — which is why it renders its own flat envelope
   rather than aliasing the Claude Code one, and why
@@ -369,8 +454,9 @@ timeout policy.**
   object to stdout, and exits. Nothing on the hook path blocks or retries.
 - Harness-side timeout configuration is the operator's availability lever:
   Claude Code per-command `timeout` (default 60 s), Gemini CLI `timeout`
-  milliseconds per hook definition (default 60000), Codex per its hooks
-  config. On a timed-out hook every listed harness proceeds without a
+  milliseconds per hook definition (default 60000), Cursor per-script
+  `timeout` in **seconds** (platform default when unset), Codex per its
+  hooks config. On a timed-out hook every listed harness proceeds without a
   decision — the same fail-open availability posture ICG itself chooses for
   its own faults (§8). Cursor is the exception to fail open: its invalid-JSON
   handling blocks unless configured otherwise (§6.5).
