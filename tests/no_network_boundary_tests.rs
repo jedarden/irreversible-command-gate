@@ -106,7 +106,39 @@ const SPAWNABLE: &[&str] = &[
     "git-remote-https",
 ];
 
-/// Resolve `name` against this test process's own PATH, before any shimming.
+/// True when a PATH candidate is one of ICG's own wrapper symlinks rather
+/// than the tool it shadows.
+///
+/// The release CI image (`argo-guarded-builder`) installs ICG as a PATH
+/// wrapper by symlinking `git`, `cargo`, `npm` and friends in
+/// `/usr/local/bin` to the `icg` binary, and puts that directory first in
+/// PATH -- the self-referential protection the release workflow exists to
+/// publish. Canonicalizing the candidate follows the symlink, so a wrapper
+/// resolves to a file named `icg`.
+fn is_icg_wrapper(candidate: &Path) -> bool {
+    std::fs::canonicalize(candidate)
+        .ok()
+        .and_then(|resolved| {
+            resolved
+                .file_name()
+                .map(|name| name == std::ffi::OsStr::new("icg"))
+        })
+        .unwrap_or(false)
+}
+
+/// Resolve `name` against this test process's own PATH, before any shimming,
+/// skipping ICG's own wrapper symlinks.
+///
+/// Skipping them is not cosmetic -- without it this suite deadlocks in the
+/// guarded builder, and only there. `real_binary("git")` returns
+/// `/usr/local/bin/git`, which is a symlink to `icg`, so the spy shim execs
+/// the wrapper; the wrapper resolves the real `git` by walking PATH while
+/// skipping *its own* symlink, finds this run's spy shim (prepended to PATH
+/// by `shimmed_path`), and execs that -- which execs the wrapper again. The
+/// two shims trade the call forever, the binary produces no output, and the
+/// CI pod sits until its deadline. On any ordinary host `/usr/local/bin/git`
+/// does not exist, the genuine `git` is found, and the bug is invisible;
+/// this is the same "skip my own symlink" rule the wrapper itself applies.
 fn real_binary(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .as_deref()
@@ -114,7 +146,7 @@ fn real_binary(name: &str) -> Option<PathBuf> {
         .into_iter()
         .flatten()
         .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| candidate.is_file() && !is_icg_wrapper(candidate))
 }
 
 /// A directory of spy shims plus the log they append to. Every spawable name
