@@ -83,9 +83,27 @@ const STALE_LOOKUP_SPAWNS: [&str; 3] = [
 /// Every binary evaluation could conceivably reach the network through,
 /// plus the generic shells. Each is shadowed by a spy shim during a run.
 const SPAWNABLE: &[&str] = &[
-    "git", "sh", "bash", "curl", "wget", "ssh", "nc", "ncat", "socat", "scp",
-    "rsync", "ftp", "bao", "vault", "docker", "kubectl", "helm", "aws",
-    "gcloud", "git-remote-http", "git-remote-https",
+    "git",
+    "sh",
+    "bash",
+    "curl",
+    "wget",
+    "ssh",
+    "nc",
+    "ncat",
+    "socat",
+    "scp",
+    "rsync",
+    "ftp",
+    "bao",
+    "vault",
+    "docker",
+    "kubectl",
+    "helm",
+    "aws",
+    "gcloud",
+    "git-remote-http",
+    "git-remote-https",
 ];
 
 /// Resolve `name` against this test process's own PATH, before any shimming.
@@ -119,17 +137,13 @@ impl SpyRun {
                 Some(real) => format!("#!/bin/sh\n{record}exec {} \"$@\"\n", real.display()),
                 None => format!("#!/bin/sh\n{record}exit 127\n"),
             };
-            fs::write(shims.path().join(name), body)
-                .expect("spy shim should be written");
+            fs::write(shims.path().join(name), body).expect("spy shim should be written");
             // Without the execute bit the engine's spawn fails outright and
             // the predicate fails open — an ALLOW that masquerades as a
             // passing boundary. The shims must actually run.
             #[cfg(unix)]
-            fs::set_permissions(
-                shims.path().join(name),
-                fs::Permissions::from_mode(0o755),
-            )
-            .expect("spy shim should be made executable");
+            fs::set_permissions(shims.path().join(name), fs::Permissions::from_mode(0o755))
+                .expect("spy shim should be made executable");
         }
         SpyRun { _shims: shims, log }
     }
@@ -265,7 +279,10 @@ fn stale_remote_head_lookup_is_the_only_spawn_and_only_pushes_reach_it() {
     configure_identity(&repo);
     write_commit(&repo, "seed.txt");
     git(root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
-    git(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
     git(&repo, &["push", "-q", "-u", "origin", "main"]);
 
     // Up-to-date upstream: the push is allowed, and reaching that verdict
@@ -359,9 +376,22 @@ fn line_start(source: &str, signature: &str) -> usize {
 /// body never match.
 fn next_top_level_item(source: &str, from: usize) -> usize {
     const PREFIXES: [&str; 16] = [
-        "pub fn ", "pub(crate) fn ", "fn ", "#[", "impl ", "struct ", "enum ",
-        "mod ", "const ", "static ", "type ", "use ", "pub struct", "pub enum",
-        "pub mod", "pub const",
+        "pub fn ",
+        "pub(crate) fn ",
+        "fn ",
+        "#[",
+        "impl ",
+        "struct ",
+        "enum ",
+        "mod ",
+        "const ",
+        "static ",
+        "type ",
+        "use ",
+        "pub struct",
+        "pub enum",
+        "pub mod",
+        "pub const",
     ];
     let mut offset = from;
     for line in source[from..].lines() {
@@ -573,9 +603,8 @@ fn the_kernel_sees_no_inet_socket_during_evaluation_when_strace_works() {
             output.status
         );
         joined.push_str(
-            &fs::read_to_string(&log).unwrap_or_else(|_| {
-                panic!("strace should have written {label}")
-            }),
+            &fs::read_to_string(&log)
+                .unwrap_or_else(|_| panic!("strace should have written {label}")),
         );
     };
 

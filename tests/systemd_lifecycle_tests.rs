@@ -203,7 +203,10 @@ fn install_symlinks_tracked_units_and_reloads_the_daemon() {
         !link.symlink_metadata().expect("link").is_file(),
         "the destination must never be a copy — a copy is the failure mode"
     );
-    assert!(text.contains("b-second.timer"), "both units reported:\n{text}");
+    assert!(
+        text.contains("b-second.timer"),
+        "both units reported:\n{text}"
+    );
 
     let calls = e.shim_calls();
     assert!(
@@ -309,7 +312,10 @@ fn install_refuses_to_clobber_a_regular_file() {
     assert_eq!(out.status.code(), Some(1), "must refuse:\n{text}");
     assert!(text.contains("regular file"), "name the problem:\n{text}");
     assert!(
-        plain.symlink_metadata().expect("plain file survives").is_file(),
+        plain
+            .symlink_metadata()
+            .expect("plain file survives")
+            .is_file(),
         "the copied unit must be surfaced, not silently replaced"
     );
 }
@@ -502,11 +508,8 @@ fn uninstall_removes_orphans_whose_tracked_unit_was_deleted() {
 fn uninstall_removes_orphans_even_with_no_tracked_units() {
     let e = Env::new("uninstall-all-orphaned");
     e.ensure_host();
-    std::os::unix::fs::symlink(
-        e.sysdir.join("gone.service"),
-        e.host.join("gone.service"),
-    )
-    .expect("dangling link");
+    std::os::unix::fs::symlink(e.sysdir.join("gone.service"), e.host.join("gone.service"))
+        .expect("dangling link");
 
     let out = e.run("uninstall.sh", &[]);
     let text = e.assert_ok(&out, "uninstall with no tracked units");

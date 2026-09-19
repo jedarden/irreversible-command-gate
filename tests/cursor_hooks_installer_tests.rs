@@ -58,7 +58,11 @@ fn read(path: &str) -> serde_json::Value {
 fn install_creates_a_missing_file_and_rerunning_changes_nothing() {
     let dir = tempdir().expect("tempdir");
 
-    let first = installer(&["install-cursor-hooks", "--project-dir", dir.path().to_str().unwrap()]);
+    let first = installer(&[
+        "install-cursor-hooks",
+        "--project-dir",
+        dir.path().to_str().unwrap(),
+    ]);
     assert!(first.status.success(), "stderr: {}", stderr(&first));
 
     let path = dir.path().join(".cursor").join("hooks.json");
@@ -85,7 +89,11 @@ fn install_creates_a_missing_file_and_rerunning_changes_nothing() {
     assert!(pre[0].get("failClosed").is_none(), "failClosed is opt-in");
 
     // Acceptance criterion 1: the second run is a byte-level no-op.
-    let second = installer(&["install-cursor-hooks", "--project-dir", dir.path().to_str().unwrap()]);
+    let second = installer(&[
+        "install-cursor-hooks",
+        "--project-dir",
+        dir.path().to_str().unwrap(),
+    ]);
     assert!(second.status.success(), "stderr: {}", stderr(&second));
     assert!(
         stdout(&second).contains("already up to date"),
@@ -136,7 +144,10 @@ fn install_preserves_unrelated_hooks_matchers_and_keys() {
         root["hooks"]["afterFileEdit"],
         serde_json::json!([{"command": "./hooks/format.sh", "timeout": 3}])
     );
-    assert_eq!(root["customTopLevel"], serde_json::json!({"keep": [1, 2, 3]}));
+    assert_eq!(
+        root["customTopLevel"],
+        serde_json::json!({"keep": [1, 2, 3]})
+    );
 
     // And the merged file is itself a fixed point of the installer.
     let before = fs::read_to_string(&path).unwrap();
@@ -159,7 +170,10 @@ fn malformed_json_fails_with_a_clear_error_and_is_not_clobbered() {
     );
     let message = stderr(&output);
     assert!(message.contains("not valid JSON"), "stderr: {message}");
-    assert!(message.contains(&path), "stderr should name the file: {message}");
+    assert!(
+        message.contains(&path),
+        "stderr should name the file: {message}"
+    );
     assert!(message.contains("unchanged"), "stderr: {message}");
     assert_eq!(fs::read_to_string(&path).unwrap(), broken);
 }
@@ -210,7 +224,10 @@ fn uninstall_removes_icg_entries_and_leaves_everything_else() {
         root["hooks"]["afterFileEdit"],
         serde_json::json!([{"command": "./hooks/format.sh", "timeout": 3}])
     );
-    assert_eq!(root["customTopLevel"], serde_json::json!({"keep": [1, 2, 3]}));
+    assert_eq!(
+        root["customTopLevel"],
+        serde_json::json!({"keep": [1, 2, 3]})
+    );
 
     // Uninstalling again is honest about finding nothing.
     let again = installer(&["install-cursor-hooks", "--file", &path, "--uninstall"]);

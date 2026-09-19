@@ -114,7 +114,14 @@ impl Stage {
         command
             .args(args)
             .current_dir(&cwd)
-            .env("PATH", format!("{}:{}", self.wrapper_dir().display(), std::env::var("PATH").unwrap()))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    self.wrapper_dir().display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
             .env("ICG_RULE_PACK", packs_dir())
             .env_remove("ICG_PRACTICE")
             .env_remove("ICG_DISABLED");
@@ -178,10 +185,7 @@ fn real_git_binary() -> PathBuf {
 
 #[test]
 fn fallback_scripts_are_valid_and_executable() {
-    for (path, shell) in [
-        (deploy_script(), "bash"),
-        (launcher_source(), "sh"),
-    ] {
+    for (path, shell) in [(deploy_script(), "bash"), (launcher_source(), "sh")] {
         let syntax = Command::new(shell)
             .arg("-n")
             .arg(&path)
@@ -211,8 +215,7 @@ fn fallback_scripts_are_valid_and_executable() {
 
 #[test]
 fn deploy_script_targets_the_root_owned_libexec_directory() {
-    let script =
-        fs::read_to_string(deploy_script()).expect("deploy script should be readable");
+    let script = fs::read_to_string(deploy_script()).expect("deploy script should be readable");
     assert!(
         script.contains("WRAPPER_DIR=\"/usr/local/libexec/icg-wrappers\""),
         "the default wrapper directory must be /usr/local/libexec/icg-wrappers, \
@@ -229,10 +232,8 @@ fn deploy_script_targets_the_root_owned_libexec_directory() {
 /// shell file, and the launcher must exec rather than export into a parent.
 #[test]
 fn fallback_never_writes_a_login_shell_and_launcher_execs() {
-    let deploy =
-        fs::read_to_string(deploy_script()).expect("deploy script should be readable");
-    let launcher =
-        fs::read_to_string(launcher_source()).expect("launcher should be readable");
+    let deploy = fs::read_to_string(deploy_script()).expect("deploy script should be readable");
+    let launcher = fs::read_to_string(launcher_source()).expect("launcher should be readable");
     for script in [&deploy, &launcher] {
         for rc in [".bashrc", ".profile", ".zshrc", ".zshenv", "/etc/profile"] {
             assert!(
@@ -304,16 +305,18 @@ fn staged_install_verify_and_idempotency() {
     let target = fs::read_link(&git_link).expect("git wrapper should be a readable symlink");
     // current_exe() canonicalizes (on this box /build is a symlink to
     // /data/build), so compare canonical forms, not strings.
-    let canonical = |p: &Path| {
-        fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-    };
+    let canonical = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     assert_eq!(
         canonical(&target),
         canonical(&icg_binary()),
         "wrappers must point at the icg binary the deploy was told to use"
     );
     assert!(
-        stage.wrapper_dir().join("kubectl").symlink_metadata().is_err(),
+        stage
+            .wrapper_dir()
+            .join("kubectl")
+            .symlink_metadata()
+            .is_err(),
         "kubectl must never be shadowed: it is intentionally outside the packs"
     );
     assert!(
@@ -324,7 +327,10 @@ fn staged_install_verify_and_idempotency() {
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(stage.launcher()).unwrap().permissions().mode();
-        assert!(mode & 0o111 != 0, "the installed launcher must be executable");
+        assert!(
+            mode & 0o111 != 0,
+            "the installed launcher must be executable"
+        );
     }
 
     // Idempotent: a second install over the deployment succeeds and leaves
@@ -336,7 +342,10 @@ fn staged_install_verify_and_idempotency() {
         "second install should succeed:\n{}",
         combined(&again)
     );
-    assert!(git_link.is_symlink(), "git wrapper should survive reinstall");
+    assert!(
+        git_link.is_symlink(),
+        "git wrapper should survive reinstall"
+    );
 
     let verify = stage.deploy("verify");
     assert_eq!(
@@ -351,7 +360,11 @@ fn staged_install_verify_and_idempotency() {
     );
 
     let status = stage.deploy("status");
-    assert_eq!(code_of(&status), 0, "status should be read-only and succeed");
+    assert_eq!(
+        code_of(&status),
+        0,
+        "status should be read-only and succeed"
+    );
 }
 
 #[test]
@@ -423,7 +436,11 @@ fn staged_canaries_pass() {
     );
     // Self-cleaning: only the pack-derived symlinks remain.
     assert!(
-        stage.wrapper_dir().join("icgwrapcanary").symlink_metadata().is_err(),
+        stage
+            .wrapper_dir()
+            .join("icgwrapcanary")
+            .symlink_metadata()
+            .is_err(),
         "the canary tool symlink should be gone after the run"
     );
 }
@@ -468,8 +485,7 @@ fn staged_remove_is_idempotent_and_preserves_unrelated_entries() {
         combined(&remove)
     );
     assert!(
-        combined(&remove)
-            .contains(&format!("removed {ours_before} wrapper symlink(s)")),
+        combined(&remove).contains(&format!("removed {ours_before} wrapper symlink(s)")),
         "remove should report the wrappers it (via icg uninstall) removed, \
          not just its own sweep:\n{}",
         combined(&remove)
@@ -582,7 +598,8 @@ fn launcher_scopes_path_and_practice_to_the_child_process_tree() {
     // The parent (this test process) PATH never contained the wrapper dir.
     let own = std::env::var("PATH").unwrap();
     assert!(
-        !own.split(':').any(|d| d == stage.wrapper_dir().to_str().unwrap()),
+        !own.split(':')
+            .any(|d| d == stage.wrapper_dir().to_str().unwrap()),
         "the launcher must not be able to mutate its parent's PATH"
     );
 }
@@ -632,7 +649,11 @@ fn launcher_warns_when_the_guard_is_disabled_at_launch() {
         .env("ICG_DISABLED", "1")
         .output()
         .expect("launcher should run");
-    assert_eq!(code_of(&out), 0, "ICG_DISABLED is a documented escape hatch");
+    assert_eq!(
+        code_of(&out),
+        0,
+        "ICG_DISABLED is a documented escape hatch"
+    );
     assert!(
         stderr_of(&out).contains("ICG_DISABLED"),
         "the launcher must warn when the guard will stand down"
@@ -667,7 +688,14 @@ fn absolute_path_invocation_bypasses_the_wrapper() {
     let direct = Command::new(real_git_binary())
         .args(["commit", "-m", "icg test"])
         .current_dir(&cwd)
-        .env("PATH", format!("{}:{}", stage.wrapper_dir().display(), std::env::var("PATH").unwrap()))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                stage.wrapper_dir().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
         .env("ICG_RULE_PACK", packs_dir())
         .output()
         .expect("git should run");
@@ -690,10 +718,7 @@ fn icg_disabled_bypasses_enforcement_loudly() {
     let install = stage.deploy("install");
     assert_eq!(code_of(&install), 0, "setup install should succeed");
 
-    let bypassed = stage.wrapped_git(
-        &["commit", "-m", "icg test"],
-        &[("ICG_DISABLED", "1")],
-    );
+    let bypassed = stage.wrapped_git(&["commit", "-m", "icg test"], &[("ICG_DISABLED", "1")]);
     let all = combined(&bypassed);
     assert!(
         !all.contains("command denied"),

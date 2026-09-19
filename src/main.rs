@@ -1,5 +1,6 @@
 mod documented_commands;
 
+use adapter::{CanonicalResult, HarnessAdapter};
 use anyhow::Context;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -11,7 +12,6 @@ use icg::{
     health_server, monitoring, new_pack, overrides, pack_manifest, regex_safety, regression,
     rollback, rule_pack, state_store, telemetry, trust_pointer, update,
 };
-use adapter::{CanonicalResult, HarnessAdapter};
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
 use regression::{
@@ -676,9 +676,8 @@ fn render_emergency_bypass_hook_response(
         "command",
     );
     if harness_adapter.capabilities().supports_system_message {
-        response["systemMessage"] = serde_json::Value::String(
-            emergency_bypass::WARNING.to_string(),
-        );
+        response["systemMessage"] =
+            serde_json::Value::String(emergency_bypass::WARNING.to_string());
     } else {
         eprintln!("{}", emergency_bypass::WARNING);
     }
@@ -1590,7 +1589,8 @@ fn main() -> Result<()> {
             // wire format -- nothing is evaluated, stdin is never read,
             // and no evaluation telemetry is recorded (see the adapter
             // contract).
-            if event == HookEvent::BeforeShellExecution && harness != Some(adapter::HarnessId::Cursor)
+            if event == HookEvent::BeforeShellExecution
+                && harness != Some(adapter::HarnessId::Cursor)
             {
                 anyhow::bail!(
                     "--event before-shell-execution is implemented for --harness cursor only; \
@@ -1700,13 +1700,16 @@ fn main() -> Result<()> {
             // canonical request (and its fail-open boundary stays inside the
             // engine's own conversion). An unsupported structured tool
             // carries no input source and renders as a plain allow below.
-            let request = hook_input
-                .map(|input| harness_adapter.build_request(&engine, input, original_input.as_ref()));
+            let request = hook_input.map(|input| {
+                harness_adapter.build_request(&engine, input, original_input.as_ref())
+            });
             let input_key = request
                 .as_ref()
                 .map(adapter::CanonicalRequest::rewrite_key)
                 .unwrap_or("command");
-            let input_source = request.as_ref().and_then(|request| request.input_source.clone());
+            let input_source = request
+                .as_ref()
+                .and_then(|request| request.input_source.clone());
 
             // Read input from stdin (either command-mode or content-mode)
             match input_source {

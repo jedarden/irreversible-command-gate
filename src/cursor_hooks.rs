@@ -110,7 +110,9 @@ pub fn installed_entries(
         },
         CursorHookPlan {
             event: BEFORE_SHELL_EXECUTION_EVENT,
-            command: format!("{icg} hook --harness cursor --event before-shell-execution{rule_pack_suffix}"),
+            command: format!(
+                "{icg} hook --harness cursor --event before-shell-execution{rule_pack_suffix}"
+            ),
             matcher: BEFORE_SHELL_EXECUTION_MATCHER.to_string(),
             timeout: HOOK_TIMEOUT_SECS,
             fail_closed,
@@ -398,8 +400,8 @@ pub fn run_install(options: InstallOptions) -> Result<()> {
         )
     };
 
-    let (serialized, report) =
-        merge_hooks_json(existing.as_deref(), &plans, options.uninstall).with_context(|| {
+    let (serialized, report) = merge_hooks_json(existing.as_deref(), &plans, options.uninstall)
+        .with_context(|| {
             format!(
                 "refusing to modify {}; the file is left unchanged",
                 target.display()
@@ -424,9 +426,8 @@ fn write_target(target: &Path, serialized: &str, existing: Option<&str>) -> Resu
     let backup_path = PathBuf::from(format!("{}.icg-backup", target.display()));
     if let Some(text) = existing {
         if !text.trim().is_empty() && !backup_path.exists() {
-            fs::write(&backup_path, text).with_context(|| {
-                format!("failed to write backup {}", backup_path.display())
-            })?;
+            fs::write(&backup_path, text)
+                .with_context(|| format!("failed to write backup {}", backup_path.display()))?;
         }
     }
 
@@ -436,8 +437,7 @@ fn write_target(target: &Path, serialized: &str, existing: Option<&str>) -> Resu
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
     }
-    fs::write(target, serialized)
-        .with_context(|| format!("failed to write {}", target.display()))
+    fs::write(target, serialized).with_context(|| format!("failed to write {}", target.display()))
 }
 
 fn print_report(target: &Path, report: &MergeReport, plans: &[CursorHookPlan], uninstall: bool) {
@@ -460,7 +460,11 @@ fn print_report(target: &Path, report: &MergeReport, plans: &[CursorHookPlan], u
             println!(
                 "Removed {} ICG entr{}.",
                 report.removed_icg_entries,
-                if report.removed_icg_entries == 1 { "y" } else { "ies" }
+                if report.removed_icg_entries == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             );
         }
         return;
@@ -514,8 +518,12 @@ mod tests {
 
     #[test]
     fn recognizes_icg_entries_by_their_command_line() {
-        assert!(is_icg_hook_command("/usr/local/bin/icg hook --harness cursor"));
-        assert!(is_icg_hook_command("icg hook --harness cursor --event before-shell-execution"));
+        assert!(is_icg_hook_command(
+            "/usr/local/bin/icg hook --harness cursor"
+        ));
+        assert!(is_icg_hook_command(
+            "icg hook --harness cursor --event before-shell-execution"
+        ));
         assert!(is_icg_hook_command(
             "'/opt/my tools/icg' hook --harness cursor --rule-pack /etc/icg/packs"
         ));
@@ -523,7 +531,9 @@ mod tests {
         // Not icg, not hook mode, or not the cursor harness: not ours.
         assert!(!is_icg_hook_command("echo icg hook --harness cursor"));
         assert!(!is_icg_hook_command("/usr/local/bin/icg hook"));
-        assert!(!is_icg_hook_command("/usr/local/bin/icg hook --harness claude-code"));
+        assert!(!is_icg_hook_command(
+            "/usr/local/bin/icg hook --harness claude-code"
+        ));
         assert!(!is_icg_hook_command("/usr/local/bin/icg coverage --list"));
         assert!(!is_icg_hook_command("icg-hook --harness cursor"));
         assert!(!is_icg_hook_command(""));
@@ -583,10 +593,13 @@ mod tests {
     fn second_merge_is_byte_identical_and_reports_no_change() {
         let (first, _) =
             merge_hooks_json(None, &install_plans(), false).expect("first merge succeeds");
-        let (second, report) = merge_hooks_json(Some(&first), &install_plans(), false)
-            .expect("second merge succeeds");
+        let (second, report) =
+            merge_hooks_json(Some(&first), &install_plans(), false).expect("second merge succeeds");
 
-        assert_eq!(first, second, "re-running the installer must not change bytes");
+        assert_eq!(
+            first, second,
+            "re-running the installer must not change bytes"
+        );
         assert!(!report.changed);
         assert_eq!(report.removed_icg_entries, 2);
         assert_eq!(report.added_icg_entries, 2);
@@ -606,8 +619,8 @@ mod tests {
   "customTopLevel": {"keep": [1, 2, 3]}
 }"#;
 
-        let (serialized, report) = merge_hooks_json(Some(existing), &install_plans(), false)
-            .expect("merge succeeds");
+        let (serialized, report) =
+            merge_hooks_json(Some(existing), &install_plans(), false).expect("merge succeeds");
         let root: Value = serde_json::from_str(&serialized).expect("output must be valid JSON");
 
         // The unrelated entry keeps every key and value verbatim.
@@ -695,9 +708,7 @@ mod tests {
             true,
         );
 
-        assert!(plans[0]
-            .command
-            .ends_with(" --rule-pack /etc/icg/packs"));
+        assert!(plans[0].command.ends_with(" --rule-pack /etc/icg/packs"));
         assert!(plans[1].command.contains("--event before-shell-execution"));
         assert!(plans[1].command.ends_with(" --rule-pack /etc/icg/packs"));
         // failClosed is opt-in and written as its own schema field.
@@ -714,11 +725,7 @@ mod tests {
 
     #[test]
     fn paths_with_spaces_are_shell_quoted_in_commands() {
-        let plans = installed_entries(
-            Path::new("/opt/my tools/icg"),
-            None,
-            false,
-        );
+        let plans = installed_entries(Path::new("/opt/my tools/icg"), None, false);
         assert!(plans[0]
             .command
             .starts_with("'/opt/my tools/icg' hook --harness cursor"));

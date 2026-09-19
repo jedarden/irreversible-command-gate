@@ -1688,23 +1688,26 @@ impl Engine {
             // `run_shell_command`; the payload is the Bash shape, so all
             // three spellings classify as a command.
             "Bash" | "Shell" | "run_shell_command" => {
-                let command = input.tool_input.command.ok_or_else(|| {
-                    PreToolUseError::InvalidInput {
-                        tool: input.tool_name.clone(),
-                        reason: "missing command".to_string(),
-                    }
-                })?;
+                let command =
+                    input
+                        .tool_input
+                        .command
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: input.tool_name.clone(),
+                            reason: "missing command".to_string(),
+                        })?;
 
                 Ok(Some(InputSource::Command(CommandSource::Hook(command))))
             }
             "Write" | "write_file" => {
-                let file_path = input
-                    .tool_input
-                    .file_path
-                    .ok_or_else(|| PreToolUseError::InvalidInput {
-                        tool: input.tool_name.clone(),
-                        reason: "missing file_path".to_string(),
-                    })?;
+                let file_path =
+                    input
+                        .tool_input
+                        .file_path
+                        .ok_or_else(|| PreToolUseError::InvalidInput {
+                            tool: input.tool_name.clone(),
+                            reason: "missing file_path".to_string(),
+                        })?;
 
                 // A full-file write carries `content`; an edit-shaped Write
                 // (Cursor delivers its edits under the `Write` tool name)
@@ -4721,7 +4724,10 @@ mod tests {
         let source = Engine::input_source_from_pre_tool_use(full_write)
             .expect("a full-file Write validates")
             .expect("Write is a supported tool");
-        assert!(matches!(source, InputSource::Content(ContentSource::Write { .. })));
+        assert!(matches!(
+            source,
+            InputSource::Content(ContentSource::Write { .. })
+        ));
     }
 
     /// A Write carrying neither `content` nor a complete old/new pair is
@@ -4773,7 +4779,10 @@ mod tests {
         let source = Engine::input_source_from_pre_tool_use(shaped)
             .expect("the shaped payload validates")
             .expect("Shell is a supported tool");
-        assert!(matches!(source, InputSource::Command(CommandSource::Hook(_))));
+        assert!(matches!(
+            source,
+            InputSource::Command(CommandSource::Hook(_))
+        ));
 
         for malformed in [
             "not json at all",
@@ -4782,9 +4791,7 @@ mod tests {
             r#"{"command":42}"#,
         ] {
             assert!(
-                engine
-                    .shape_shell_execution_payload(malformed)
-                    .is_err(),
+                engine.shape_shell_execution_payload(malformed).is_err(),
                 "a payload without a usable command must fail shaping, got one for {malformed:?}"
             );
         }

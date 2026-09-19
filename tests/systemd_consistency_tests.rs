@@ -81,7 +81,12 @@ fn systemd_readme_states_the_same_commit_invariant() {
     );
 }
 
-fn run_check(repo_root: &Path, unit_dir: &Path, host_dir: Option<&Path>, repo_only: bool) -> (i32, String) {
+fn run_check(
+    repo_root: &Path,
+    unit_dir: &Path,
+    host_dir: Option<&Path>,
+    repo_only: bool,
+) -> (i32, String) {
     let mut cmd = Command::new(script_path("check-consistency.sh"));
     cmd.env("ICG_REPO_ROOT", repo_root)
         .env("ICG_SYSTEMD_DIR", unit_dir);
@@ -155,12 +160,23 @@ impl Drop for Fixture {
 fn check_passes_when_both_sides_are_consistent() {
     let f = Fixture::new();
     f.script("good.sh", "#!/bin/bash\n");
-    f.tracked_unit("good.service", &format!("{}/scripts/good.sh", f.root.display()));
-    f.host_unit("hostgood.service", &format!("{}/scripts/good.sh", f.root.display()));
+    f.tracked_unit(
+        "good.service",
+        &format!("{}/scripts/good.sh", f.root.display()),
+    );
+    f.host_unit(
+        "hostgood.service",
+        &format!("{}/scripts/good.sh", f.root.display()),
+    );
     // A unit executing paths outside this repo is another project's business.
     f.host_unit("foreign.service", "/opt/someone-elses/tool --run");
 
-    let (code, out) = run_check(&f.root, &f.root.join("systemd"), Some(&f.root.join("host")), false);
+    let (code, out) = run_check(
+        &f.root,
+        &f.root.join("systemd"),
+        Some(&f.root.join("host")),
+        false,
+    );
     assert_eq!(code, 0, "consistent fixture should pass, got:\n{out}");
 }
 
@@ -168,14 +184,26 @@ fn check_passes_when_both_sides_are_consistent() {
 fn check_flags_tracked_unit_pointing_at_a_missing_path() {
     let f = Fixture::new();
     f.script("good.sh", "#!/bin/bash\n");
-    f.tracked_unit("good.service", &format!("{}/scripts/good.sh", f.root.display()));
-    f.tracked_unit("bad.service", &format!("{}/scripts/gone.sh", f.root.display()));
+    f.tracked_unit(
+        "good.service",
+        &format!("{}/scripts/good.sh", f.root.display()),
+    );
+    f.tracked_unit(
+        "bad.service",
+        &format!("{}/scripts/gone.sh", f.root.display()),
+    );
 
     let (code, out) = run_check(&f.root, &f.root.join("systemd"), None, true);
     assert_eq!(code, 1, "dangling tracked unit should fail, got:\n{out}");
     assert!(out.contains("bad.service"), "should name the unit:\n{out}");
-    assert!(out.contains("gone.sh"), "should name the missing path:\n{out}");
-    assert!(!out.contains("good.service"), "must not flag the healthy unit:\n{out}");
+    assert!(
+        out.contains("gone.sh"),
+        "should name the missing path:\n{out}"
+    );
+    assert!(
+        !out.contains("good.service"),
+        "must not flag the healthy unit:\n{out}"
+    );
 }
 
 /// The original incident's unit ran `/usr/bin/env bash <repo script>` — the
@@ -189,8 +217,14 @@ fn check_flags_env_interpreter_forms() {
     );
 
     let (code, out) = run_check(&f.root, &f.root.join("systemd"), None, true);
-    assert_eq!(code, 1, "env-interpreter form should be flagged, got:\n{out}");
-    assert!(out.contains("vanished.sh"), "should name the missing script:\n{out}");
+    assert_eq!(
+        code, 1,
+        "env-interpreter form should be flagged, got:\n{out}"
+    );
+    assert!(
+        out.contains("vanished.sh"),
+        "should name the missing script:\n{out}"
+    );
 }
 
 /// The exact shape of the original bead: a host unit (not tracked here, a
@@ -199,13 +233,24 @@ fn check_flags_env_interpreter_forms() {
 fn check_flags_host_unit_executing_a_missing_repo_path() {
     let f = Fixture::new();
     f.script("there.sh", "#!/bin/bash\n");
-    f.host_unit("leftover.service", &format!("{}/scripts/there.sh", f.root.display()));
+    f.host_unit(
+        "leftover.service",
+        &format!("{}/scripts/there.sh", f.root.display()),
+    );
     // Drop the script after the unit references it: repo-side deletion.
     fs::remove_file(f.root.join("scripts").join("there.sh")).expect("drop script");
 
-    let (code, out) = run_check(&f.root, &f.root.join("systemd"), Some(&f.root.join("host")), false);
+    let (code, out) = run_check(
+        &f.root,
+        &f.root.join("systemd"),
+        Some(&f.root.join("host")),
+        false,
+    );
     assert_eq!(code, 1, "host-side orphan should fail, got:\n{out}");
-    assert!(out.contains("leftover.service"), "should name the host unit:\n{out}");
+    assert!(
+        out.contains("leftover.service"),
+        "should name the host unit:\n{out}"
+    );
     assert!(
         out.contains("203/EXEC"),
         "the remediation should say what failure this prevents:\n{out}"
@@ -224,10 +269,21 @@ fn check_flags_dangling_symlinks_into_the_repo() {
     )
     .expect("symlink");
 
-    let (code, out) = run_check(&f.root, &f.root.join("systemd"), Some(&f.root.join("host")), false);
+    let (code, out) = run_check(
+        &f.root,
+        &f.root.join("systemd"),
+        Some(&f.root.join("host")),
+        false,
+    );
     assert_eq!(code, 1, "dangling symlink should fail, got:\n{out}");
-    assert!(out.contains("deleted.service"), "should name the unit:\n{out}");
-    assert!(out.contains("daemon-reload"), "remediation should include daemon-reload:\n{out}");
+    assert!(
+        out.contains("deleted.service"),
+        "should name the unit:\n{out}"
+    );
+    assert!(
+        out.contains("daemon-reload"),
+        "remediation should include daemon-reload:\n{out}"
+    );
 }
 
 /// The CI form: no host unit dir, `--repo-only`. It must pass on a tree that
@@ -241,5 +297,8 @@ fn check_repo_only_passes_on_the_real_repository() {
         None,
         true,
     );
-    assert_eq!(code, 0, "the real repo should be repo-side consistent, got:\n{out}");
+    assert_eq!(
+        code, 0,
+        "the real repo should be repo-side consistent, got:\n{out}"
+    );
 }
