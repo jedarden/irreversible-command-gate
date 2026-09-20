@@ -19,9 +19,19 @@ pub mod documented_commands;
 pub mod emergency_bypass;
 pub mod engine;
 pub mod fail_closed;
+/// The idempotent Gemini CLI `settings.json` installer
+/// (`icg install-gemini-hooks`); merge semantics are documented on the
+/// module itself, the wire it configures on the contract's Gemini CLI
+/// section (§6.4), and ownership of installed entries is decided by the
+/// same predicate the Cursor installer uses ([`hook_command`]).
+pub mod gemini_hooks;
 pub mod github_workflows;
 pub mod health;
 pub mod health_server;
+/// Shared recognition of ICG hook commands across the harness config
+/// installers; one ownership predicate so `cursor_hooks` and
+/// `gemini_hooks` cannot drift apart in what they treat as their own.
+pub mod hook_command;
 pub mod job_cronjob_yaml;
 pub mod metrics;
 pub mod monitoring;

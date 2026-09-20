@@ -8,9 +8,9 @@ use coverage::*;
 use engine::{Engine, InputSource};
 use fail_closed::PolicyStore;
 use icg::{
-    adapter, coverage, cursor_hooks, denial_log, emergency_bypass, engine, fail_closed, health,
-    health_server, monitoring, new_pack, overrides, pack_manifest, regex_safety, regression,
-    rollback, rule_pack, state_store, telemetry, trust_pointer, update,
+    adapter, coverage, cursor_hooks, denial_log, emergency_bypass, engine, fail_closed,
+    gemini_hooks, health, health_server, monitoring, new_pack, overrides, pack_manifest,
+    regex_safety, regression, rollback, rule_pack, state_store, telemetry, trust_pointer, update,
 };
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
@@ -307,6 +307,36 @@ enum Commands {
         /// Set failClosed on the installed entries, so a crashed or timed-out hook blocks the action
         #[arg(long)]
         fail_closed: bool,
+        /// Remove ICG entries from the target file instead of installing them
+        #[arg(long)]
+        uninstall: bool,
+    },
+    /// Merge ICG entries into a Gemini CLI settings.json, preserving unrelated hooks
+    ///
+    /// Manages the project file (.gemini/settings.json) by default; pass
+    /// --user for ~/.gemini/settings.json or --file for an exact path.
+    /// Idempotent: ICG-owned entries are recognized by their command line
+    /// and replaced, never duplicated, and every unrelated hook, event
+    /// array and setting is left untouched. The file's prior state is
+    /// backed up once as <target>.icg-backup. The installed BeforeTool
+    /// matcher is anchored to the three tools the adapter models, so MCP
+    /// and read-only tools never route to ICG; Gemini's dispatch is
+    /// natively fail-open, so there is no failClosed option. Placement
+    /// matters: the project file gates sessions started in that
+    /// directory, --user covers every session for the account.
+    InstallGeminiHooks {
+        /// Manage the user-level ~/.gemini/settings.json instead of the project file
+        #[arg(long, conflicts_with_all = ["project_dir", "file"])]
+        user: bool,
+        /// Project directory whose .gemini/settings.json is managed (default: the current directory)
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["user", "file"])]
+        project_dir: Option<PathBuf>,
+        /// Manage this exact settings.json path instead of deriving it from --user or --project-dir
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["user", "project_dir"])]
+        file: Option<PathBuf>,
+        /// Rule-pack file or directory recorded in the installed hook command
+        #[arg(long, value_name = "PATH")]
+        rule_pack: Option<PathBuf>,
         /// Remove ICG entries from the target file instead of installing them
         #[arg(long)]
         uninstall: bool,
@@ -1899,6 +1929,19 @@ fn main() -> Result<()> {
             file,
             rule_pack,
             fail_closed,
+            uninstall,
+        }),
+        Commands::InstallGeminiHooks {
+            user,
+            project_dir,
+            file,
+            rule_pack,
+            uninstall,
+        } => gemini_hooks::run_install(gemini_hooks::InstallOptions {
+            user,
+            project_dir,
+            file,
+            rule_pack,
             uninstall,
         }),
         Commands::Trust(subcommand) => match subcommand {

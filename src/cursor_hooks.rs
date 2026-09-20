@@ -11,7 +11,10 @@
 //!   binary with `hook --harness cursor` — recognized by content, not by
 //!   position or marker fields, so no non-schema key ever lands in the file
 //!   (Cursor blocks a permission-hook response that does not match its
-//!   schema; we keep the config file equally clean).
+//!   schema; we keep the config file equally clean). The predicate and the
+//!   shell-word machinery under it are shared with the Gemini installer in
+//!   [`hook_command`](super::hook_command), so both installers recognize
+//!   ownership identically.
 //! - Installing removes every ICG-owned entry from the target event arrays
 //!   and appends exactly one fresh entry per event. A second run removes
 //!   what the first run wrote and appends an identical entry, so the file
@@ -95,10 +98,15 @@ pub fn installed_entries(
     fail_closed: bool,
 ) -> Vec<CursorHookPlan> {
     let rule_pack_suffix = match rule_pack {
-        Some(path) => format!(" --rule-pack {}", shell_quote(&path.to_string_lossy())),
+        Some(path) => {
+            format!(
+                " --rule-pack {}",
+                crate::hook_command::shell_quote(&path.to_string_lossy())
+            )
+        }
         None => String::new(),
     };
-    let icg = shell_quote(&icg_binary.to_string_lossy());
+    let icg = crate::hook_command::shell_quote(&icg_binary.to_string_lossy());
 
     vec![
         CursorHookPlan {
@@ -122,94 +130,11 @@ pub fn installed_entries(
 
 /// Is this `command` an entry the installer owns?
 ///
-/// Owned means: the command **starts with** a word that resolves to the
-/// icg binary (its file name is `icg`), the word sequence includes the
-/// `hook` subcommand, and it declares `--harness cursor`. Starting with
-/// the binary is the load-bearing part: every entry this installer writes
-/// does, so the installer's own output is always recognized again
-/// (idempotence), while a foreign command that merely mentions `icg hook
-/// --harness cursor` mid-line — as `echo`'s arguments, say — is preserved
-/// untouched. Words are split the way a shell would, so a quoted path —
-/// including one with spaces, which is exactly what [`shell_quote`]
-/// writes — still reads as ICG-owned.
+/// Owned means the command invokes the icg binary in hook mode for the
+/// cursor harness; the full predicate (and its shell-word machinery) is
+/// [`hook_command::is_icg_hook_command_for`](super::hook_command).
 pub fn is_icg_hook_command(command: &str) -> bool {
-    let tokens = shell_split(command);
-
-    let Some(first) = tokens.first() else {
-        return false;
-    };
-    let invokes_icg = Path::new(first)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "icg" || name == "icg.exe");
-    let runs_hook_mode = tokens.iter().any(|token| token == "hook");
-    let declares_cursor = tokens
-        .windows(2)
-        .any(|pair| pair[0] == "--harness" && pair[1] == "cursor");
-
-    invokes_icg && runs_hook_mode && declares_cursor
-}
-
-/// Split a hook `command` into shell words, honoring the quoting a POSIX
-/// shell (and Cursor's own hook execution) would: single quotes protect
-/// everything — with the `'\''` idiom folding back into a literal quote —
-/// double quotes protect everything but `\` escapes, an unquoted `\`
-/// escapes the next character, and unquoted whitespace separates words.
-/// This is recognition, not execution: unknown constructs degrade to
-/// literal characters, which keeps ownership detection conservative
-/// rather than clever.
-fn shell_split(command: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut in_word = false;
-    let mut chars = command.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        Some('\'') | None => break,
-                        Some(literal) => current.push(literal),
-                    }
-                }
-            }
-            '"' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        Some('"') | None => break,
-                        Some('\\') => match chars.next() {
-                            Some(escaped) => current.push(escaped),
-                            None => break,
-                        },
-                        Some(literal) => current.push(literal),
-                    }
-                }
-            }
-            '\\' => {
-                if let Some(escaped) = chars.next() {
-                    current.push(escaped);
-                    in_word = true;
-                }
-            }
-            whitespace if whitespace.is_whitespace() => {
-                if in_word {
-                    tokens.push(std::mem::take(&mut current));
-                    in_word = false;
-                }
-            }
-            other => {
-                current.push(other);
-                in_word = true;
-            }
-        }
-    }
-    if in_word {
-        tokens.push(current);
-    }
-    tokens
+    crate::hook_command::is_icg_hook_command_for(command, "cursor")
 }
 
 /// What a merge did, so the caller can report (and skip the write) honestly.
@@ -491,23 +416,6 @@ fn print_report(target: &Path, report: &MergeReport, plans: &[CursorHookPlan], u
     );
 }
 
-/// Quote a path for inclusion in a hook `command` string. Paths made of
-/// shell-safe characters (the common case: `/usr/local/bin/icg`) pass
-/// through unquoted; anything else gets single quotes with embedded-quote
-/// escaping.
-fn shell_quote(text: &str) -> String {
-    if text.is_empty() {
-        return "''".to_string();
-    }
-    if text
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
-    {
-        return text.to_string();
-    }
-    format!("'{}'", text.replace('\'', r"'\''"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,10 +437,18 @@ mod tests {
         ));
 
         // Not icg, not hook mode, or not the cursor harness: not ours.
+        // A foreign command that merely mentions icg mid-line — with or
+        // without a rule-pack tail — stays foreign.
         assert!(!is_icg_hook_command("echo icg hook --harness cursor"));
+        assert!(!is_icg_hook_command(
+            "echo icg hook --harness cursor --rule-pack /etc/icg/packs"
+        ));
         assert!(!is_icg_hook_command("/usr/local/bin/icg hook"));
         assert!(!is_icg_hook_command(
             "/usr/local/bin/icg hook --harness claude-code"
+        ));
+        assert!(!is_icg_hook_command(
+            "/usr/local/bin/icg hook --harness gemini-cli"
         ));
         assert!(!is_icg_hook_command("/usr/local/bin/icg coverage --list"));
         assert!(!is_icg_hook_command("icg-hook --harness cursor"));
@@ -542,32 +458,24 @@ mod tests {
     #[test]
     fn shell_quoted_output_of_the_installer_is_recognized_again() {
         // Whatever path the running binary has, the installer must
-        // recognize its own output — including the quoting styles
-        // shell_quote produces — or a re-run would duplicate entries.
+        // recognize its own output — the quoting styles
+        // hook_command::shell_quote produces included — or a re-run would
+        // duplicate entries.
         for path in [
             "/usr/local/bin/icg",
             "/opt/my tools/icg",
             "/opt/it's/icg",
             "'/weird leading quote/icg",
         ] {
-            let quoted = shell_quote(path);
-            let command = format!("{quoted} hook --harness cursor");
-            assert!(
-                is_icg_hook_command(&command),
-                "{command:?} (from path {path:?}) must read as ICG-owned"
-            );
+            let plans = installed_entries(Path::new(path), None, false);
+            for plan in plans {
+                assert!(
+                    is_icg_hook_command(&plan.command),
+                    "{:?} (from path {path:?}) must read as ICG-owned",
+                    plan.command
+                );
+            }
         }
-
-        // And the split itself is honest about what a shell would see.
-        assert_eq!(
-            shell_split("'/opt/my tools/icg' hook --harness cursor"),
-            vec!["/opt/my tools/icg", "hook", "--harness", "cursor"]
-        );
-        assert_eq!(
-            shell_quote("/opt/it's/icg"),
-            "'/opt/it'\\''s/icg'",
-            "embedded single quotes use the '\\'' idiom"
-        );
     }
 
     #[test]
