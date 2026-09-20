@@ -161,6 +161,47 @@ fn read_only_verbs_and_the_credential_free_proxy_stay_allowed() {
 }
 
 #[test]
+fn mutating_verbs_fire_through_timeout_xargs_and_nice_wrappers() {
+    let engine = load_kubectl_engine();
+
+    // The same shapes org-rule-guard.py misses: its wrapper skip list is
+    // sudo/command/exec/time/nohup, so `timeout 30 kubectl delete ...`
+    // sails through there. icg must unwrap these like sudo.
+    for (command, pattern_id) in [
+        (
+            "timeout 30 kubectl delete pvc data-postgres-0 -n commitgraph-production",
+            "kubectl-delete",
+        ),
+        (
+            "timeout -k 10s 5m kubectl delete namespace scratch",
+            "kubectl-delete",
+        ),
+        ("xargs kubectl delete pod x", "kubectl-delete"),
+        ("xargs -0 -n 1 kubectl delete pod x", "kubectl-delete"),
+        (
+            "nice -n 5 kubectl scale deploy/api --replicas=0 -n prod",
+            "kubectl-mutating-verb",
+        ),
+        (
+            "timeout --preserve-status 30 kubectl patch configmap app -n prod -p '{}'",
+            "kubectl-mutating-verb",
+        ),
+    ] {
+        assert_denied(&engine, command, pattern_id);
+    }
+
+    // Read-only verbs keep their safe-pattern coverage through a wrapper --
+    // unwrapping must not widen guarded matching.
+    for command in [
+        "timeout 30 kubectl get pods -n prod",
+        "xargs -0 kubectl get pods -n prod",
+        "nice -n 10 kubectl top nodes",
+    ] {
+        assert_allowed(&engine, command);
+    }
+}
+
+#[test]
 fn mutating_words_as_values_or_downstream_text_do_not_trip_the_rules() {
     let engine = load_kubectl_engine();
 

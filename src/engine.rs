@@ -1114,6 +1114,59 @@ fn strip_command_prefixes(
                     &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
                 );
             }
+            // `timeout DURATION COMMAND ...` — the duration is a mandatory
+            // operand sitting between the options and the wrapped command.
+            // `-k/--kill-after` and `-s/--signal` consume a value (attached
+            // `-k5s`/`-sKILL` forms skip alone and land on the duration, which
+            // is still correct); `--preserve-status`, `--foreground` and
+            // `-v/--verbose` are valueless.
+            "timeout" => {
+                index += 1;
+                index = skip_options(
+                    tokens,
+                    index,
+                    &["-k", "--kill-after", "-s", "--signal"],
+                );
+                if index < tokens.len() {
+                    index += 1; // the duration operand
+                }
+            }
+            // `xargs [OPTIONS] COMMAND [INITIAL-ARGS] ...` — the wrapped
+            // command is everything after the xargs options. Every GNU
+            // option that consumes a separate value is listed; attached
+            // forms (`-I{}`, `-eEOF`, `-l2`) skip as single unknown options
+            // and still land on the command.
+            "xargs" => {
+                index += 1;
+                index = skip_options(
+                    tokens,
+                    index,
+                    &[
+                        "-a",
+                        "--arg-file",
+                        "-d",
+                        "--delimiter",
+                        "-E",
+                        "--eof",
+                        "-I",
+                        "-L",
+                        "--max-lines",
+                        "-n",
+                        "--max-args",
+                        "-P",
+                        "--max-procs",
+                        "-s",
+                        "--max-chars",
+                    ],
+                );
+            }
+            // `nice [-n ADJUSTMENT] COMMAND ...` — attached `-n10` and the
+            // obsolescent `nice -10 cmd` form skip as single options and
+            // land directly on the command.
+            "nice" => {
+                index += 1;
+                index = skip_options(tokens, index, &["-n", "--adjustment"]);
+            }
             _ if ignored_prefixes.iter().any(|ignored| ignored == prefix) => {
                 index += 1;
                 index = skip_options(tokens, index, &["-a", "--argv0", "--format", "-f"]);
@@ -1143,7 +1196,10 @@ fn command_token_from_words(
 pub struct Engine {
     /// Detects env assignments like VAR=value or FOO_BAR=value
     env_assign_pattern: Option<Regex>,
-    /// Prefixes to skip: sudo, command, exec, time, nohup
+    /// Prefixes to skip: sudo, command, exec, time, nohup. (sudo and env
+    /// additionally get dedicated option-skipping in
+    /// `strip_command_prefixes`, as do timeout, xargs and nice — wrappers
+    /// whose options or operands need per-command handling.)
     ignored_prefixes: Vec<String>,
     /// Loaded rule packs (pack_id -> Pack)
     packs: HashMap<String, crate::rule_pack::Pack>,
@@ -3669,6 +3725,121 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].executable, "vault");
         assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
+    fn test_segment_with_timeout_duration() {
+        let engine = default_engine();
+        let source = CommandSource::Hook("timeout 30 vault kv destroy secret/foo".to_string());
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].executable, "vault");
+        assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
+    fn test_segment_with_timeout_flags_and_duration() {
+        let engine = default_engine();
+        for command in [
+            "timeout -k 5s 30 vault kv destroy secret/foo",
+            "timeout --kill-after 5s --signal=KILL 30 vault kv destroy secret/foo",
+            "timeout --preserve-status --foreground 5m vault kv destroy secret/foo",
+        ] {
+            let tokens = engine.segment_command(&CommandSource::Hook(command.to_string()));
+            assert_eq!(tokens.len(), 1, "segments for {command}");
+            assert_eq!(tokens[0].executable, "vault", "executable for {command}");
+            assert_eq!(
+                tokens[0].args,
+                vec!["kv", "destroy", "secret/foo"],
+                "args for {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_segment_with_xargs_flags() {
+        let engine = default_engine();
+        for command in [
+            "xargs vault kv destroy secret/foo",
+            "xargs -0 vault kv destroy secret/foo",
+            "xargs -n 2 vault kv destroy secret/foo",
+            "xargs -I {} vault kv destroy {}",
+            "xargs --max-procs=4 -I{} vault kv destroy {}",
+            "xargs -a inputs.txt -- vault kv destroy secret/foo",
+        ] {
+            let tokens = engine.segment_command(&CommandSource::Hook(command.to_string()));
+            assert_eq!(tokens.len(), 1, "segments for {command}");
+            assert_eq!(tokens[0].executable, "vault", "executable for {command}");
+            let expected_args: Vec<String> = command
+                .split_whitespace()
+                .skip_while(|word| *word != "vault")
+                .skip(1)
+                .map(str::to_string)
+                .collect();
+            assert_eq!(tokens[0].args, expected_args, "args for {command}");
+        }
+    }
+
+    #[test]
+    fn test_segment_with_nice_adjustment() {
+        let engine = default_engine();
+        for command in [
+            "nice vault kv destroy secret/foo",
+            "nice -n 10 vault kv destroy secret/foo",
+            "nice -n10 vault kv destroy secret/foo",
+            "nice --adjustment=10 vault kv destroy secret/foo",
+            // Obsolescent negative-adjustment form: `nice -10 cmd`
+            "nice -10 vault kv destroy secret/foo",
+        ] {
+            let tokens = engine.segment_command(&CommandSource::Hook(command.to_string()));
+            assert_eq!(tokens.len(), 1, "segments for {command}");
+            assert_eq!(tokens[0].executable, "vault", "executable for {command}");
+            assert_eq!(
+                tokens[0].args,
+                vec!["kv", "destroy", "secret/foo"],
+                "args for {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_segment_with_chained_sudo_nice_timeout_prefixes() {
+        let engine = default_engine();
+        let source = CommandSource::Hook(
+            "sudo -u root nice -n 5 timeout 30 vault kv destroy secret/foo".to_string(),
+        );
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].executable, "vault");
+        assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
+    fn test_segment_does_not_unwrap_wrappers_in_argument_position() {
+        let engine = default_engine();
+
+        // `timeout` as path text or after a non-wrapper executable must not
+        // be treated as a prefix: only leading wrapper words unwrap.
+        let source = CommandSource::Hook("vault kv destroy secret/timeout".to_string());
+        let tokens = engine.segment_command(&source);
+        assert_eq!(tokens[0].executable, "vault");
+        assert_eq!(tokens[0].args, vec!["kv", "destroy", "secret/timeout"]);
+
+        let source = CommandSource::Hook("echo timeout 30 vault kv destroy".to_string());
+        let tokens = engine.segment_command(&source);
+        assert_eq!(tokens[0].executable, "echo");
+        assert_eq!(tokens[0].args, vec!["timeout", "30", "vault", "kv", "destroy"]);
+    }
+
+    #[test]
+    fn test_segment_wrapper_without_payload_yields_no_token() {
+        let engine = default_engine();
+        for command in ["timeout 30", "xargs", "nice", "nice -n 10"] {
+            let tokens = engine.segment_command(&CommandSource::Hook(command.to_string()));
+            assert!(tokens.is_empty(), "no payload after {command:?}");
+        }
     }
 
     #[test]

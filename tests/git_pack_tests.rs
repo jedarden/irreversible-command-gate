@@ -54,12 +54,6 @@ fn bare_git_credential_fill_is_denied() {
         "git credential fill <<< $'protocol=https\\nhost=git.ardenone.com\\n'",
         "git status && git credential fill",
         "git credential fill | cat",
-        // NOTE: "timeout 10 git credential fill ..." is NOT covered -- `timeout`
-        // is absent from Engine::new()'s ignored_prefixes (unlike sudo/nohup/
-        // time/command/exec), so pack dispatch never reaches "git" through it.
-        // That's a separate, pre-existing engine gap (see engine.rs ~L802),
-        // not something a pack-level regex can fix. Filed for the maintainers
-        // rather than worked around here.
     ] {
         assert_credential_fill_denied(
             engine.evaluate_command(&CommandSource::Hook(command.to_string())),
@@ -98,6 +92,53 @@ fn unrelated_git_credential_commands_remain_allowed() {
             engine.evaluate_command(&CommandSource::Hook(command.to_string())),
             CheckResult::Allowed,
             "unrelated command should remain allowed: {command}"
+        );
+    }
+}
+
+#[test]
+fn guarded_git_rules_fire_through_timeout_xargs_and_nice_wrappers() {
+    let engine = load_git_engine();
+
+    // Deny channel: credential fill must not be reachable through the
+    // timeout/xargs/nice wrappers any more than through sudo.
+    for command in [
+        "timeout 10 git credential fill",
+        "timeout -k 5 --signal=KILL 30 git credential fill",
+        "xargs git credential fill",
+        "xargs -0 -n 1 git credential fill",
+        "nice -n 10 git credential fill",
+    ] {
+        assert_credential_fill_denied(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            command,
+        );
+    }
+
+    // Rewrite channel: the force-push rule strips the flag from the unwrapped
+    // command, so a wrapped push still retries as a safe plain push.
+    let rewrite = engine.evaluate_command(&CommandSource::Hook(
+        "timeout 60 git push --force origin main".to_string(),
+    ));
+    assert!(
+        matches!(
+            rewrite,
+            CheckResult::Rewrite {
+                ref pack_id,
+                ref pattern_id,
+                ..
+            } if pack_id == "git" && pattern_id == "git-force-push"
+        ),
+        "expected git-force-push rewrite through a timeout wrapper, got {rewrite:?}"
+    );
+
+    // Allow channel: safe git verbs keep their safe-pattern coverage through
+    // a wrapper -- unwrapping must not widen guarded matching.
+    for command in ["timeout 30 git status", "xargs -0 git status", "nice -n 5 git log"] {
+        assert_eq!(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            CheckResult::Allowed,
+            "safe git verb should stay allowed through a wrapper: {command}"
         );
     }
 }

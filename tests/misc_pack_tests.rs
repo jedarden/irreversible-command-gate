@@ -70,6 +70,40 @@ fn needle_cleanup_is_denied_by_hook_and_wrapper_front_ends() {
 }
 
 #[test]
+fn needle_cleanup_is_denied_through_timeout_xargs_and_nice_wrappers() {
+    let engine = load_misc_engine();
+
+    for command in [
+        "timeout 30 needle cleanup",
+        "timeout -k 5 60 needle cleanup",
+        "timeout --kill-after=5s --signal=KILL 10m needle cleanup --all",
+        "timeout --preserve-status --foreground 5m needle cleanup",
+        "xargs needle cleanup",
+        "xargs -0 needle cleanup",
+        "xargs -I {} needle cleanup",
+        "xargs -n 1 needle cleanup",
+        "nice needle cleanup",
+        "nice -n 10 needle cleanup",
+        "nice -10 needle cleanup",
+    ] {
+        assert_needle_cleanup_denied(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            command,
+        );
+    }
+
+    // Unwrapping must not widen dispatch: non-cleanup needle verbs keep
+    // their allowed verdict through the same wrappers.
+    for command in ["timeout 30 needle status", "xargs -0 needle worker list"] {
+        assert_eq!(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            CheckResult::Allowed,
+            "unrelated needle command should remain allowed through a wrapper: {command}"
+        );
+    }
+}
+
+#[test]
 fn unrelated_needle_commands_remain_allowed() {
     let engine = load_misc_engine();
 
