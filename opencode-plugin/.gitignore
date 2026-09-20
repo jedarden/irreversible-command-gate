@@ -1,0 +1,4 @@
+# npm installs here are optional developer conveniences (the runtime suite
+# runs dependency-free, and the typecheck uses vendor/*.d.ts), so the
+# installed tree is never committed.
+node_modules/

@@ -1,0 +1,14 @@
+{
+  "name": "icg-opencode-plugin",
+  "private": true,
+  "version": "0.0.0",
+  "description": "ICG gate plugin for OpenCode 1.18.29, deployed by `icg install-opencode-plugin`",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "engines": {
+    "node": ">=23.6"
+  }
+}

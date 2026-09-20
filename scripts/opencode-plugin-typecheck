@@ -1,0 +1,39 @@
+#!/bin/sh
+# Type-check the OpenCode plugin (opencode-plugin/icg.ts) with tsc.
+#
+# The plugin is JavaScript-shipped TypeScript that OpenCode type-strips at
+# load, so nothing in the runtime suite catches a type error; this script is
+# the only compile-level check. It needs a `tsc` binary and zero node
+# dependencies: opencode-plugin/vendor/*.d.ts carry minimal offline
+# declarations for the pinned @opencode-ai/plugin 1.18.29 surface and the
+# node builtins icg.ts touches, so no npm install is required (a clean
+# `git archive` extraction has no node_modules).
+#
+# tsc is deliberately not a repo dependency, so a box without one SKIPS
+# loudly rather than failing -- the same posture
+# scripts/definition-of-done.sh takes for node/npm. Exit 0 means "checked
+# and clean" or "skipped loudly"; anything else is a type-check failure.
+#
+# Usage: scripts/opencode-plugin-typecheck
+set -u
+
+cd "$(dirname "$0")/.." || exit 2
+
+TSC=""
+for candidate in \
+  "opencode-plugin/node_modules/.bin/tsc" \
+  "$(command -v tsc 2>/dev/null)" \
+  "$(npm root -g 2>/dev/null)/typescript/bin/tsc"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    TSC="$candidate"
+    break
+  fi
+done
+
+if [ -z "$TSC" ]; then
+  echo "scripts/opencode-plugin-typecheck	tSKIP (no tsc found; install typescript to type-check opencode-plugin/icg.ts)"
+  exit 0
+fi
+
+echo "tsc: $TSC"
+exec "$TSC" --project opencode-plugin/tsconfig.json
