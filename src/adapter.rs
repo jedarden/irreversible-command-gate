@@ -74,8 +74,13 @@ pub enum HarnessId {
     /// The local Codex CLI's synchronous `PreToolUse` hook
     /// (`~/.codex/hooks.json`); not cloud-hosted Codex tasks.
     CodexCli,
-    /// OpenCode's in-process plugin API (`tool.execute.before`).
-    /// Specified in the contract doc; adapter not yet implemented.
+    /// OpenCode's in-process plugin API (`tool.execute.before`). The plugin
+    /// shells out to `icg hook --harness opencode`, so the payload and the
+    /// response both travel over a subprocess wire even though the hook
+    /// itself is in-process. The flag spelling is the telemetry slug;
+    /// clap's derived kebab-case of the variant (`open-code`) is accepted
+    /// as an alias.
+    #[value(name = "opencode", alias = "open-code")]
     OpenCode,
     /// Gemini CLI's `BeforeTool` command hook
     /// (`~/.gemini/settings.json` or project `.gemini/settings.json`).
@@ -595,6 +600,47 @@ const CURSOR_SHELL_EVENT_CAPABILITIES: Capabilities = Capabilities {
     ..CURSOR_CAPABILITIES
 };
 
+/// Adapter for OpenCode's `tool.execute.before` plugin hook.
+///
+/// OpenCode's plugin API is in-process JavaScript/TS, so the wire ICG speaks
+/// is the one between the ICG plugin and this process: the plugin serializes
+/// the hook's payload -- `tool`, `sessionID`, `callID`, and the mutable
+/// `args` object -- to stdin, and reads back one JSON object naming the one
+/// thing it must do next (`render_opencode_envelope`). `args` spellings are
+/// OpenCode's own camelCase: `bash` carries `command`, `write` carries
+/// `filePath`/`content`, and `edit` carries `filePath`/`oldString`/
+/// `newString`/`replaceAll` -- all engine aliases of the modeled fields
+/// except the tool names, which are wired in as spellings of the same three
+/// actions. Verified against the installed OpenCode 1.18.29 (binary sha256
+/// `ca6c0e1f...`); the pinned evidence and its citations live in
+/// `docs/research/opencode-1.18.29-plugin-surface.md` and
+/// `docs/research/opencode-1.18.29-deny-rewrite-advisory.md`, and
+/// `docs/notes/harness-adapter-contract.md` §6.3 is the normative summary.
+///
+/// A denial is delivered by the plugin throwing; a rewrite by the plugin
+/// copying the replacement's properties onto its `output.args` **in place**
+/// (reassigning `output.args` is a no-op in OpenCode -- hook and executor
+/// share one args object); an allow by returning untouched. There is no
+/// advisory channel at tool-call time, so a warning degrades to a bare
+/// allow.
+pub struct OpenCodeAdapter;
+
+/// OpenCode's plugin channel can carry a replacement (in-place `args`
+/// mutation is execution-real) but no advisory context and no
+/// `systemMessage`: the hook's only output is `{args}`, and throw is the
+/// only other effect a plugin can produce. A Warn therefore degrades to a
+/// bare allow. There is no `permissionDecision` field anywhere on this wire
+/// -- an allow is spelled by the plugin returning normally -- so
+/// `supports_allow_decision` records that absence; the flag is inert here
+/// because `render_opencode_envelope` never consults it.
+const OPENCODE_CAPABILITIES: Capabilities = Capabilities {
+    supports_updated_input: true,
+    supports_additional_context: false,
+    honors_additional_context: false,
+    supports_system_message: false,
+    supports_allow_decision: false,
+};
+
 impl HarnessAdapter for ClaudeCodeAdapter {
     fn harness(&self) -> HarnessId {
         HarnessId::ClaudeCode
@@ -672,23 +718,42 @@ impl HarnessAdapter for CursorShellExecutionAdapter {
     }
 }
 
-/// The adapter for a declared harness, or `None` for the harnesses whose
-/// adapters are specified but not yet implemented (`OpenCode`) and for the
-/// payload-less `Wrapper` front end.
+impl HarnessAdapter for OpenCodeAdapter {
+    fn harness(&self) -> HarnessId {
+        HarnessId::OpenCode
+    }
+
+    fn capabilities(&self) -> &'static Capabilities {
+        &OPENCODE_CAPABILITIES
+    }
+
+    fn render(
+        &self,
+        result: &CanonicalResult,
+        original_input: Option<&Value>,
+        rewrite_key: &str,
+    ) -> Value {
+        render_opencode_envelope(result, original_input, rewrite_key, self.capabilities())
+    }
+}
+
+/// The adapter for a declared harness, or `None` for the payload-less
+/// `Wrapper` front end, whose input is OS-parsed argv and never a payload.
 ///
 /// The front end refuses an unsupported harness rather than silently serving
-/// the wrong wire format: an OpenCode caller handed the Claude Code
-/// envelope would get a response its harness never reads. Cursor's
-/// dedicated `beforeShellExecution` event is selected through
+/// the wrong wire format: a caller handed an envelope its harness never
+/// reads would proceed while looking guarded. Cursor's dedicated
+/// `beforeShellExecution` event is selected through
 /// [`cursor_shell_execution_adapter`], not through this function: its
 /// payload and response differ from `preToolUse`'s.
 pub fn adapter_for(harness: HarnessId) -> Option<&'static dyn HarnessAdapter> {
     match harness {
         HarnessId::ClaudeCode => Some(&ClaudeCodeAdapter),
         HarnessId::CodexCli => Some(&CodexAdapter),
+        HarnessId::OpenCode => Some(&OpenCodeAdapter),
         HarnessId::GeminiCli => Some(&GeminiCliAdapter),
         HarnessId::Cursor => Some(&CursorAdapter),
-        HarnessId::OpenCode | HarnessId::Wrapper => None,
+        HarnessId::Wrapper => None,
     }
 }
 
@@ -912,6 +977,63 @@ pub fn render_gemini_envelope(
     }
 }
 
+/// Render one canonical result in OpenCode's plugin protocol, degraded
+/// according to the given capabilities.
+///
+/// OpenCode's `tool.execute.before` hook has no response envelope to
+/// parse -- the plugin acts, and its three possible actions are the whole
+/// protocol. The JSON object this renderer emits names exactly one of them:
+///
+/// - `{"action": "allow"}` -- return normally, `args` untouched. A Warn
+///   renders the same object: there is no advisory channel at tool-call
+///   time, so the attributed reason is dropped rather than blocking (§5).
+/// - `{"action": "rewrite", "args": ...}` -- the complete replacement args
+///   object: every field the harness sent -- `workdir`, `replaceAll`,
+///   anything this contract does not model -- with only the rewrite key
+///   substituted. The plugin copies its properties onto its `output.args`
+///   **in place**; reassigning `output.args` is invisible to the executor,
+///   and OpenCode's transcript records the model's original args either
+///   way, so the rewrite's audit trail is the plugin's own.
+/// - `{"action": "deny", "message": "ICG: <attributed reason>"}` -- throw
+///   `new Error(message)` verbatim. The thrown message is the only
+///   model-visible text the gate controls on this harness (`Tool execution
+///   failed: ICG: ...`), and because the agent loop continues, retries
+///   arrive and are gated again. OpenCode aborts the call before execution
+///   and before its own permission ask.
+pub fn render_opencode_envelope(
+    result: &CanonicalResult,
+    original_input: Option<&Value>,
+    rewrite_key: &str,
+    capabilities: &Capabilities,
+) -> Value {
+    match result.verdict {
+        CanonicalVerdict::Allow | CanonicalVerdict::Warn => {
+            serde_json::json!({ "action": "allow" })
+        }
+        CanonicalVerdict::Rewrite if capabilities.supports_updated_input => {
+            let mut args = original_input
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(rewrite) = &result.rewrite {
+                args.insert(rewrite_key.to_string(), Value::String(rewrite.clone()));
+            }
+            serde_json::json!({ "action": "rewrite", "args": args })
+        }
+        // Degradation (§5): a harness with no input-modification channel
+        // cannot run a call whose arguments the policy said to change.
+        // OpenCode's capabilities declare the replacement channel, so this
+        // arm is the Deny verdict; the Rewrite arm above is the only path
+        // that carries a replacement.
+        CanonicalVerdict::Rewrite | CanonicalVerdict::Deny => {
+            serde_json::json!({
+                "action": "deny",
+                "message": format!("ICG: {}", result.attributed_reason()),
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,11 +1096,12 @@ mod tests {
     fn only_shipped_adapters_are_selectable() {
         assert!(adapter_for(HarnessId::ClaudeCode).is_some());
         assert!(adapter_for(HarnessId::CodexCli).is_some());
+        assert!(adapter_for(HarnessId::OpenCode).is_some());
         assert!(adapter_for(HarnessId::GeminiCli).is_some());
         assert!(adapter_for(HarnessId::Cursor).is_some());
-        // Specified but unimplemented: the front end must refuse these
-        // rather than serve the wrong wire format.
-        assert!(adapter_for(HarnessId::OpenCode).is_none());
+        // The wrapper front end has no payload and therefore no adapter:
+        // the front end must refuse it rather than serve a wire format it
+        // never receives input in.
         assert!(adapter_for(HarnessId::Wrapper).is_none());
         let default = default_adapter();
         assert!(std::ptr::eq(
@@ -1853,6 +1976,197 @@ mod tests {
             "command",
         );
         assert_eq!(response, json!({}));
+    }
+
+    #[test]
+    fn opencode_tools_classify_through_the_engine_not_alongside_it() {
+        let engine = Engine::new();
+        let opencode = adapter_for(HarnessId::OpenCode).expect("opencode adapter exists");
+
+        // Shell: `bash` carries the Bash payload shape, and the adapter's
+        // classification is the engine's own.
+        let direct = Engine::input_source_from_pre_tool_use(payload(
+            "bash",
+            json!({ "command": "git status" }),
+        ))
+        .expect("engine parses bash")
+        .expect("bash is supported");
+        let shell = opencode.build_request(
+            &engine,
+            payload("bash", json!({ "command": "git status" })),
+            None,
+        );
+        assert_eq!(shell.harness, HarnessId::OpenCode);
+        assert_eq!(shell.tool_name, "bash");
+        assert_eq!(shell.input_source, Some(direct));
+        assert_eq!(shell.rewrite_key(), "command");
+
+        // Full-file write: `write` carries the camelCase Write shape
+        // (`filePath`/`content`).
+        let write = opencode.build_request(
+            &engine,
+            payload(
+                "write",
+                json!({ "filePath": "deploy/app.yaml", "content": "x" }),
+            ),
+            None,
+        );
+        assert_eq!(
+            write.action(),
+            CanonicalAction::WriteFile {
+                file_path: "deploy/app.yaml".to_string(),
+                content: "x".to_string(),
+            }
+        );
+        assert_eq!(write.rewrite_key(), "content");
+
+        // Text substitution: `edit` carries the camelCase Edit shape, and
+        // the rewrite follows the incoming camelCase spelling -- OpenCode's
+        // pinned args spellings (`filePath`/`oldString`/`newString`,
+        // `replaceAll` unmodeled) are the §3.2 aliases.
+        let edit_input = json!({
+            "filePath": "deploy/app.yaml",
+            "oldString": "storageClassName: sata",
+            "newString": "storageClassName: ssd",
+            "replaceAll": true
+        });
+        let edit = opencode.build_request(
+            &engine,
+            payload("edit", edit_input.clone()),
+            Some(&edit_input),
+        );
+        assert!(matches!(edit.action(), CanonicalAction::EditFile { .. }));
+        assert_eq!(edit.rewrite_key(), "newString");
+        // The unmodeled `replaceAll` survives on the request untouched, so
+        // the rewrite replacement carries it back.
+        assert_eq!(
+            edit.original_tool_input.expect("original input")["replaceAll"],
+            true
+        );
+    }
+
+    #[test]
+    fn opencode_renders_its_plugin_protocol_envelope() {
+        let opencode = adapter_for(HarnessId::OpenCode).unwrap();
+        let input = json!({
+            "command": "git push --force origin main",
+            "workdir": "/project"
+        });
+
+        // An allow is an explicit action: the plugin returns normally and
+        // leaves `args` untouched.
+        let allow = opencode.render(
+            &CanonicalResult::from_engine(&CheckResult::Allowed, None),
+            None,
+            "command",
+        );
+        assert_eq!(allow, json!({ "action": "allow" }));
+
+        // A deny names the message the plugin must throw verbatim. The
+        // thrown text is the only model-visible string the gate controls on
+        // this harness, so it carries the ICG prefix and the attribution.
+        let deny = opencode.render(
+            &CanonicalResult::from_engine(&denied("git", "git-force-push"), None),
+            Some(&input),
+            "command",
+        );
+        assert_eq!(
+            deny,
+            json!({
+                "action": "deny",
+                "message": "ICG: denied by policy [pack=git, pattern=git-force-push]",
+            })
+        );
+        assert!(deny.get("hookSpecificOutput").is_none());
+        assert!(deny.get("permissionDecision").is_none());
+        assert!(deny.get("args").is_none(), "a deny never carries args");
+
+        // A rewrite is the complete replacement args object: unmodeled
+        // fields survive, and the plugin applies it by in-place property
+        // mutation.
+        let rewrite = opencode.render(
+            &CanonicalResult::from_engine(&rewrite("git", "git-force-push"), None),
+            Some(&input),
+            "command",
+        );
+        assert_eq!(
+            rewrite,
+            json!({
+                "action": "rewrite",
+                "args": {
+                    "command": "git push origin main",
+                    "workdir": "/project"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn an_opencode_warning_is_a_bare_allow() {
+        let opencode = adapter_for(HarnessId::OpenCode).unwrap();
+        let warning = CanonicalResult {
+            verdict: CanonicalVerdict::Warn,
+            reason: Some("check the target".to_string()),
+            pack_id: Some("warning-verdict-e2e".to_string()),
+            pattern_id: Some("warn-worktree-add".to_string()),
+            matched_path: None,
+            rewrite: None,
+            subject: None,
+        };
+        let response = opencode.render(&warning, None, "command");
+
+        assert_eq!(
+            response,
+            json!({ "action": "allow" }),
+            "tool.execute.before has no advisory channel: the warning text is \
+             dropped, never turned into a throw"
+        );
+    }
+
+    #[test]
+    fn opencode_declares_its_capability_set() {
+        let capabilities = adapter_for(HarnessId::OpenCode).unwrap().capabilities();
+        assert!(
+            capabilities.supports_updated_input,
+            "in-place args mutation is execution-real (the hook and the \
+             executor share one args object)"
+        );
+        assert!(
+            !capabilities.supports_additional_context,
+            "tool.execute.before's only output is the args object; hook \
+             return values are discarded"
+        );
+        assert!(!capabilities.honors_additional_context);
+        assert!(
+            !capabilities.supports_system_message,
+            "the response has no user-facing field; diagnostics go to stderr"
+        );
+        assert!(
+            !capabilities.supports_allow_decision,
+            "there is no decision field on this wire: an allow is spelled by \
+             the plugin returning normally"
+        );
+    }
+
+    #[test]
+    fn opencode_unmodeled_tools_classify_unsupported_and_allow() {
+        let engine = Engine::new();
+        let opencode = adapter_for(HarnessId::OpenCode).unwrap();
+        // OpenCode's own read-only tools and MCP namespaced keys pass
+        // through the same hook; none are modeled here.
+        let request = opencode.build_request(
+            &engine,
+            payload("glob", json!({ "pattern": "**/*.rs" })),
+            Some(&json!({ "pattern": "**/*.rs" })),
+        );
+        assert_eq!(request.action(), CanonicalAction::Unsupported);
+
+        let response = opencode.render(
+            &CanonicalResult::from_engine(&CheckResult::Allowed, None),
+            None,
+            "command",
+        );
+        assert_eq!(response, json!({ "action": "allow" }));
     }
 
     /// `PreToolUseInput` is not `Clone`; rebuild an equal input for the

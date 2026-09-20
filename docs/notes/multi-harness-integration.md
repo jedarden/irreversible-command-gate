@@ -138,9 +138,10 @@ This is now the adapter contract: `src/adapter.rs` plus
 [`harness-adapter-contract.md`](harness-adapter-contract.md) (version 1)
 define the canonical request/result both shipped hook front-ends share, the
 `--harness` declaration, and the per-harness mappings — including the
-shipped Claude Code, Codex CLI, Gemini CLI, and Cursor adapters (the last
-with its dedicated `beforeShellExecution` event), the
-specified-but-unimplemented OpenCode wire, and the official sources each
+shipped Claude Code, Codex CLI, Gemini CLI, Cursor (the last
+with its dedicated `beforeShellExecution` event), and OpenCode adapters
+(the last relayed by an in-process plugin whose process boundary wraps
+`icg hook --harness opencode`), and the official sources each
 mapping was taken from. The wrapper remains a separate, payload-less front end
 (identity `wrapper` in the contract's closed harness set).
 

@@ -1,0 +1,9 @@
+{
+  "tool": "write",
+  "sessionID": "ses_2f8a91c4",
+  "callID": "call_01j4fdenywr",
+  "args": {
+    "filePath": "deploy/app.yaml",
+    "content": "image: app:1.2.3\nstorageClassName: ssd\n"
+  }
+}

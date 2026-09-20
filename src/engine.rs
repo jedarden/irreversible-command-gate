@@ -1535,6 +1535,101 @@ impl Engine {
         Ok(Some((shaped, raw)))
     }
 
+    /// Read OpenCode's `tool.execute.before` payload from stdin and shape it
+    /// as the PreToolUse input the shared hook front end already evaluates:
+    /// OpenCode's `tool` becomes the tool name and its `args` object the
+    /// tool input.
+    ///
+    /// OpenCode's hook payload is `{tool, sessionID, callID}` plus the
+    /// mutable `args` object -- never `tool_name`/`tool_input` -- so the
+    /// plain PreToolUse reader would reject it and every call would fail
+    /// open unchecked; this reader is the admission path. The payload
+    /// travels from the ICG plugin, which serializes the hook's own input
+    /// and output objects; OpenCode's camelCase `args` spellings
+    /// (`filePath`, `oldString`, `newString`) are the aliases the tool-input
+    /// deserializer already reads. The `args` object is what travels with
+    /// the shaped input -- not the whole payload -- because a rewrite
+    /// replacement is a replacement *for the args*, and the plugin applies
+    /// it by copying its properties onto its `output.args` in place; the
+    /// `tool`/`sessionID`/`callID` envelope must never leak into it.
+    ///
+    /// The fail-open posture is the stdin boundary's: input that is not
+    /// valid JSON, carries no non-empty `tool`, or carries an `args` that is
+    /// not a tool-input object is reported on stderr (naming the fail-open
+    /// mode) and yields `None` -- the front end then renders a plain allow.
+    /// An absent `args` is tolerated as an empty tool input, which leaves an
+    /// unmodeled tool quietly unsupported while a modeled one (e.g. `bash`
+    /// with no command) fails classification with its diagnostic.
+    pub fn read_opencode_payload_from_stdin(
+        &self,
+    ) -> Result<Option<(PreToolUseInput, serde_json::Value)>> {
+        use std::io::{self, Read};
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut input = String::new();
+            io::stdin()
+                .read_to_string(&mut input)
+                .context("Failed to read stdin")?;
+            self.shape_opencode_payload(&input)
+        }));
+        match result {
+            Ok(Ok(input)) => Ok(input),
+            Ok(Err(error)) => {
+                report_failure(self.fail_closed, &format!("stdin input failure: {error}"));
+                Ok(None)
+            }
+            Err(_) => {
+                report_failure(self.fail_closed, "stdin input panicked");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Shape one already-read `tool.execute.before` payload. Split from the
+    /// stdin read so the admission rules are unit-testable; the caller owns
+    /// the fail-open boundary.
+    fn shape_opencode_payload(
+        &self,
+        input: &str,
+    ) -> Result<Option<(PreToolUseInput, serde_json::Value)>> {
+        let raw: serde_json::Value =
+            serde_json::from_str(input).context("Failed to parse hook input JSON")?;
+        let tool = raw
+            .get("tool")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .filter(|tool| !tool.trim().is_empty())
+            .context("tool.execute.before payload carries no non-empty 'tool'")?;
+        let session_id = raw
+            .get("sessionID")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let args = raw.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        let tool_input = match args {
+            serde_json::Value::Null => ToolInput {
+                command: None,
+                file_path: None,
+                content: None,
+                old_string: None,
+                new_string: None,
+                encoding: None,
+                mime_type: None,
+            },
+            args => serde_json::from_value(args)
+                .context("'args' is not a tool-input object")?,
+        };
+
+        let shaped = PreToolUseInput {
+            tool_name: tool,
+            tool_input,
+            id: None,
+            timestamp: None,
+            session_id,
+        };
+        let original_args = raw.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        Ok(Some((shaped, original_args)))
+    }
+
     /// Read command from PreToolUse JSON on stdin (legacy method for backward compatibility)
     ///
     /// Returns None if the input isn't a Bash command (e.g., Write/Edit)
@@ -1568,7 +1663,11 @@ impl Engine {
             // Gemini CLI's BeforeTool spellings of the same three actions
             // (run_shell_command, write_file, replace -- docs/reference/tools
             // in google-gemini/gemini-cli, v0.60.0, checked 2026-09-18).
-            | "run_shell_command" | "write_file" | "replace" => {
+            | "run_shell_command" | "write_file" | "replace"
+            // OpenCode's registered tool names for the same three actions
+            // (bash, write, edit -- the 1.18.29 tool registry, pinned in
+            // docs/research/opencode-1.18.29-plugin-surface.md §4.4).
+            | "bash" | "write" | "edit" => {
                 // Known tools - continue validation
             }
             _ => {
@@ -1591,10 +1690,11 @@ impl Engine {
     /// `replace` the same `old_string`/`new_string` pair as `Edit`.
     fn validate_tool_input(tool_name: &str, input: &ToolInput) -> PreToolUseResult<()> {
         match tool_name {
-            // Cursor names its shell tool `Shell` and Gemini CLI names it
-            // `run_shell_command`; the payload shape is the Bash shape
-            // (`command`), so all three spellings validate identically.
-            "Bash" | "Shell" | "run_shell_command" => {
+            // Cursor names its shell tool `Shell`, Gemini CLI names it
+            // `run_shell_command`, and OpenCode names it `bash`; the payload
+            // shape is the Bash shape (`command`), so all four spellings
+            // validate identically.
+            "Bash" | "Shell" | "run_shell_command" | "bash" => {
                 if input.command.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1611,7 +1711,10 @@ impl Engine {
                     }
                 }
             }
-            "Write" | "write_file" => {
+            // OpenCode's `write` and `edit` carry the same shapes as
+            // `Write`/`Edit`, spelled camelCase (`filePath`, `oldString`,
+            // `newString`) -- the aliases the deserializer already reads.
+            "Write" | "write_file" | "write" => {
                 if input.file_path.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1632,7 +1735,7 @@ impl Engine {
                     });
                 }
             }
-            "Edit" | "replace" => {
+            "Edit" | "replace" | "edit" => {
                 if input.file_path.is_none() {
                     return Err(PreToolUseError::InvalidInput {
                         tool: tool_name.to_string(),
@@ -1677,17 +1780,19 @@ impl Engine {
     /// shipped harnesses' spellings: Claude Code / Codex CLI name the same
     /// three actions `Bash`/`Write`/`Edit`, Cursor names its shell tool
     /// `Shell` and delivers edits under `Write`, Gemini CLI names them
-    /// `run_shell_command`/`write_file`/`replace`, and Codex's `apply_patch`
-    /// arrives as patch text. An unknown name classifies to `None`, which
-    /// the hook treats as fail-open allow.
+    /// `run_shell_command`/`write_file`/`replace`, OpenCode names them
+    /// `bash`/`write`/`edit`, and Codex's `apply_patch` arrives as patch
+    /// text. An unknown name classifies to `None`, which the hook treats as
+    /// fail-open allow.
     pub fn input_source_from_pre_tool_use(
         input: PreToolUseInput,
     ) -> PreToolUseResult<Option<InputSource>> {
         match input.tool_name.as_str() {
-            // Cursor names its shell tool `Shell` and Gemini CLI names it
-            // `run_shell_command`; the payload is the Bash shape, so all
-            // three spellings classify as a command.
-            "Bash" | "Shell" | "run_shell_command" => {
+            // Cursor names its shell tool `Shell`, Gemini CLI names it
+            // `run_shell_command`, and OpenCode names it `bash`; the payload
+            // is the Bash shape, so all four spellings classify as a
+            // command.
+            "Bash" | "Shell" | "run_shell_command" | "bash" => {
                 let command =
                     input
                         .tool_input
@@ -1699,7 +1804,10 @@ impl Engine {
 
                 Ok(Some(InputSource::Command(CommandSource::Hook(command))))
             }
-            "Write" | "write_file" => {
+            // OpenCode's `write` carries the camelCase Write shape, and its
+            // `edit` the camelCase Edit shape (`filePath`, `oldString`,
+            // `newString`) -- the aliases the deserializer already reads.
+            "Write" | "write_file" | "write" => {
                 let file_path =
                     input
                         .tool_input
@@ -1734,7 +1842,7 @@ impl Engine {
                     })
                 }
             }
-            "Edit" | "replace" => {
+            "Edit" | "replace" | "edit" => {
                 let file_path =
                     input
                         .tool_input

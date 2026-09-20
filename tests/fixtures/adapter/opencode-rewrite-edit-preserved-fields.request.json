@@ -1,0 +1,12 @@
+{
+  "tool": "edit",
+  "sessionID": "ses_2f8a91c4",
+  "callID": "call_01j4frewedt",
+  "args": {
+    "filePath": "deploy/app.yaml",
+    "oldString": "storageClassName: ssd",
+    "newString": "storageClassName: ssd",
+    "replaceAll": false,
+    "reviewer_note": "pin for the spot cluster"
+  }
+}

@@ -239,8 +239,10 @@ enum Commands {
         /// Declare which harness is calling, per the adapter contract.
         ///
         /// Selects the harness adapter and records the harness's non-secret
-        /// identity in evaluation telemetry. Without it the hook serves both
-        /// shipped wire formats exactly as before and records no harness.
+        /// identity in evaluation telemetry. Required for OpenCode, whose
+        /// `tool.execute.before` payload has its own admission path; without
+        /// any declaration the hook serves both shipped wire formats exactly
+        /// as before and records no harness.
         #[arg(long, value_name = "HARNESS")]
         harness: Option<adapter::HarnessId>,
         /// Which hook event is calling, for harnesses whose events have
@@ -1713,12 +1715,17 @@ fn main() -> Result<()> {
 
             // Retain the original tool input so an updatedInput response can
             // replace one field without dropping the other tool arguments.
-            // The declared event owns the stdin admission path: Cursor's
-            // beforeShellExecution payload has no `tool_name`, so the plain
-            // PreToolUse reader would fail it open unchecked.
-            let hook_payload = match event {
-                HookEvent::PreToolUse => engine.read_pre_tool_use_payload_from_stdin()?,
-                HookEvent::BeforeShellExecution => {
+            // The declared harness and event own the stdin admission path:
+            // Cursor's beforeShellExecution payload has no `tool_name`, and
+            // OpenCode's tool.execute.before payload spells the pair
+            // `tool`/`args`, so the plain PreToolUse reader would fail both
+            // open unchecked.
+            let hook_payload = match (harness, event) {
+                (Some(adapter::HarnessId::OpenCode), _) => {
+                    engine.read_opencode_payload_from_stdin()?
+                }
+                (_, HookEvent::PreToolUse) => engine.read_pre_tool_use_payload_from_stdin()?,
+                (_, HookEvent::BeforeShellExecution) => {
                     engine.read_before_shell_execution_payload_from_stdin()?
                 }
             };

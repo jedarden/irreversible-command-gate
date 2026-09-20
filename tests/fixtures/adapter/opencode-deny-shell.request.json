@@ -1,0 +1,8 @@
+{
+  "tool": "bash",
+  "sessionID": "ses_2f8a91c4",
+  "callID": "call_01j4fdenysh",
+  "args": {
+    "command": "git credential fill"
+  }
+}

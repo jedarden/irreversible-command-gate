@@ -1,0 +1,10 @@
+{
+  "action": "rewrite",
+  "args": {
+    "filePath": "deploy/app.yaml",
+    "newString": "storageClassName: sata",
+    "oldString": "storageClassName: ssd",
+    "replaceAll": false,
+    "reviewer_note": "pin for the spot cluster"
+  }
+}

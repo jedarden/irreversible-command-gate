@@ -217,6 +217,61 @@ fn golden_cases() -> Vec<(
             "gemini-cli-replace-rewrite-preserved-fields",
             "pre-tool-use",
         ),
+        // OpenCode: its own tool spellings (`bash`, `write`, `edit`) through
+        // the plugin protocol -- the action envelope. A warn degrades to a
+        // bare allow (no advisory channel on `tool.execute.before`), a
+        // rewrite carries the complete replacement `args` object under
+        // OpenCode's camelCase rewrite key, and a deny names the message the
+        // plugin must throw verbatim.
+        (
+            "opencode-allow-shell",
+            "opencode",
+            SHIPPED_PACKS,
+            "opencode-allow-shell",
+            "pre-tool-use",
+        ),
+        (
+            "opencode-deny-shell",
+            "opencode",
+            SHIPPED_PACKS,
+            "opencode-deny-shell",
+            "pre-tool-use",
+        ),
+        (
+            "opencode-rewrite-shell",
+            "opencode",
+            "command-rewrite-pack",
+            "opencode-rewrite-shell",
+            "pre-tool-use",
+        ),
+        (
+            "opencode-warning-shell",
+            "opencode",
+            WARNING_PACK,
+            "opencode-warning-shell",
+            "pre-tool-use",
+        ),
+        (
+            "opencode-deny-write",
+            "opencode",
+            SHIPPED_PACKS,
+            "opencode-deny-write",
+            "pre-tool-use",
+        ),
+        (
+            "opencode-rewrite-edit-preserved-fields",
+            "opencode",
+            "edit-rewrite-pack",
+            "opencode-rewrite-edit-preserved-fields",
+            "pre-tool-use",
+        ),
+        (
+            "opencode-allow-unsupported-tool",
+            "opencode",
+            SHIPPED_PACKS,
+            "opencode-allow-unsupported-tool",
+            "pre-tool-use",
+        ),
     ]
 }
 
@@ -380,6 +435,72 @@ fn malformed_gemini_input_fails_open_permissively() {
     );
 }
 
+/// The same malformed payload through OpenCode's admission path: the
+/// plugin-protocol reader has its own stdin boundary, and a failure there
+/// must look exactly like the other harnesses' -- a successful process, the
+/// allow action on stdout (the plugin returns normally, args untouched), and
+/// the diagnostic on stderr only. An unparseable payload must never become a
+/// throw, which on OpenCode is a deny.
+#[test]
+fn malformed_opencode_input_fails_open_permissively() {
+    let output = run_hook(
+        &fixture_path("malformed-input", "request.txt"),
+        Some("opencode"),
+        SHIPPED_PACKS,
+    );
+
+    assert!(
+        output.status.success(),
+        "fail-open must leave the hook process successful: {:?}",
+        output.status
+    );
+    let response = stdout_json(&output);
+    assert_eq!(
+        response,
+        json!({ "action": "allow" }),
+        "the allow action is the fail-open shape for a throw-based harness: \
+         failing open must never look like a deny"
+    );
+    assert!(
+        !output.stderr.is_empty(),
+        "the failure is diagnosed on stderr so an operator can see why nothing was checked"
+    );
+}
+
+/// An unmodeled OpenCode tool is `Unsupported` by contract (§3.4) -- a
+/// contract allow, **not** a failure: the allow action on stdout, a
+/// successful process, and no stderr diagnostic, which is what separates it
+/// from the malformed-input boundary above. OpenCode's read-only tools
+/// (`glob`, `grep`, `read`, ...) and MCP keys pass through the same hook;
+/// the PATH-wrapper layer, not this adapter, is the defense for what they
+/// execute.
+#[test]
+fn an_unsupported_opencode_tool_fails_open_quietly_at_the_adapter_level() {
+    let output = run_hook(
+        &fixture_path("opencode-allow-unsupported-tool", "request.json"),
+        Some("opencode"),
+        SHIPPED_PACKS,
+    );
+
+    assert!(
+        output.status.success(),
+        "an unsupported tool is not a failure: {:?}",
+        output.status
+    );
+    assert_eq!(
+        stdout_json(&output),
+        json!({ "action": "allow" }),
+        "the unsupported tool renders the plain allow action: the plugin \
+         returns normally and leaves args untouched"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "an unsupported tool is contract, not failure: no diagnostic is \
+         emitted, got: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// The undecorated hook (the wiring that predates the adapter contract)
 /// must keep serving exactly the envelope the declared Claude Code adapter
 /// serves: adding the contract changed no existing invocation.
@@ -524,12 +645,92 @@ fn undeclared_hook_records_no_harness_identity() {
     );
 }
 
-/// A harness whose adapter is specified but not implemented is refused
-/// before any evaluation: a response the harness cannot read must never be
-/// emitted under its name. (`open-code` is the declared slug for the
-/// specified-but-unimplemented OpenCode wire: it must *parse* -- the refusal
-/// under test is the adapter contract's, not clap's -- and then be refused
-/// because no adapter is implemented for it.)
+/// OpenCode's declaration reaches telemetry as its fixed slug, through its
+/// own admission path, and nothing from the `tool`/`args` payload ever does.
+/// The record's key set is asserted in full, as in the codex-cli test above.
+#[test]
+fn declared_opencode_harness_reaches_telemetry_as_its_slug() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let telemetry_path = temp.path().join("telemetry.json");
+    const MARKER: &str = "OPENCODE-TELEMETRY-MARKER-b41d";
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "hook",
+            "--rule-pack",
+            &pack_path(SHIPPED_PACKS).to_string_lossy(),
+            "--harness",
+            "opencode",
+        ])
+        .env("ICG_TELEMETRY_PATH", &telemetry_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("hook process should start");
+    // A denied `bash` call carrying a payload-only marker: the marker may
+    // not reach the store, which stays verdict-shaped.
+    let payload = json!({
+        "tool": "bash",
+        "sessionID": "ses_telemetry",
+        "callID": "call_telemetry",
+        "args": {
+            "command": format!("git credential fill --marker {MARKER}")
+        }
+    });
+    child
+        .stdin
+        .take()
+        .expect("hook stdin should be available")
+        .write_all(payload.to_string().as_bytes())
+        .expect("hook input should be written");
+    let output = child
+        .wait_with_output()
+        .expect("hook process should finish");
+    assert!(output.status.success(), "hook process should succeed");
+
+    let store: Value = serde_json::from_str(
+        &std::fs::read_to_string(&telemetry_path).expect("telemetry file should exist"),
+    )
+    .expect("telemetry file should parse");
+    let record = &store["window"]["records"][0];
+    assert_eq!(record["harness"], "opencode");
+    assert_eq!(record["verdict"], "denied");
+
+    let mut keys: Vec<&str> = record
+        .as_object()
+        .expect("record should be an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "harness",
+            "release_ref",
+            "session_id",
+            "timestamp",
+            "verdict"
+        ],
+        "evaluation records stay verdict-shaped; a new key must be justified \
+         against the no-payload-data rule before it lands"
+    );
+
+    let raw = std::fs::read_to_string(&telemetry_path).expect("telemetry file should be readable");
+    assert!(
+        !raw.contains(MARKER) && !raw.contains("ses_telemetry") && !raw.contains("call_telemetry"),
+        "request data leaked into telemetry: neither the command marker nor \
+         the OpenCode session/call identifiers may appear in the store"
+    );
+}
+
+/// A harness without an adapter is refused before any evaluation: a response
+/// the harness cannot read must never be emitted under its name. (`wrapper`
+/// is the one remaining harness with no adapter -- its input is OS-parsed
+/// argv, never a payload, so there is no wire format to serve it. It must
+/// *parse* -- the refusal under test is the adapter contract's, not clap's --
+/// and then be refused because no adapter is implemented for it.)
 #[test]
 fn an_unimplemented_harness_is_refused_before_any_evaluation() {
     let temp = tempfile::tempdir().expect("temporary directory should be created");
@@ -541,7 +742,7 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
             "--rule-pack",
             &pack_path(SHIPPED_PACKS).to_string_lossy(),
             "--harness",
-            "open-code",
+            "wrapper",
         ])
         .env("ICG_TELEMETRY_PATH", &telemetry_path)
         .stdin(Stdio::piped())
@@ -558,10 +759,8 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(
-        // The refusal quotes `as_slug()` -- the telemetry slug `opencode` --
-        // while the flag spelling is clap's `open-code`; both name the same
-        // declared harness.
-        stderr.contains("opencode"),
+        // The refusal quotes `as_slug()` -- the telemetry slug `wrapper`.
+        stderr.contains("wrapper"),
         "the refusal names the harness so wiring is fixable, got: {stderr:?}"
     );
     assert!(
@@ -586,7 +785,7 @@ fn an_unimplemented_harness_is_refused_before_any_evaluation() {
         store["window"]["records"]
     );
     assert!(
-        !raw.contains("open-code"),
+        !raw.contains("wrapper"),
         "a refused invocation records no harness identity"
     );
 }
@@ -735,7 +934,11 @@ fn the_canonical_request_carries_the_current_contract_version() {
         "tool_input": { "command": "git status" }
     }))
     .expect("input parses");
-    for harness in [adapter::HarnessId::ClaudeCode, adapter::HarnessId::CodexCli] {
+    for harness in [
+        adapter::HarnessId::ClaudeCode,
+        adapter::HarnessId::CodexCli,
+        adapter::HarnessId::OpenCode,
+    ] {
         let request = adapter::adapter_for(harness)
             .expect("shipped adapter")
             .build_request(&engine, clone_input(&input), None);

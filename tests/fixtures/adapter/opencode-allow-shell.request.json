@@ -1,0 +1,9 @@
+{
+  "tool": "bash",
+  "sessionID": "ses_2f8a91c4",
+  "callID": "call_01j4fallow",
+  "args": {
+    "command": "git status",
+    "workdir": "/project"
+  }
+}

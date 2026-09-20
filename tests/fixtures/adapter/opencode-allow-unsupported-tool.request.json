@@ -1,0 +1,9 @@
+{
+  "tool": "glob",
+  "sessionID": "ses_2f8a91c4",
+  "callID": "call_01j4funsup",
+  "args": {
+    "pattern": "**/*.rs",
+    "path": "/project/crates"
+  }
+}

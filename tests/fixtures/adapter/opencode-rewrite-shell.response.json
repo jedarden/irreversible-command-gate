@@ -1,0 +1,8 @@
+{
+  "action": "rewrite",
+  "args": {
+    "command": "git push origin main",
+    "timeout": 120000,
+    "workdir": "/project"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "tool": "bash",
+  "sessionID": "ses_2f8a91c4",
+  "callID": "call_01j4frewrite",
+  "args": {
+    "command": "git push --force origin main",
+    "timeout": 120000,
+    "workdir": "/project"
+  }
+}

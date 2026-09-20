@@ -46,10 +46,14 @@ state is touched.
 | --- | --- | --- | --- |
 | `ClaudeCode` | `claude-code` | `ClaudeCodeAdapter` (shipped) | `PreToolUse` hook, JSON on stdin/stdout |
 | `CodexCli` | `codex-cli` | `CodexAdapter` (shipped) | `PreToolUse` hook, JSON on stdin/stdout |
-| `OpenCode` | `opencode` | none yet (§6.3) | in-process plugin API |
+| `OpenCode` | `opencode` | `OpenCodeAdapter` (shipped; §6.3) | in-process plugin API; the plugin relays `tool.execute.before` over a subprocess wire |
 | `GeminiCli` | `gemini-cli` | `GeminiCliAdapter` (shipped) | `BeforeTool` command hook, JSON on stdin/stdout |
 | `Cursor` | `cursor` | `CursorAdapter` (shipped), `CursorShellExecutionAdapter` (§6.5) | agent hooks, JSON on stdin/stdout |
 | `Wrapper` | `wrapper` | none (no payload) | shadowed argv via `execvp` |
+
+The `--harness` flag spelling for OpenCode is its slug, `opencode` (clap's
+derived kebab-case `open-code` is accepted as an alias); every other
+harness's flag spelling already equals its slug.
 
 Rules the enum enforces:
 
@@ -90,6 +94,7 @@ A single shell command line → `CanonicalAction::Command`.
 | --- | --- | --- |
 | Claude Code | `Bash` | `tool_input.command` |
 | Codex CLI | `Bash` | `tool_input.command` |
+| OpenCode | `bash` | `args.command` |
 
 The payload wire is snake_case (`tool_name`/`tool_input`); the engine also
 accepts the camelCase aliases (`toolName`/`toolInput`) of ICG's early
@@ -102,6 +107,8 @@ fixtures, on both shipped wires. A rewrite replaces the `command` field.
 | Claude Code | `Write` | `file_path` (alias `filePath`), `content`, optional `encoding`, `mime_type` |
 | Claude Code | `Edit` | `file_path`, `old_string`, `new_string` (aliases `filePath`, `oldString`, `newString`) |
 | Codex CLI | same shapes | same fields |
+| OpenCode | `write` | `filePath`, `content` |
+| OpenCode | `edit` | `filePath`, `oldString`, `newString`, optional `replaceAll` |
 
 `Write` → `CanonicalAction::WriteFile`; `Edit` → `EditFile`. Both evaluate
 against content-mode packs. A Write rewrite replaces `content`; an Edit
@@ -156,7 +163,9 @@ described in [`pretooluse-response-schema.md`](pretooluse-response-schema.md):
 exactly one JSON object on stdout, nothing else on stdout, diagnostics only
 on stderr. `hookEventName: "PreToolUse"` is always set — Codex requires it,
 Claude Code ignores it — which is what lets one envelope serve both shipped
-harnesses.
+harnesses. Gemini CLI, Cursor, and OpenCode override `render` with their own
+native envelopes (§6.4, §6.5, §6.3); the degradation rules below are the
+shared contract those renderers implement.
 
 What a harness's wire can express is declared per adapter as
 `Capabilities`, and degradation is **contract behavior, not adapter
@@ -179,6 +188,7 @@ Shipped capabilities:
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | yes | yes | yes | yes | yes |
 | Codex CLI | **no** | yes | **no** | yes | **no** |
+| OpenCode | yes | **no** | **no** | **no** | **no** (no decision field exists on the wire) |
 
 `honors_additional_context` is informational: the Codex CLI parses
 `additionalContext` but does not yet act on it (see
@@ -256,8 +266,8 @@ exact official source it was taken from.
   schema `codex-rs/hooks/schema/generated/pre-tool-use.command.input.schema.json`
   in `github.com/openai/codex`. Both re-checked 2026-09-18.
 
-### 6.3 OpenCode (specified, not implemented; verified against the
-installed 1.18.29 — addendum §6.3.1)
+### 6.3 OpenCode (implemented; verified against the installed
+1.18.29 — addendum §6.3.1)
 
 - **Protocol:** an **in-process JavaScript/TypeScript plugin API**, not a
   subprocess wire. Plugins live in `.opencode/plugins/` (project) or
@@ -265,12 +275,12 @@ installed 1.18.29 — addendum §6.3.1)
   `plugin` config array, typed by the `@opencode-ai/plugin` SDK. The
   relevant hook is `tool.execute.before`: input `{ tool, sessionID, callID }`,
   output `{ args }`, with `args` mutated in place. There is no stdout
-  envelope to parse.
-- **Mapping when implemented:** `tool` → canonical `tool_name`; `args` →
-  canonical `tool_input` (field spellings per §3). A Deny is delivered by
+  envelope on OpenCode's side of the hook.
+- **Mapping:** `tool` → canonical `tool_name`; `args` → canonical
+  `tool_input` (field spellings per §3). A Deny is delivered by
   **throwing an error from the hook** (OpenCode aborts the tool call); a
   Rewrite by mutating `args` in place before returning. `tool.execute.before`
-  has no advisory-context channel, so OpenCode's capabilities would declare
+  has no advisory-context channel, so OpenCode's capabilities declare
   `supports_additional_context: false` and a Warn degrades to a bare allow
   (§5). The plugin shells out to `icg hook --harness opencode` — the process
   boundary moves inside the plugin, but the canonical request/result and the
@@ -288,6 +298,55 @@ installed 1.18.29 — addendum §6.3.1)
   (deny/rewrite/advisory semantics), both against the installed binary;
   upstream docs at <https://opencode.ai/docs/plugins>, retrieved
   2026-09-18 and re-checked 2026-09-20.
+- **Implementation (ICG):** `OpenCodeAdapter`, served by
+  `icg hook --harness opencode` (the flag spelling is the telemetry slug;
+  clap's derived `open-code` is an alias). The plugin serializes the hook's
+  payload — `tool`, `sessionID`, `callID`, and the mutable `args` object —
+  to the process's stdin, which the engine's OpenCode admission path
+  (`read_opencode_payload_from_stdin`, the same fail-open stdin boundary as
+  every other reader) shapes into the PreToolUse input the shared front end
+  already evaluates. OpenCode's camelCase `args` spellings (`filePath`,
+  `oldString`, `newString`) are the aliases the tool-input deserializer
+  already reads; the tool names `bash`/`write`/`edit` are wired in as
+  spellings of the same three modeled actions, and the canonical request's
+  `tool_name` keeps OpenCode's own spelling. The `args` object — not the
+  whole payload — is what travels as the preserved original, because a
+  rewrite replacement is a replacement *for the args* and the
+  `tool`/`sessionID`/`callID` envelope must never leak into it.
+- **Response envelope (`render_opencode_envelope`):** OpenCode's hook has
+  no envelope to parse — the plugin acts — so the one JSON object on stdout
+  names exactly one action the plugin must take:
+  `{"action": "allow"}` (return normally, `args` untouched — a Warn renders
+  this too, the advisory text dropped per §5);
+  `{"action": "rewrite", "args": {...}}` (the complete replacement args
+  object: every field the harness sent with only the rewrite key
+  substituted, applied by copying its properties onto `output.args`
+  **in place** — reassigning `output.args` is a no-op at every 1.18.29
+  call site, and OpenCode's transcript records the model's original args,
+  so the plugin audits its own rewrites); and
+  `{"action": "deny", "message": "ICG: <attributed reason>"}` (throw
+  `new Error(message)` verbatim — the thrown message is the only
+  model-visible text the gate controls here, reaching the model as
+  `Tool execution failed: ICG: …`, and because the agent loop continues,
+  retries arrive and are gated again). Capabilities:
+  `supports_updated_input: true` (in-place mutation is execution-real),
+  `supports_additional_context: false`, `supports_system_message: false`
+  (practice-mode and bypass banners go to stderr), and
+  `supports_allow_decision: false` as the record of there being no decision
+  field anywhere on this wire.
+- **Coverage boundary:** OpenCode's `apply_patch` tool carries a *list of
+  patch operations* (typed add/update/delete structs), not the `***
+  Begin Patch` text Codex sends, so it does not map onto the engine's patch
+  classification; it fails open at the classification boundary with a
+  stderr diagnostic rather than silently rendering an allow for an
+  unrecognized shape. OpenCode's read-only tools (`read`, `glob`, `grep`,
+  `webfetch`) and MCP namespaced keys are `Unsupported` by contract (§3.4)
+  and render a quiet plain allow. The plugin-side scoping (which tools
+  invoke the gate at all) and the liveness self-verification are the plugin
+  deployment's concerns, on top of this adapter; the PATH-wrapper layer
+  ([`multi-harness-integration.md`](multi-harness-integration.md)) remains
+  the backstop for everything the plugin layer cannot see, including the
+  `--pure` kill switch (§6.3.1, surface §10.2).
 
 #### 6.3.1 Addendum — pinned against the installed 1.18.29 (2026-09-20)
 
@@ -628,7 +687,12 @@ Two boundaries, both inside the engine, both shared by every adapter:
    (naming the fail-open mode) and yields `None`. The hook then emits a
    **plain allow envelope** and exits **0**. Locked by
    `malformed_input_fails_open_with_a_successful_process` against a
-   deliberately truncated fixture.
+   deliberately truncated fixture. The per-harness admission paths —
+   Cursor's `beforeShellExecution` reader and OpenCode's
+   `tool.execute.before` reader, both selected by the declared
+   harness/event rather than by payload sniffing — wrap their reads in the
+   same boundary with the same posture, rendered in each harness's own
+   envelope.
 2. **Unmodelable payload.** After a successful parse,
    `input_source_from_pre_tool_use_fail_open` wraps classification (patch
    parsing, path matching) in a catch-unwind boundary: an error **or panic**
@@ -689,13 +753,20 @@ with `<name>.response.json`:
 | `claude-code-unsupported-tool` | claude-code | shipped | MCP tool → plain allow |
 | `codex-cli-deny-patch` | codex-cli | shipped | `apply_patch` deny |
 | `codex-cli-deny-command` | codex-cli | shipped | command deny |
-| `malformed-input.request.txt` | codex-cli, gemini-cli | shipped | truncated JSON → exit 0, plain allow, stderr diagnostic |
+| `malformed-input.request.txt` | codex-cli, gemini-cli, opencode | shipped | truncated JSON → exit 0, plain allow, stderr diagnostic |
 | `gemini-cli-allow` | gemini-cli | shipped | permissive empty object — no `decision` field |
 | `gemini-cli-deny-shell` | gemini-cli | shipped | top-level `decision`/`reason` deny of `run_shell_command` |
 | `gemini-cli-rewrite-shell` | gemini-cli | fixture `command-rewrite-pack` | `hookSpecificOutput.tool_input` rewrite preserving unmodeled fields |
 | `gemini-cli-warning-shell` | gemini-cli | shared `warning-verdict` pack | warn degraded to bare allow + `systemMessage` |
 | `gemini-cli-deny-write-file` | gemini-cli | shipped | deny of `write_file` (snake_case aliases inbound) |
 | `gemini-cli-replace-rewrite-preserved-fields` | gemini-cli | fixture `edit-rewrite-pack` | rewrite of a `replace` preserving unmodeled fields |
+| `opencode-allow-shell` | opencode | shipped | allow action over `bash`/`command` |
+| `opencode-deny-shell` | opencode | shipped | deny action; the message is what the plugin throws |
+| `opencode-rewrite-shell` | opencode | fixture `command-rewrite-pack` | `args.command` rewrite preserving `timeout`/`workdir` |
+| `opencode-warning-shell` | opencode | shared `warning-verdict` pack | warn degraded to the bare allow action |
+| `opencode-deny-write` | opencode | shipped | deny of `write` (`filePath`/`content` inbound) |
+| `opencode-rewrite-edit-preserved-fields` | opencode | fixture `edit-rewrite-pack` | rewrite of `edit` under the camelCase `newString` key, preserving `replaceAll` |
+| `opencode-allow-unsupported-tool` | opencode | shipped | unmodeled tool → quiet allow action |
 
 The rewrite goldens use dedicated fixture packs so their reasons stay
 deterministic; the allow/deny/warning goldens deliberately run against the
