@@ -256,7 +256,8 @@ exact official source it was taken from.
   schema `codex-rs/hooks/schema/generated/pre-tool-use.command.input.schema.json`
   in `github.com/openai/codex`. Both re-checked 2026-09-18.
 
-### 6.3 OpenCode (specified, not implemented)
+### 6.3 OpenCode (specified, not implemented; verified against the
+installed 1.18.29 — addendum §6.3.1)
 
 - **Protocol:** an **in-process JavaScript/TypeScript plugin API**, not a
   subprocess wire. Plugins live in `.opencode/plugins/` (project) or
@@ -274,10 +275,96 @@ exact official source it was taken from.
   (§5). The plugin shells out to `icg hook --harness opencode` — the process
   boundary moves inside the plugin, but the canonical request/result and the
   engine are exactly as specified here.
-- **Versioning:** the plugin API has no wire-protocol version field; the
-  docs page below is normative.
-- **Source:** <https://opencode.ai/docs/plugins> (official plugin
-  documentation), retrieved 2026-09-18.
+- **Versioning:** the plugin API has no wire-protocol version field.
+  This bullet originally called the docs page normative — corrected by the
+  §6.3.1 addendum: the docs track *current upstream* (today 1.18.31), not
+  the installed pin; the normative artifact for the V1 target is the
+  installed binary and its bundled SDK types, both sha256-pinned.
+- **Sources:** pinned evidence in
+  [`opencode-1.18.29-plugin-surface.md`](../research/opencode-1.18.29-plugin-surface.md)
+  (hook inventory §2–§7, registration/failure §10, post-1.18.29 drift §12)
+  and
+  [`opencode-1.18.29-deny-rewrite-advisory.md`](../research/opencode-1.18.29-deny-rewrite-advisory.md)
+  (deny/rewrite/advisory semantics), both against the installed binary;
+  upstream docs at <https://opencode.ai/docs/plugins>, retrieved
+  2026-09-18 and re-checked 2026-09-20.
+
+#### 6.3.1 Addendum — pinned against the installed 1.18.29 (2026-09-20)
+
+§6.3 above was written from the current docs site. It has since been
+verified against the binary actually installed on codinghome — `opencode`
+**1.18.29**, binary sha256 `ca6c0e1f…`, plugin SDK `@opencode-ai/plugin`
+1.18.29 (`index.d.ts` sha256 `f3ec1a15…`) — and corrected where the two
+disagree. Every claim below traces to that version's evidence: `.d.ts`
+file:line citations or byte offsets in the pinned binary, recorded in the
+two research files named under **Sources** above (the *surface* and
+*semantics* references in the table).
+
+**Assumption scorecard for the original §6.3 text:**
+
+| §6.3 assumption | Verdict | Evidence |
+| --- | --- | --- |
+| in-process JS/TS plugin API, no stdout envelope | **held** | surface §4.2 — `Plugin.trigger` calls hooks in-process and discards return values |
+| registration via `.opencode/plugins/`, `~/.config/opencode/plugins/`, npm `plugin` array | **held, under-complete** | surface §10.1 — both `plugin`/`plugins` dir spellings plus `plugin` arrays in the global config, project configs, `.opencode/opencode.json`, env and remote channels; origin order global→project; last-declaration-wins dedupe; readdir-unsorted dir globs |
+| hook `tool.execute.before`, input `{ tool, sessionID, callID }`, output `{ args }` | **held exactly** | surface §4.1 (`index.d.ts:235-241`); binary trigger-site offsets in surface §2 |
+| `tool` → `tool_name`, `args` → `tool_input` (§3) | **held; per-tool spellings now pinned** | surface §4.4–4.5 — `bash {command, timeout?, workdir?}`, `edit {filePath, oldString, newString, replaceAll?}`, `write {filePath, content}`, `apply_patch` patch-op list; OpenCode's camelCase spellings are the §3.2 aliases |
+| Deny delivered by throwing; OpenCode aborts the tool call | **held, strengthened** | semantics §1 — the throw lands before execution **and before the permission ask** (no prompt is raised for a call about to be denied) and does **not** end the agent loop; the model receives `Tool execution failed: <message>` as its tool result |
+| Rewrite by mutating `args` in place | **held as the only working form** | semantics §2 — hook and executor share one args object at all three wrapper sites, so property mutation is what executes; **reassigning `output.args` is a no-op**; the transcript records the model's *original* args, so the adapter must audit its own rewrites |
+| no advisory channel → `supports_additional_context: false`; a Warn degrades to a bare allow | **flag held; degradation statement was incomplete** | semantics §3 — no channel at tool-call time is confirmed (output is `{args}` only, returns discarded), so a non-blocking Warn is a bare allow; but **deny-with-message** is a second, model-visible degraded render at the same call site. Escalating a Warn to it is a policy choice, never adapter discretion (§5) |
+| "no wire-protocol version field; the docs page is normative" | **wrong** | no version field is right, but the docs page tracks current upstream and is already a *subset* of the binary's registration matrix (surface §10.1); the pin is the sha256-pinned binary + bundled types (surface §1) |
+| *(assumed upstream of §6.3, in the umbrella bead)* `shell.create.before` / `permission.evaluate` as candidate gate hooks | **wrong — neither exists** | surface §2 — zero binary matches under any spelling; `permission.ask` is declared but never fired (surface §5.2); `shell.env` exists but is env-injection, fires after permission approval, and cannot veto (surface §5.1) |
+
+**Design constraints for the OpenCode adapter** (same evidence):
+
+- **Deny** = `throw new Error("ICG: <one-line attributed reason>")`. The
+  thrown message is the only model-visible text the gate controls; it
+  reaches the model as `Tool execution failed: ICG: …`, and because the
+  agent loop continues, retries arrive and are gated again.
+- **Rewrite** = in-place property mutation under the request's own field
+  spelling; the adapter records every rewrite itself — OpenCode's
+  transcript will not show that one happened.
+- **Warn** = bare allow (no channel). `tool.execute.after` output mutation
+  is post-hoc audit only — execution already happened; it is never a
+  fallback gate (surface §7).
+- **Allow** = return without throwing and without touching `args` — there
+  is no decision field to spell, so §5's allow-degradation distinction
+  collapses to "did the hook throw". Capabilities when implemented:
+  `supports_additional_context: false`, `supports_updated_input: yes`
+  (in-place mutation is execution-real).
+- **Registration** = one file in the global plugin dir
+  (`~/.config/opencode/plugin/`, singular spelling honored) or a `file://`
+  entry in the global config's `plugin` array; never an npm spec (install
+  machinery + compatibility gate); no reliance on filename order within a
+  plugin dir (surface §10.1, §10.5).
+- **Liveness** = the gate must self-verify: a plugin that fails to load is
+  dropped **quietly** — import-stage failures leave no log line at all —
+  and `opencode debug info` lists registrations, not loads (surface
+  §10.3–§10.5). `--pure`/`OPENCODE_PURE` silently disables every external
+  plugin; that hole is named residual risk, backstopped by the
+  PATH-wrapper layer
+  ([`multi-harness-integration.md`](multi-harness-integration.md)).
+- The plugin still shells out to `icg hook --harness opencode`; the
+  process boundary moves inside the plugin, and the canonical
+  request/result and engine are exactly as specified here.
+
+**Decision — V1/V2 go/no-go (pinned 2026-09-20):**
+
+> **V1 — the installed 1.18.29 — GO: the sole support target, pinned by
+> binary sha256 and verified end to end. V2 — any plugin API after
+> 1.18.29 — NO-GO: nothing published after 1.18.29 diverges (the latest
+> SDK 1.18.31 ships a byte-identical `dist/` tree; releases 1.18.30 and
+> 1.18.31 touch nothing plugin-side; the current docs describe the same
+> surface — surface §12), so there is no V2 to be compatible with, and
+> speculative compatibility code would weaken the V1 pin. The single
+> plugin file targets the 1.18.29 surface only, with no runtime version
+> probing.**
+
+The identical-types fact means that same file is *expected* to load
+unchanged on 1.18.30/1.18.31 — a types-level expectation, not a support
+claim. Re-pin triggers are listed in surface §12.3 (a changed `index.d.ts`
+sha256, a plugin-side release note, a changed installed `opencode`, or a
+changed docs hook surface); any trigger opens a **new pinned
+investigation**, never a runtime guess in the plugin.
 
 ### 6.4 Gemini CLI (implemented)
 

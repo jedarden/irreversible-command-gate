@@ -515,3 +515,95 @@ for off,ln,label in [(98341007,120,"B = publish Event.Error"),
     print(f"== {label} @{off} =="); print(d[off:off+ln].decode("utf-8","replace")); print()
 EOF
 ```
+
+## 12. Version drift after 1.18.29 — the V1/V2 go/no-go input (bead `irrevers-99d63f22`)
+
+The umbrella (`irrevers-9ec1c141`) requires an explicit V1/V2 go/no-go:
+*"support and test the installed V1 1.18.29 API, and add V2 compatibility
+only if it can share the package without weakening V1."* This section pins
+what actually changed in the plugin API **after** 1.18.29, by comparing
+the installed artifacts (§1) against everything published since. Checked
+2026-09-20; §12.5 reproduces every step.
+
+### 12.1 What exists after 1.18.29
+
+| Artifact | Finding | Evidence |
+|---|---|---|
+| `opencode-ai` (launcher pkg) | latest npm release is **1.18.31** (2026-09-14); 1.18.30 (2026-09-09). **No `2.x` version exists anywhere in the package's publish history** (`grep -c '"2\.'` over the full `versions` list → 0) | `npm view opencode-ai versions/time --json` |
+| `@opencode-ai/plugin` (the SDK whose `.d.ts` §2–§7 cite) | latest is **1.18.31**, same dates; **no `2.x` in its history either** (grep → 0) | `npm view @opencode-ai/plugin versions --json` |
+| dist-tags | `latest = 1.18.31` on both packages. Every other tag is a `0.0.0-`-prefixed CI/snapshot build (`next`, `beta`, `dev`, `tui-v2`, …) — `tui-v2` is a TUI rendering line, not a plugin API. `latest-0`/`latest-1` are historical pre-1.x markers (`1.0.142`, `1.1.4`) | `npm view … dist-tags --json` |
+| Plugin SDK types | the `dist/` tree of 1.18.30 **and** 1.18.31 is **byte-identical** to the installed 1.18.29: whole-tree `diff -r` clean against the installed copy; `dist/index.d.ts` sha256 = `f3ec1a15…` (the §1 pin) in all three. The **entire published package** differs from installed 1.18.29 only in two `package.json` strings: its own `version` and its pinned `@opencode-ai/sdk` dependency version | `npm pack @opencode-ai/plugin@1.18.30/1.18.31`, `diff -r`, full-`package.json` `diff` |
+| SDK generated types | `@opencode-ai/sdk` 1.18.31 `dist/gen/types.gen.d.ts` is byte-identical to the installed 1.18.29 copy (sha256 `1fdbed5b…`, §1) | `npm pack @opencode-ai/sdk@1.18.31` + `diff` |
+| Changelog (GitHub releases) | v1.18.30: model/provider catalog work (Astra system prompt for GPT-6, Bedrock DeepSeek IDs, Azure/OpenAI SDK compat, GitLab reasoning variants). v1.18.31: ACP session restore, TUI remote-config auth errors, Copilot adaptive thinking, dependency bumps. **Nothing in either release touches plugin hooks, plugin loading/registration, or the plugin host.** | `gh api repos/sst/opencode/releases/tags/v1.18.30` and `…/v1.18.31` |
+| Current upstream docs | opencode.ai/docs/plugins (page footer "Current Version: v1.18.31", retrieved 2026-09-20) still documents exactly the surface §2–§7 pin: `tool.execute.before` with the bash example mutating `output.args.command` **in place**; deny-by-throw (`throw new Error("Do not read .env files")` inside `tool.execute.before`); `shell.env` as env injection; custom tools via the `tool` hook; the same three registration channels; load order global config → project config → global plugin dir → project plugin dir; npm plugins auto-installed with Bun and cached under `~/.cache/opencode/node_modules`. **No new pre-tool gate hook, no advisory channel, no API version field.** The docs remain a *subset* of the binary's channel matrix (§10.1: the singular `plugin/` spellings and the extra config-array channels are undocumented) | retrieved 2026-09-20 |
+
+### 12.2 Verdict: nothing diverged
+
+Between the installed 1.18.29 and everything published since (through
+1.18.31, the current `latest`), **the plugin API's type surface did not
+change by one byte**, no release note touches the plugin system, and the
+current docs describe the same API the pinned binary implements. There is
+no "V2 plugin API" in existence — not on npm, not in dist-tags, not in
+the docs. "What changed after 1.18.29" is: **nothing**, at every layer an
+ICG adapter would touch.
+
+### 12.3 The go/no-go this forces
+
+Stated normatively in the §6.3 addendum of
+`docs/notes/harness-adapter-contract.md`: **V1 (installed 1.18.29) — GO,
+sole support target; V2 — NO-GO: no divergent API exists to target, and
+speculative compatibility code (untestable against any released artifact)
+is precisely what would weaken the V1 pin.** The identical-types fact
+means the *same plugin file* is expected to load unchanged on
+1.18.30/1.18.31 — a types-level expectation only, not a support claim;
+the pin and all binary-level evidence behind it remain 1.18.29.
+
+Re-pin triggers (any one): a `@opencode-ai/plugin` release whose
+`dist/index.d.ts` sha256 differs from `f3ec1a15…`; an upstream release
+note touching plugin hooks/loading/registration; the installed `opencode`
+on codinghome moving off 1.18.29; or the docs documenting a changed hook
+surface. A trigger means a **new pinned investigation** under the
+umbrella — never a runtime version guess inside the plugin.
+
+### 12.4 Provenance of this check
+
+- Installed side re-verified 2026-09-20: `opencode --version` → `1.18.29`;
+  binary sha256 → `ca6c0e1f…` (unchanged from §1 and §10.6).
+- Registry side: `npm view` against the public npm registry, 2026-09-20.
+- Tarballs fetched with `npm pack` into a disposable `/tmp` directory and
+  removed after the diffs were captured; nothing under the shared
+  `~/.config/opencode` was written.
+
+### 12.5 Reproduction
+
+```bash
+opencode --version                                   # 1.18.29
+sha256sum ~/.local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64/bin/opencode
+# → ca6c0e1f42be3120595bf6848937e7586ec862c87fa7aa111e89c7cc6e9a4650
+
+npm view opencode-ai version                         # 1.18.31
+npm view @opencode-ai/plugin version                 # 1.18.31
+npm view opencode-ai versions --json | grep -c '"2\.'         # 0
+npm view @opencode-ai/plugin versions --json | grep -c '"2\.' # 0
+npm view opencode-ai dist-tags --json                # latest 1.18.31; rest 0.0.0-*
+npm view opencode-ai time --json | grep -E '"1\.18\.(29|30|31)"'
+
+D=$(mktemp -d) && cd "$D"
+npm pack @opencode-ai/plugin@1.18.30 @opencode-ai/plugin@1.18.31 @opencode-ai/sdk@1.18.31
+mkdir p30 p31 s31
+tar xzf opencode-ai-plugin-1.18.30.tgz -C p30
+tar xzf opencode-ai-plugin-1.18.31.tgz -C p31
+tar xzf opencode-ai-sdk-1.18.31.tgz -C s31
+diff -r ~/.config/opencode/node_modules/@opencode-ai/plugin/dist p31/package/dist   # empty
+diff -r p30/package/dist p31/package/dist                                           # empty
+sha256sum p31/package/dist/index.d.ts
+# → f3ec1a150d1354be3c9d93928fa130edc118c63fb468533ebb01eb3d6ed77f92
+diff ~/.config/opencode/node_modules/@opencode-ai/sdk/dist/gen/types.gen.d.ts \
+      s31/package/dist/gen/types.gen.d.ts                                           # empty
+cd / && rm -rf "$D"
+
+gh api repos/sst/opencode/releases/tags/v1.18.30 --jq '.published_at, .body'  # no plugin items
+gh api repos/sst/opencode/releases/tags/v1.18.31 --jq '.published_at, .body'  # no plugin items
+# docs: https://opencode.ai/docs/plugins (retrieved 2026-09-20) — same hook
+# surface, examples, and registration channels as §2–§7 / §10.1
+```
