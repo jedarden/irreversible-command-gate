@@ -1,0 +1,1150 @@
+#!/usr/bin/env python3
+"""Prove Gemini CLI deny/rewrite gate execution end-to-end against harmless fake targets.
+
+The adapter contract (docs/notes/harness-adapter-contract.md §6.4) ships a
+Gemini CLI `BeforeTool` adapter, and its tests pin the envelopes it renders --
+but unit tests assert what OUR code emits, not what Gemini CLI's harness does
+with it. This script is the missing half: it plays Gemini CLI's side of the
+wire, built strictly from the published hook documentation, and proves by
+execution that a deny stops a harmless fake target while the session continues
+after the denial, that an allow passes through, that a rewrite's replacement
+input is what actually runs, and that an unmodeled/MCP tool name never routes
+to ICG at all.
+
+Gemini CLI is not installed here (and its hooks fire inside a live model
+session), so the harness-side interpretation is implemented from the official
+documentation (re-checked 2026-09-20):
+
+  docs/hooks/reference.md in github.com/google-gemini/gemini-cli
+    - `settings.json` carries a `hooks` object; each event (here `BeforeTool`)
+      is an array of hook definition groups: {matcher?, sequential?, hooks:
+      [{type: "command", command, timeout?}]}. `matcher` is a REGEX compared
+      against the tool name; built-in tools are named like `run_shell_command`,
+      `write_file`, `replace`, `read_file`; MCP tools follow the `mcp__`
+      naming pattern. `timeout` is in MILLISECONDS, default 60000.
+    - Input (stdin JSON): session_id, transcript_path, cwd, hook_event_name,
+      timestamp, plus the per-event tool_name, tool_input (object), optional
+      mcp_context (MCP tool calls) and original_request_name.
+    - Exit 0: success -- stdout is parsed as the decision JSON ("preferred for
+      all logic"), and "silence is mandatory": stdout must carry exactly one
+      JSON object, nothing else.
+    - Exit 2: system block; stderr becomes the rejection reason; the turn
+      continues.
+    - Any other exit, a crash, or a timeout: a WARNING, non-fatal, the CLI
+      continues. The schema has no fail-closed knob at all -- Gemini's
+      dispatch is natively fail-open (the installer therefore writes a
+      bounded `timeout` only).
+    - decision: "deny" (alias "block") prevents the tool call; reason is
+      REQUIRED when denied and is sent to the agent as the tool error,
+      "allowing it to respond or retry" -- a denial is non-fatal for the
+      session, which is property (b) below.
+    - hookSpecificOutput.tool_input is an object that MERGES WITH AND
+      OVERRIDES the model's arguments field-by-field before execution --
+      the rewrite channel. ICG renders the complete replacement and lets
+      Gemini CLI merge it.
+
+What gets proven here, against the SHIPPED packs (not a synthetic one) and
+harmless fake targets only:
+
+  S0  The dispatch interpretation itself, self-checked against stub hooks
+      (deny, the "block" alias, the permissive empty object, exit 2, exit 3,
+      the millisecond timeout, unparsable stdout, the tool_input
+      merge-override, and the two foreign-envelope controls that make ICG's
+      `decision` spelling load-bearing), so the ICG scenarios below are
+      known to run through faithful semantics.
+  S1  BeforeTool DENY: `bao kv put ... password=hunter2` (the openbao
+      inline-secret-literal rule) wrapping a marker-creating redirection.
+      The deny means the command never reaches a shell: the marker file
+      does not exist afterwards and the bao shim is never invoked.
+  S2  The session continues after the denial (b) and an allow passes
+      through (c): the follow-up call in the SAME session_id is still
+      gated -- the hook answers again -- allowed by the permissive empty
+      object, and executes. The denial was a tool error for the agent,
+      not a dead session and not a dead gate.
+  S3  BeforeTool REWRITE (d): `git push --force origin main` in a
+      deliberately diverged scratch clone. hookSpecificOutput.tool_input
+      carries the complete replacement input; the documented
+      merge-override yields `git push origin main` as the command that
+      actually runs (PATH-shim ground truth, non-fast-forward rejection,
+      baseline commit survives on the diverged scratch remote), and the
+      input's other fields survive the merge intact.
+  S4  Matcher scoping (e): with the installer's entry as the ONLY
+      BeforeTool configuration, unmodeled tool names (MCP
+      `mcp__fs__write_file` and `mcp_fs_write_file`, read-only `read_file`,
+      `google_web_search`, and the near-collisions `safe_write_file` /
+      `replace_all`) select ZERO hooks -- ICG is never invoked and the call
+      proceeds -- while each of the three modeled names selects exactly the
+      ICG hook. A search-semantics control shows an UNANCHORED `write_file`
+      matcher would have routed the MCP names to ICG: the anchors are
+      load-bearing.
+  S5  Hygiene: verdict-shaped telemetry only, the denial recorded in the
+      operational log with the command text redacted, every artifact under
+      the scratch tree.
+
+The configuration the dispatch runs against is produced by the REAL
+installer (`icg install-gemini-hooks`) against a scratch project seeded with
+unrelated settings and an unrelated event array, and the dispatcher runs the
+hook command exactly as it reads it from the installed settings.json -- the
+proof exercises the installer's output, not a hand-built copy of it.
+
+Every artifact lives under one mktemp -d scratch tree (under /tmp) which is
+removed on success (all targets harmless, nothing left behind) and
+deliberately left on failure for diagnosis. Hook-side state (telemetry,
+denial log, session state, health) is redirected into the scratch tree so
+the run never touches the host's live caches. Exit code is 0 only when every
+assertion held.
+
+Usage:
+  scripts/gemini-dispatch-e2e [--icg-bin PATH] [--keep] [--repo-root DIR]
+
+  --icg-bin     skip the build and drive this binary instead
+  --keep        keep the scratch tree on success for inspection
+  --repo-root   defaults to the parent of this script's directory
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Gemini CLI's documented dispatch semantics
+# ---------------------------------------------------------------------------
+
+#: The installed BeforeTool matcher (src/gemini_hooks.rs): anchored to the
+#: three tool names the adapter models. The anchors are the scoping
+#: guarantee under test in S4.
+INSTALLED_MATCHER = "^(run_shell_command|write_file|replace)$"
+
+#: Denial decisions Gemini's hook reader acts on. "block" is a documented
+#: alias of "deny"; a top-level decision: "allow" is NOT part of the deny
+#: set -- and ICG never emits one (its BeforeTool impact is unspecified).
+DENY_DECISIONS = {"deny", "block"}
+
+
+class Decision:
+    """One hook run interpreted the way Gemini CLI's docs say to interpret it."""
+
+    def __init__(self, proceeds, reason="", tool_input_override=None, detail=""):
+        self.proceeds = proceeds
+        self.reason = reason
+        self.tool_input_override = tool_input_override
+        self.detail = detail
+
+    def as_dict(self):
+        out = {"proceeds": self.proceeds, "interpretation": self.detail}
+        if self.reason:
+            out["reason"] = self.reason
+        if self.tool_input_override is not None:
+            out["tool_input_override"] = self.tool_input_override
+        return out
+
+
+def interpret_before_tool(rc, stdout, stderr, timed_out):
+    """Interpret one BeforeTool command hook result per the docs.
+
+    Returns a Decision. This is the load-bearing function of the proof: it
+    encodes the three documented outcomes -- exit 0 (stdout parsed as the
+    decision JSON), exit 2 (block, stderr as the rejection reason), and
+    everything else (non-fatal warning, the CLI continues). There is no
+    fail-closed knob in Gemini's schema, so no failure can ever become a
+    block here; the only blocking documents are a decision deny/block
+    carrying its required reason, or an exit 2.
+    """
+    if timed_out or rc is None or rc < 0 or rc not in (0, 2):
+        # Crash (signal), timeout, or any non-0/non-2 exit: a documented
+        # non-fatal warning -- the CLI continues with the tool call.
+        failure = f"hook failure (rc={rc}, timed_out={timed_out})"
+        return Decision(True, detail=f"{failure}; a documented non-fatal warning -- the CLI continues")
+    if rc == 2:
+        return Decision(
+            False,
+            reason=stderr.strip(),
+            detail="exit 2 blocks; stderr is the rejection reason and the turn continues",
+        )
+    # Exit 0: stdout is the decision document -- exactly one JSON object.
+    text = stdout.strip()
+    try:
+        doc = json.loads(text) if text else None
+    except json.JSONDecodeError as error:
+        return Decision(
+            True,
+            detail=(
+                f"exit 0 but stdout is not JSON ({error}); the docs define no "
+                "decision for this and there is no fail-closed knob -- "
+                "non-fatal warning, the call proceeds"
+            ),
+        )
+    if doc is None:
+        return Decision(
+            True,
+            detail=(
+                "exit 0 with silent stdout; the docs demand silence but define "
+                "no decision for it -- non-fatal warning, the call proceeds"
+            ),
+        )
+    if not isinstance(doc, dict):
+        return Decision(
+            True,
+            detail=(
+                f"exit 0 stdout is a {type(doc).__name__}, not an object; no "
+                "decision to read -- non-fatal warning, the call proceeds"
+            ),
+        )
+    decision = doc.get("decision")
+    if decision in DENY_DECISIONS:
+        reason = doc.get("reason")
+        if not isinstance(reason, str) or not reason:
+            return Decision(
+                False,
+                detail=(
+                    f"decision {decision!r} without the required reason -- the "
+                    "call is blocked with an empty tool error"
+                ),
+            )
+        return Decision(
+            False,
+            reason=reason,
+            detail=(
+                f'decision "{decision}" blocks the call; reason goes to the '
+                "agent as the tool error and the turn continues"
+            ),
+        )
+    override = None
+    nested = doc.get("hookSpecificOutput")
+    if isinstance(nested, dict) and isinstance(nested.get("tool_input"), dict):
+        override = nested["tool_input"]
+    detail = "no deny decision on stdout; the call proceeds"
+    if override is not None:
+        detail += (
+            " with hookSpecificOutput.tool_input merging over the model's arguments"
+        )
+    return Decision(True, tool_input_override=override, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# Evidence plumbing
+# ---------------------------------------------------------------------------
+
+CHECKS = []
+
+
+def check(label, condition, detail=""):
+    CHECKS.append((label, bool(condition)))
+    print(f"    [{'PASS' if condition else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""))
+    return bool(condition)
+
+
+def show(title, payload):
+    print(f"    {title}: {json.dumps(payload)}")
+
+
+# ---------------------------------------------------------------------------
+# The dispatch harness (what Gemini CLI does between the model and the tool)
+# ---------------------------------------------------------------------------
+
+class Dispatcher:
+    """Drives hooks exactly as Gemini CLI's documented dispatch would and
+    executes the surviving tool call. One instance carries the scratch-tree
+    paths; `hook_log` is the ground truth of what actually routed to ICG."""
+
+    def __init__(self, project, exec_log, hook_log, hook_env, exec_env):
+        self.project = project
+        self.exec_log = exec_log
+        self.hook_log = hook_log
+        self.hook_env = hook_env
+        self.exec_env = exec_env
+
+    @staticmethod
+    def hook_matches(matcher, tool_name):
+        """Gemini matcher semantics: a REGEX compared against the tool name
+        (the docs' example is `read_.*` matching all file-reading tools),
+        implemented as a search -- the permissive reading. An absent or
+        empty matcher matches everything. ICG's installed matcher is
+        anchored, so for it the search/full-match choice never differs."""
+        if not matcher:
+            return True
+        return re.search(matcher, tool_name) is not None
+
+    def run_hook(self, command, payload, timeout_ms):
+        """Run one hook: payload on stdin, per-hook timeout in MILLISECONDS."""
+        self.hook_log.append(command)
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=self.project,
+                input=json.dumps(payload).encode(),
+                capture_output=True,
+                timeout=timeout_ms / 1000.0,
+                env=self.hook_env,
+            )
+            return proc.returncode, proc.stdout.decode(errors="replace"), proc.stderr.decode(errors="replace"), False
+        except subprocess.TimeoutExpired as expired:
+            stdout = (expired.stdout or b"").decode(errors="replace")
+            stderr = (expired.stderr or b"").decode(errors="replace")
+            return None, stdout, stderr, True
+
+    def dispatch(self, settings_file, payload, stand_in=None):
+        """Select BeforeTool hooks from an installed settings.json by the
+        documented matcher semantics, run the matches, merge their verdicts,
+        and execute the surviving tool call.
+
+        `stand_in` is the harmless command that stands in for a non-shell
+        tool's execution (an MCP or file tool is not a shell command; the
+        scenarios that use it prove routing, and the stand-in makes the
+        admission observable).
+        """
+        config = json.loads(Path(settings_file).read_text())
+        groups = config.get("hooks", {}).get("BeforeTool")
+        if not isinstance(groups, list):
+            raise SystemExit(f"{settings_file} carries no BeforeTool array")
+
+        # The model's arguments, merged with (overridden field-by-field by)
+        # every hookSpecificOutput.tool_input a hook returns -- the docs'
+        # "merges with and overrides" semantics.
+        merged_input = dict(payload["tool_input"])
+        blocked = None
+        runs = []
+        for group in groups:
+            matcher = group.get("matcher", "")
+            if not self.hook_matches(matcher, payload["tool_name"]):
+                continue
+            for entry in group.get("hooks", []):
+                if entry.get("type", "command") != "command":
+                    continue
+                rc, stdout, stderr, timed_out = self.run_hook(
+                    entry["command"], payload, entry.get("timeout", 60000)
+                )
+                decision = interpret_before_tool(rc, stdout, stderr, timed_out)
+                runs.append(
+                    {
+                        "command": entry["command"],
+                        "matcher": matcher,
+                        "exit": rc,
+                        "timed_out": timed_out,
+                        "stdout": stdout.strip(),
+                        "decision": decision.as_dict(),
+                    }
+                )
+                if not decision.proceeds:
+                    blocked = decision
+                elif decision.tool_input_override is not None:
+                    merged_input.update(decision.tool_input_override)
+
+        executed = None
+        exec_rc = None
+        if blocked is None:
+            if payload["tool_name"] == "run_shell_command":
+                executed = merged_input["command"]
+                cwd = merged_input.get("directory") or payload.get("cwd") or self.project
+                proc = subprocess.run(
+                    executed,
+                    shell=True,
+                    cwd=cwd,
+                    capture_output=True,
+                    env=self.exec_env,
+                )
+                exec_rc = proc.returncode
+            elif stand_in:
+                executed = stand_in
+                proc = subprocess.run(
+                    stand_in, shell=True, capture_output=True, env=self.exec_env
+                )
+                exec_rc = proc.returncode
+        return {
+            "matched": len(runs),
+            "runs": runs,
+            "merged_input": merged_input,
+            "blocked": blocked,
+            "executed": executed,
+            "exec_rc": exec_rc,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Scratch-tree construction
+# ---------------------------------------------------------------------------
+
+def write_executable(path, text):
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def build_icg(repo_root, target_dir):
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target_dir))
+    proc = subprocess.run(
+        ["cargo", "build", "--release", "--locked"],
+        cwd=repo_root,
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"cargo build --release failed with exit {proc.returncode}")
+    binary = target_dir / "release" / "icg"
+    if not binary.exists():
+        raise SystemExit(f"build reported success but {binary} is missing")
+    return binary
+
+
+def git_env(base_env):
+    return dict(
+        base_env,
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_SYSTEM="/dev/null",
+    )
+
+
+def make_git_fixture(scratch, base_env):
+    """A diverged clone: the remote holds BASELINE, the clone holds DIVERGENT.
+
+    Only a force-push could move the remote to DIVERGENT; a plain push is
+    rejected as non-fast-forward. That asymmetry is what makes the rewrite
+    substitution observable in S3.
+    """
+    remote = scratch / "remote.git"
+    work = scratch / "work"
+    env = git_env(base_env)
+    identity = ["-c", "user.name=icg-e2e", "-c", "user.email=icg-e2e@invalid"]
+
+    def git(*args, cwd=None):
+        subprocess.run(
+            ["git", *identity, *args],
+            cwd=cwd or scratch,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+
+    def head(cwd):
+        return subprocess.run(
+            ["git", *identity, "rev-parse", "HEAD"],
+            cwd=cwd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("-c", "init.defaultBranch=main", "init", "--bare", str(remote))
+    git("clone", str(remote), str(work))
+    (work / "file.txt").write_text("baseline\n")
+    git("add", "file.txt", cwd=work)
+    git("commit", "-m", "baseline", cwd=work)
+    git("push", "origin", "main", cwd=work)
+    baseline = head(work)
+    git("commit", "--amend", "-m", "divergent", cwd=work)
+    divergent = head(work)
+    assert baseline != divergent, "amend must produce a divergent commit"
+    return remote, work, baseline, divergent
+
+
+def rev_parse(cwd, ref, base_env):
+    """Resolve a ref in a repository directory (work tree or bare)."""
+    return subprocess.run(
+        ["git", "rev-parse", ref],
+        cwd=cwd,
+        env=git_env(base_env),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def exec_log_lines(exec_log):
+    if not exec_log.exists():
+        return []
+    return [line for line in exec_log.read_text().splitlines() if line.strip()]
+
+
+def seed_settings(project):
+    """Unrelated settings and an unrelated event array, written BEFORE the
+    installer runs -- the dispatch config must be the installer's MERGE
+    output, and the unrelated values must survive it verbatim."""
+    gemini_dir = project / ".gemini"
+    gemini_dir.mkdir(parents=True)
+    settings = gemini_dir / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "model": "gemini-2.5-pro",
+                "theme": "auto",
+                "hooks": {
+                    "AfterTool": [
+                        {
+                            "matcher": "",
+                            "hooks": [{"type": "command", "command": "echo audit"}],
+                        }
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return settings
+
+
+def run_installer(icg_bin, project, packs, base_env):
+    return subprocess.run(
+        [
+            str(icg_bin),
+            "install-gemini-hooks",
+            "--project-dir",
+            str(project),
+            "--rule-pack",
+            str(packs),
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+
+
+def payload_for(session_id, tool_name, tool_input, project, mcp_context=None):
+    """The documented BeforeTool stdin payload."""
+    doc = {
+        "session_id": session_id,
+        "transcript_path": f"/tmp/icg-gemini-e2e/{session_id}/transcript.json",
+        "cwd": str(project),
+        "hook_event_name": "BeforeTool",
+        "timestamp": "2026-09-20T00:00:00Z",
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "original_request_name": tool_name,
+    }
+    if mcp_context is not None:
+        doc["mcp_context"] = mcp_context
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# Scenarios
+# ---------------------------------------------------------------------------
+
+def scenario_stubs(scratch, project, dispatcher):
+    """S0: prove the dispatch interpretation against stub hooks first, so the
+    ICG scenarios are known to run through faithful semantics. None of these
+    involve ICG; they pin the deny pair, the "block" alias, the permissive
+    empty object, exit 2, exit 3, the millisecond timeout, unparsable
+    stdout, the tool_input merge-override, and the two foreign-envelope
+    controls that make ICG's `decision` spelling load-bearing."""
+    print("\nS0  dispatch semantics, self-checked against stub hooks (no ICG)")
+    stub_dir = scratch / "stubs"
+    stub_dir.mkdir()
+    stubs = {
+        "deny.sh": "#!/bin/sh\nprintf '{\"decision\": \"deny\", \"reason\": \"rejected by policy\"}'\n",
+        "alias.sh": "#!/bin/sh\nprintf '{\"decision\": \"block\", \"reason\": \"blocked by the alias\"}'\n",
+        "empty.sh": "#!/bin/sh\nprintf '{}'\n",
+        "sysmsg.sh": "#!/bin/sh\nprintf '{\"systemMessage\": \"heads up\"}'\n",
+        "exit2.sh": "#!/bin/sh\nprintf 'rejected on stderr' >&2\nexit 2\n",
+        "exit3.sh": "#!/bin/sh\nexit 3\n",
+        "sleep.sh": "#!/bin/sh\nsleep 5\n",
+        "garbage.sh": "#!/bin/sh\nprintf 'this is not json'\n",
+        "merge.sh": "#!/bin/sh\nprintf '%s' \"$STUB_OVERRIDE\"\n",
+        "cursor-shaped.sh": "#!/bin/sh\nprintf '{\"permission\": \"deny\", \"user_message\": \"foreign envelope\"}'\n",
+        "claude-shaped.sh": "#!/bin/sh\nprintf '{\"hookSpecificOutput\": {\"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"foreign envelope\"}}'\n",
+    }
+    for name, text in stubs.items():
+        write_executable(stub_dir / name, text)
+    merge_override = {
+        "command": f"printf stub-override > {scratch}/markers/stub-merge",
+    }
+
+    def stub_settings(name, timeout_ms=60000):
+        path = stub_dir / f"{name}.settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "BeforeTool": [
+                            {
+                                "matcher": INSTALLED_MATCHER,
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": str(stub_dir / f"{name}.sh"),
+                                        "timeout": timeout_ms,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+        return path
+
+    marker = scratch / "markers" / "stub-open"
+    base = payload_for(
+        "stub-session",
+        "run_shell_command",
+        {"command": f"touch {marker}", "directory": str(project)},
+        project,
+    )
+    cases = [
+        # (stub, timeout_ms, stub exit to expect, expect_proceeds, label)
+        ("deny", 60000, 0, False, "decision deny blocks and surfaces the reason"),
+        ("alias", 60000, 0, False, 'the documented "block" alias blocks too'),
+        ("empty", 60000, 0, True, "the permissive empty object proceeds"),
+        ("sysmsg", 60000, 0, True, "a bare systemMessage proceeds (no decision attached)"),
+        ("exit2", 60000, 2, False, "exit 2 blocks with stderr as the rejection reason"),
+        ("exit3", 60000, 3, True, "exit 3 is a non-fatal warning and proceeds"),
+        ("sleep", 300, None, True, "a timeout (measured in milliseconds here) is non-fatal and proceeds"),
+        ("garbage", 60000, 0, True, "exit 0 with unparsable stdout proceeds (no fail-closed knob)"),
+    ]
+    for name, timeout_ms, expected_exit, expect_proceeds, label in cases:
+        settings = stub_settings(name, timeout_ms)
+        record = dispatcher.dispatch(settings, base)
+        run = record["runs"][0]
+        got = record["blocked"] is None
+        detail = run["decision"].get("interpretation", "")
+        ran_as_written = run["exit"] == expected_exit and (
+            run["timed_out"] if expected_exit is None else not run["timed_out"]
+        )
+        if expect_proceeds:
+            ok = ran_as_written and got and record["executed"] is not None
+        else:
+            ok = (
+                ran_as_written
+                and (not got)
+                and record["executed"] is None
+                and bool(record["blocked"].reason)
+            )
+        check(f"S0.{len(CHECKS)} {label}", ok, f"{detail} (exit={run['exit']})")
+
+    # The tool_input merge-override: what the stub puts in
+    # hookSpecificOutput.tool_input is what actually runs.
+    write_executable(
+        stub_dir / "merge.sh",
+        f"#!/bin/sh\nprintf '%s' '{json.dumps({'hookSpecificOutput': {'tool_input': merge_override}})}'\n",
+    )
+    merge_marker = scratch / "markers" / "stub-merge"
+    original = f"printf original > {merge_marker}"
+    record = dispatcher.dispatch(
+        stub_settings("merge"),
+        payload_for(
+            "stub-merge",
+            "run_shell_command",
+            {"command": original, "description": "original description"},
+            project,
+        ),
+    )
+    check(
+        "S0.merge hookSpecificOutput.tool_input overrides the model's arguments",
+        record["executed"] == merge_override["command"]
+        and merge_marker.exists()
+        and merge_marker.read_text() == "stub-override",
+        f"executed {record['executed']!r}",
+    )
+    check(
+        "S0.merge the merge keeps the fields the stub did not override",
+        record["merged_input"]["description"] == "original description",
+    )
+
+    # Foreign-envelope controls: Gemini's hook reader acts on `decision`.
+    # A Cursor-shaped or Claude-shaped deny on stdout carries no `decision`
+    # key, so it proceeds -- if ICG rendered a foreign envelope here, its
+    # denies would silently become allows.
+    for name, envelope in (
+        ("cursor-shaped", "Cursor's flat permission envelope"),
+        ("claude-shaped", "Claude Code's nested permissionDecision envelope"),
+    ):
+        record = dispatcher.dispatch(stub_settings(name), base)
+        check(
+            f"S0.{name} a {envelope} is NOT a Gemini deny and proceeds",
+            record["blocked"] is None,
+            record["runs"][0]["decision"].get("interpretation", ""),
+        )
+    marker.unlink(missing_ok=True)
+    merge_marker.unlink(missing_ok=True)
+
+
+def scenario_install(scratch, project, packs, icg_bin, base_env):
+    """The real installer produces the config every later scenario runs on."""
+    print("\nS-install  the real installer wires the scratch project")
+    settings = seed_settings(project)
+    proc = run_installer(icg_bin, project, packs, base_env)
+    check(
+        "S-install install-gemini-hooks exits 0",
+        proc.returncode == 0,
+        proc.stderr.strip()[:200],
+    )
+    installed = json.loads(settings.read_text())
+    groups = installed["hooks"]["BeforeTool"]
+    check(
+        "S-install exactly one BeforeTool group was added",
+        len(groups) == 1,
+        f"{len(groups)} groups",
+    )
+    group = groups[0]
+    entries = group["hooks"]
+    command = entries[0]["command"]
+    check(
+        "S-install the installed matcher is the anchored three-tool regex",
+        group.get("matcher") == INSTALLED_MATCHER,
+        group.get("matcher", ""),
+    )
+    check(
+        "S-install the entry is a command hook with the bounded millisecond timeout",
+        entries[0]["type"] == "command" and entries[0]["timeout"] == 10000,
+        f"timeout={entries[0].get('timeout')!r}",
+    )
+    check(
+        "S-install the entry invokes this icg binary for the gemini-cli harness with the shipped packs",
+        command.startswith(f"'{icg_bin}' hook --harness gemini-cli --rule-pack {packs}")
+        or command == f"{icg_bin} hook --harness gemini-cli --rule-pack {packs}",
+        command,
+    )
+    check(
+        "S-install unrelated settings and event arrays survive verbatim",
+        installed["model"] == "gemini-2.5-pro"
+        and installed["theme"] == "auto"
+        and installed["hooks"]["AfterTool"]
+        == [{"matcher": "", "hooks": [{"type": "command", "command": "echo audit"}]}],
+    )
+    check(
+        "S-install the pre-install state was backed up once",
+        (project / ".gemini" / "settings.json.icg-backup").exists(),
+    )
+    before = settings.read_text()
+    again = run_installer(icg_bin, project, packs, base_env)
+    check(
+        "S-install re-running the installer is a byte-level no-op",
+        again.returncode == 0
+        and "already up to date" in again.stdout
+        and settings.read_text() == before,
+        again.stdout.strip().splitlines()[1][:80] if again.stdout else "",
+    )
+    print(f"    installed command: {command}")
+    return settings
+
+
+def scenario_deny(dispatcher, project, settings, scratch):
+    """S1: the deny verdict stops the tool call -- the fake target never runs."""
+    print("\nS1  BeforeTool DENY (openbao/openbao-inline-secret-literal)")
+    deny_marker = scratch / "markers" / "deny"
+    deny_command = (
+        f"bao kv put secret/icg-gemini-e2e/demo password=hunter2 > {deny_marker} 2>&1"
+    )
+    payload = payload_for(
+        "icg-gemini-e2e-session",
+        "run_shell_command",
+        {
+            "command": deny_command,
+            "description": "store a demo secret",
+            "directory": str(project),
+        },
+        project,
+    )
+    show("payload", payload)
+    log_before = exec_log_lines(dispatcher.exec_log)
+    hooks_before = len(dispatcher.hook_log)
+    record = dispatcher.dispatch(settings, payload)
+    run = record["runs"][0]
+    response = json.loads(run["stdout"])
+    show("response", response)
+    check(
+        "S1 hook exited 0 with exactly the decision/reason pair",
+        run["exit"] == 0
+        and response.get("decision") == "deny"
+        and set(response) == {"decision", "reason"},
+        f"exit={run['exit']}, keys={sorted(response)}",
+    )
+    check(
+        "S1 the reason is the tool error the agent would see and names the matched rule",
+        "pack=openbao" in response.get("reason", "")
+        and "openbao-inline-secret-literal" in response.get("reason", ""),
+        response.get("reason", "")[:120],
+    )
+    check("S1 dispatch blocked the call", record["blocked"] is not None)
+    check("S1 nothing was executed", record["executed"] is None)
+    check("S1 marker file does not exist", not deny_marker.exists(), str(deny_marker))
+    check(
+        "S1 the bao binary was never invoked",
+        not any(line.startswith("bao ") for line in exec_log_lines(dispatcher.exec_log)),
+        f"exec log delta: {exec_log_lines(dispatcher.exec_log)[len(log_before):]}",
+    )
+    check(
+        "S1 the hook routed exactly once (the matcher selected ICG for run_shell_command)",
+        record["matched"] == 1 and len(dispatcher.hook_log) == hooks_before + 1,
+    )
+    return payload["session_id"]
+
+
+def scenario_session_continues(dispatcher, project, settings, scratch, session_id):
+    """S2: the denial is non-fatal for the CLI -- the same session's next call
+    is still gated, passes on an allow, and executes."""
+    print("\nS2  the session continues after the denial; an allow passes through")
+    control_marker = scratch / "markers" / "control"
+    follow_up = payload_for(
+        session_id,  # the SAME session the S1 denial happened in
+        "run_shell_command",
+        {
+            "command": f"touch {control_marker}",
+            "description": "unremarkable follow-up call",
+            "directory": str(project),
+        },
+        project,
+    )
+    show("payload", follow_up)
+    hooks_before = len(dispatcher.hook_log)
+    record = dispatcher.dispatch(settings, follow_up)
+    response = json.loads(record["runs"][0]["stdout"])
+    show("response", response)
+    check(
+        "S2 the follow-up call in the denied session is still gated",
+        record["matched"] == 1 and len(dispatcher.hook_log) == hooks_before + 1,
+        "the hook answered again after the denial",
+    )
+    check(
+        "S2 the allow is the permissive empty object",
+        response == {},
+        "Gemini proceeds unless told otherwise; ICG never emits decision: allow",
+    )
+    check(
+        "S2 the allowed command ran and created its marker",
+        record["executed"] == f"touch {control_marker}"
+        and record["exec_rc"] == 0
+        and control_marker.exists(),
+        f"executed {record['executed']!r}",
+    )
+    print(
+        "    interpretation: the S1 reason reached the agent as the tool error --\n"
+        "    the docs say that 'allow[s] it to respond or retry'; this follow-up\n"
+        "    call in the same session is that retry, gated and admitted."
+    )
+
+
+def scenario_rewrite(dispatcher, project, settings, scratch, git_fixture):
+    """S3: the rewrite's replacement input is what actually runs."""
+    print("\nS3  BeforeTool REWRITE (git/git-force-push)")
+    remote, work, baseline, divergent = git_fixture
+    payload = payload_for(
+        "icg-gemini-e2e-rewrite",
+        "run_shell_command",
+        {
+            "command": "git push --force origin main",
+            "description": "Push reviewed changes",
+            "directory": str(work),
+        },
+        work,
+    )
+    show("payload", payload)
+    git_before = [line for line in exec_log_lines(dispatcher.exec_log) if line.startswith("git ")]
+    record = dispatcher.dispatch(settings, payload)
+    run = record["runs"][0]
+    response = json.loads(run["stdout"])
+    show("response", response)
+    nested = response.get("hookSpecificOutput", {})
+    tool_input = nested.get("tool_input", {})
+    check(
+        "S3 hook exited 0 carrying only the hookSpecificOutput channel",
+        run["exit"] == 0
+        and set(response) == {"hookSpecificOutput"}
+        and set(nested) == {"tool_input"},
+        f"exit={run['exit']}, keys={sorted(response)}",
+    )
+    check(
+        "S3 tool_input is the COMPLETE replacement input (every request field, only command substituted)",
+        tool_input
+        == {
+            "command": "git push origin main",
+            "description": "Push reviewed changes",
+            "directory": str(work),
+        },
+        json.dumps(tool_input),
+    )
+    check(
+        "S3 the documented merge-override yields the substituted command with the other fields intact",
+        record["merged_input"]["command"] == "git push origin main"
+        and record["merged_input"]["description"] == "Push reviewed changes"
+        and record["merged_input"]["directory"] == str(work),
+    )
+    check(
+        "S3 the merged input is what actually ran",
+        record["executed"] == "git push origin main",
+    )
+    git_after = [line for line in exec_log_lines(dispatcher.exec_log) if line.startswith("git ")]
+    new_git = [line for line in git_after if line not in git_before]
+    check(
+        "S3 the PATH-shim git observed exactly `push origin main`, never --force",
+        new_git == ["git push origin main"],
+        f"shim log delta: {new_git}",
+    )
+    check(
+        "S3 the substituted plain push was rejected non-fast-forward "
+        "(only the original could have moved the remote)",
+        record["exec_rc"] not in (0, None),
+        f"exec_rc={record['exec_rc']}",
+    )
+    check(
+        "S3 the scratch remote still holds the baseline commit",
+        rev_parse(remote, "refs/heads/main", dispatcher.exec_env) == baseline,
+    )
+    check(
+        "S3 the clone still holds the divergent commit (nothing rewrote local state)",
+        rev_parse(work, "refs/heads/main", dispatcher.exec_env) == divergent,
+    )
+
+
+def scenario_matcher_scoping(dispatcher, project, settings, scratch):
+    """S4: an unmodeled/MCP tool name never routes to ICG at all."""
+    print("\nS4  matcher scoping: unmodeled and MCP tool names never route to ICG")
+    unmodeled = [
+        "mcp__fs__write_file",
+        "mcp_fs_write_file",
+        "read_file",
+        "google_web_search",
+        "safe_write_file",
+        "replace_all",
+    ]
+    for index, name in enumerate(unmodeled):
+        marker = scratch / "markers" / "scoping" / str(index)
+        is_mcp = name.startswith("mcp_")
+        payload = payload_for(
+            "icg-gemini-e2e-scoping",
+            name,
+            (
+                {"filepath": str(marker), "content": "harmless"}
+                if "write" in name
+                else {"query": "harmless"}
+            ),
+            project,
+            mcp_context={"server_name": "fs", "invocation_id": name} if is_mcp else None,
+        )
+        hooks_before = len(dispatcher.hook_log)
+        record = dispatcher.dispatch(
+            settings,
+            payload,
+            stand_in=f"touch {marker}",  # harmless stand-in for the tool's own execution
+        )
+        check(
+            f"S4.{index} {name} selects ZERO hooks (ICG is never invoked)",
+            record["matched"] == 0 and len(dispatcher.hook_log) == hooks_before,
+            f"matched {record['matched']}",
+        )
+        check(
+            f"S4.{index} {name} proceeds to execution untouched",
+            record["executed"] is not None
+            and record["exec_rc"] == 0
+            and marker.exists()
+            and record["blocked"] is None,
+        )
+        if is_mcp:
+            check(
+                f"S4.{index} {name} carries mcp_context and still routes nowhere",
+                record["runs"] == [],
+            )
+
+    # Controls: each modeled name selects exactly the ICG hook.
+    modeled_inputs = {
+        "run_shell_command": {"command": f"touch {scratch}/markers/scoping/modeled-shell", "directory": str(project)},
+        "write_file": {"file_path": f"{scratch}/markers/scoping/modeled-write", "content": "harmless"},
+        "replace": {
+            "file_path": f"{scratch}/markers/scoping/modeled-replace",
+            "old_string": "a",
+            "new_string": "b",
+        },
+    }
+    for index, (name, tool_input) in enumerate(modeled_inputs.items()):
+        payload = payload_for("icg-gemini-e2e-scoping", name, tool_input, project)
+        hooks_before = len(dispatcher.hook_log)
+        record = dispatcher.dispatch(
+            settings, payload, stand_in=f"touch {scratch}/markers/scoping/modeled"
+        )
+        response = json.loads(record["runs"][0]["stdout"])
+        check(
+            f"S4.control {name} routes exactly once to the installed hook",
+            record["matched"] == 1 and len(dispatcher.hook_log) == hooks_before + 1,
+        )
+        check(
+            f"S4.control {name} is gated and passes unremarkable input",
+            response == {} and record["blocked"] is None,
+        )
+
+    # The anchors are load-bearing: under the permissive search reading of
+    # the docs' regex matchers, an UNANCHORED write_file would match the MCP
+    # names and route them to ICG. The shipped anchors never do.
+    for mcp_name in ("mcp__fs__write_file", "mcp_fs_write_file"):
+        check(
+            f"S4 an UNANCHORED write_file matcher would have routed {mcp_name} to ICG",
+            re.search("write_file", mcp_name) is not None,
+        )
+        check(
+            f"S4 the shipped anchored matcher never matches {mcp_name}",
+            re.search(INSTALLED_MATCHER, mcp_name) is None,
+        )
+
+
+def scenario_hygiene(scratch):
+    """S5: state hygiene -- verdict-shaped telemetry, the denial recorded with
+    the command text redacted, and nothing written outside the scratch tree."""
+    print("\nS5  hygiene")
+    state = scratch / "state"
+    telemetry = state / "telemetry.json"
+    if telemetry.exists():
+        text = telemetry.read_text()
+        check(
+            "S5 telemetry carries no command text (verdict-shaped only)",
+            "hunter2" not in text and "--force" not in text,
+        )
+        try:
+            store = json.loads(text)
+            records = store["window"]["records"]
+            check(
+                "S5 telemetry records are verdict-shaped only",
+                all(
+                    set(record)
+                    <= {"timestamp", "verdict", "release_ref", "session_id", "harness"}
+                    for record in records
+                ),
+                f"{len(records)} records",
+            )
+            harnesses = {record.get("harness") for record in records}
+            check(
+                "S5 telemetry names the declared harness (gemini-cli)",
+                "gemini-cli" in harnesses and harnesses <= {"gemini-cli"},
+                f"harness values: {sorted(str(h) for h in harnesses)}",
+            )
+        except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
+            check("S5 telemetry parses into window.records", False, "unreadable telemetry store")
+    else:
+        check("S5 telemetry store exists in scratch", False, str(telemetry))
+    denials = state / "denials.jsonl"
+    if denials.exists():
+        text = denials.read_text()
+        check(
+            "S5 the operational denial log recorded the denial with rule attribution",
+            "openbao-inline-secret-literal" in text,
+        )
+        check(
+            "S5 the denial log redacts the denied command text",
+            "hunter2" not in text,
+        )
+    else:
+        check("S5 denial log exists in scratch", False, str(denials))
+    # Markers were confined to the scratch tree by construction; the caller
+    # removes the whole tree on success.
+    check(
+        "S5 all markers lived under the scratch tree",
+        all(str(path).startswith(str(scratch)) for path in (scratch / "markers").rglob("*")),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+    )
+    parser.add_argument("--icg-bin", type=Path)
+    parser.add_argument("--keep", action="store_true")
+    args = parser.parse_args()
+
+    repo_root = args.repo_root.resolve()
+    packs = repo_root / "packs"
+    if not packs.is_dir():
+        raise SystemExit(f"no packs directory under {repo_root}")
+
+    scratch = Path(tempfile.mkdtemp(prefix="icg-gemini-e2e.")).resolve()
+    print(f"scratch tree: {scratch}")
+    print(f"repo: {repo_root}")
+
+    if args.icg_bin:
+        icg_bin = args.icg_bin.resolve()
+        print(f"using provided binary: {icg_bin}")
+    else:
+        build_dir = scratch / "target"
+        print("building icg (cargo build --release --locked)...")
+        icg_bin = build_icg(repo_root, build_dir)
+        print(f"built: {icg_bin}")
+
+    # Scratch layout.
+    project = scratch / "project"
+    project.mkdir()
+    (scratch / "markers" / "scoping").mkdir(parents=True)
+    (project / "bin").mkdir()
+    state = scratch / "state"
+    state.mkdir()
+    home = scratch / "home"
+    home.mkdir()
+    exec_log = scratch / "exec-log"
+    hook_log = []
+
+    # PATH shims: the ground-truth record of what the dispatch actually
+    # executed. `git` logs then execs the real binary; `bao` logs and
+    # refuses, so even a gate failure could not reach a real OpenBao client.
+    real_git = shutil.which("git")
+    if real_git is None:
+        raise SystemExit("git is required for the rewrite scenario")
+    write_executable(
+        project / "bin" / "git",
+        f"#!/bin/sh\nprintf 'git %s\\n' \"$*\" >> {exec_log}\nexec {real_git} \"$@\"\n",
+    )
+    write_executable(
+        project / "bin" / "bao",
+        f"#!/bin/sh\nprintf 'bao %s\\n' \"$*\" >> {exec_log}\n"
+        "printf 'bao shim: refusing to reach a real OpenBao client during the proof\\n' >&2\n"
+        "exit 77\n",
+    )
+
+    # Every environment the hooks or the executed commands run under keeps
+    # state inside the scratch tree and practice mode off (a practice flag
+    # would convert denies to allows and hollow out the whole proof).
+    base_env = dict(
+        os.environ,
+        HOME=str(home),
+        ICG_PRACTICE="0",
+        ICG_TELEMETRY_PATH=str(state / "telemetry.json"),
+        ICG_DENIAL_LOG=str(state / "denials.jsonl"),
+        ICG_STATE_PATH=str(state / "session-state.json"),
+        ICG_HEALTH_PATH=str(state / "health-state.json"),
+        GIT_CONFIG_GLOBAL="/dev/null",
+        GIT_CONFIG_SYSTEM="/dev/null",
+    )
+    exec_env = dict(base_env, PATH=f"{project / 'bin'}:{os.environ['PATH']}")
+    dispatcher = Dispatcher(
+        project=project,
+        exec_log=exec_log,
+        hook_log=hook_log,
+        hook_env=base_env,
+        exec_env=exec_env,
+    )
+
+    settings = scenario_install(scratch, project, packs, icg_bin, base_env)
+    git_fixture = make_git_fixture(scratch, base_env)
+    scenario_stubs(scratch, project, dispatcher)
+    session_id = scenario_deny(dispatcher, project, settings, scratch)
+    scenario_session_continues(dispatcher, project, settings, scratch, session_id)
+    scenario_rewrite(dispatcher, project, settings, scratch, git_fixture)
+    scenario_matcher_scoping(dispatcher, project, settings, scratch)
+    scenario_hygiene(scratch)
+
+    failed = [label for label, ok in CHECKS if not ok]
+    print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} checks passed")
+    if failed:
+        for label in failed:
+            print(f"  FAILED: {label}")
+        print(f"scratch tree left for diagnosis: {scratch}")
+        return 1
+    if args.keep:
+        print(f"scratch tree kept (--keep): {scratch}")
+    else:
+        shutil.rmtree(scratch)
+        print(f"scratch tree removed: {scratch}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

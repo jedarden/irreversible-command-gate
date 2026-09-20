@@ -489,6 +489,19 @@ investigation**, never a runtime guess in the plugin.
 - **Source:** `docs/hooks/reference.md` in `github.com/google-gemini/gemini-cli`
   (the official hooks specification: global mechanics, base input schema,
   `BeforeTool` input/output), retrieved 2026-09-18.
+- **End-to-end proof:** [`scripts/gemini-dispatch-e2e`](../../scripts/gemini-dispatch-e2e)
+  plays Gemini CLI's side of this wire from the same documentation page —
+  the real `icg install-gemini-hooks` against a scratch project
+  `.gemini/settings.json`, the documented `BeforeTool` stdin payloads, and
+  the documented interpretation of exit codes and the
+  `hookSpecificOutput.tool_input` merge-override — and proves by execution
+  against harmless fake targets that a deny stops the tool call while the
+  session continues after it, an allow passes through, the rewrite's
+  replacement input is what actually runs (a deliberately diverged scratch
+  clone for the force-push rewrite), and the anchored matcher never routes
+  an unmodeled or MCP tool name to ICG. It is the executable form of this
+  section's claims about what Gemini CLI's dispatch does with ICG's
+  responses.
 
 ### 6.5 Cursor (implemented)
 
