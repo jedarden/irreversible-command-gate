@@ -302,3 +302,8 @@ EOF
 5. `supports_additional_context: false` stays correct: no advisory channel
    exists on any pre-tool hook (output objects are only
    `{args}`/`{env}`/`{parts}`).
+6. The deny / rewrite / advisory **semantics** behind those names — error
+   path, what the agent sees, rewrite reachability, the deny-with-message
+   degraded advisory — are pinned against the same binary in
+   [`opencode-1.18.29-deny-rewrite-advisory.md`](opencode-1.18.29-deny-rewrite-advisory.md)
+   (bead `irrevers-dd6f88c9`).
