@@ -677,6 +677,7 @@ mod tests {
             "read_file",
             "read_many_files",
             "glob",
+            "grep",
             "search_file_content",
             "ls",
             "google_web_search",
