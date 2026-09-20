@@ -298,7 +298,9 @@ EOF
    lives inside the plugin's `tool.execute.before` handler. Plugin
    discovery: `*.ts`/`*.js` in `.opencode/plugin/` or `.opencode/plugins/`
    (embedded docs, offset 103619232) or npm packages via the `plugin` config
-   array.
+   array. Registration channels, precedence, and load/runtime failure
+   behavior are pinned against the same binary in §10 below (bead
+   `irrevers-67665fad`).
 5. `supports_additional_context: false` stays correct: no advisory channel
    exists on any pre-tool hook (output objects are only
    `{args}`/`{env}`/`{parts}`).
@@ -307,3 +309,209 @@ EOF
    degraded advisory — are pinned against the same binary in
    [`opencode-1.18.29-deny-rewrite-advisory.md`](opencode-1.18.29-deny-rewrite-advisory.md)
    (bead `irrevers-dd6f88c9`).
+
+## 10. Registration channels, precedence, and failure behavior (bead `irrevers-67665fad`)
+
+This section pins **how a plugin gets registered** in the installed 1.18.29
+and **what happens when one fails** — the two facts §6.3's fail-open design
+rests on. It combines the same static binary method as §2–§7 with **live
+experiments** against the installed binary (2026-09-20): plugins planted in
+every candidate location, an isolated global config dir
+(`XDG_CONFIG_HOME`, so the shared `~/.config/opencode` was never touched),
+and observed `plugin_origins` via `opencode debug info` plus bootstrap logs.
+The scratch projects used were removed after the run; §11 reproduces them.
+
+Binary provenance is unchanged from §1: `opencode` **1.18.29**, binary
+sha256 `ca6c0e1f42be3120595bf6848937e7586ec862c87fa7aa111e89c7cc6e9a4650`.
+All offsets are byte indexes into that binary. Upstream tag `v1.18.29`
+(`sst/opencode`, `packages/opencode/src/config/plugin.ts`, `…/plugin/index.ts`,
+`…/plugin/loader.ts`) was cross-checked and matches the binary everywhere
+both were read; where they could diverge, the binary is cited.
+
+### 10.1 Registration matrix
+
+| Channel | Honored in 1.18.29? | Position in the load order | Evidence |
+|---|---|---|---|
+| Global config file `plugin` array — first existing of `<config>/opencode.jsonc`, `opencode.json`, `config.json` (`~/.config/opencode/` by default); entries may be npm specs, `file://` URLs, absolute/relative paths (resolved against the config file), or `[spec, options]` tuples | **yes** | 1 | live: `./cfg-global-rel.js` from the isolated global config listed first; binary `yield*g(e.Path.config,D2,"global")` @103659515; candidate order `rW` @103654495 |
+| `OPENCODE_CONFIG` file's `plugin` array (env override) | yes (when set) | 2 | binary order in `Config.loadInstanceState` @103659747 area (not live-tested) |
+| Project config `plugin` array — `opencode.json(c)` collected from cwd up the worktree root (`QW.files("opencode", directory, worktree)` @103659747); running from a subdirectory still picks them up | **yes** | 3 | live: root `opencode.json` array entries at positions 2–3, identical from a subdirectory; scope forced `"local"` |
+| `.opencode/opencode.json(c)` of each project config dir (+ `OPENCODE_CONFIG_DIR`) | **yes** | 4 (per dir: json before that dir's glob) | live: `.opencode/opencode.json` entry at position 6, before the same dir's glob files |
+| Global plugin directory glob `<config>/{plugin,plugins}/*.{ts,js}` — **both spellings honored**, `dot`+`symlink` included | **yes** | 5 (immediately after the global config file's own array, before project `.opencode` entries) | live: `plugin/g-global-singular.js` and `plugins/h-global-plural.js` at positions 4–5; glob string @103760240 in `cJ` = `ConfigPlugin.load` |
+| Project plugin directory glob `<dir>/.opencode/{plugin,plugins}/*.{ts,js}` — both spellings | **yes** | 6 (per `.opencode` dir, after its json) | live: positions 7–9; same glob `cJ` |
+| npm package specs via any `plugin` array (`"plugin": ["some-pkg"]`, tuple form with options) | yes — installed on demand (`Failed to install plugin pkg@ver` stage @98342234; per-config-dir background install of `@opencode-ai/plugin` @103660480; `waitForDependencies` gate) | per declaring config, in array order | binary + upstream `loader.ts` (not live-tested — no npm install was run) |
+| Edge channels: `OPENCODE_CONFIG_CONTENT`, well-known/remote org config, managed config dir — each may carry a `plugin` array | yes | after the above, in `loadInstanceState` order | binary @103659800–103661000 |
+
+Not a channel: the **`plugins` (plural) config key** and the sorted
+`{plugin,plugins}` glob at offset 103535246 belong to a *separate* Effect-style
+loader (`config-plugin` / `ConfigProviderPlugin`), not to the hook host that
+fires `tool.execute.before`. Don't cite that offset for server plugin
+discovery.
+
+Ordering details that matter:
+
+- The observable origin order in the live run was exactly:
+  global config array → project root config array → **global plugin dirs** →
+  `.opencode` config array → `.opencode` plugin dirs. The directories walked
+  (`QW.directories`) put the global config dir before the project's
+  `.opencode` dir.
+- **Directory glob order is filesystem readdir order — not sorted.** The
+  server-side `cJ` (@103760182) does no sort (unlike the unrelated
+  Effect-side loader, which does `d.sort()`); the live glob order *changed
+  between two runs on the same directory*. Nothing may depend on filename
+  ordering within a plugin dir.
+- **Duplicate identity across channels: last declaration wins.**
+  `deduplicatePluginOrigins` (@103760756) iterates `toReversed()`, keeping the
+  last occurrence (its spec resolution *and* scope) at the last position.
+  Live-verified: a file declared in the project config array *and* discovered
+  by the `.opencode` glob appeared exactly once — at the glob position.
+  Identity = the `file://` URL for file specs, the npm package name otherwise.
+- Consequence of the order: a **global** plugin's hooks run before any
+  project-local plugin's hooks (`Plugin.trigger` walks hooks in origin order,
+  §4.2). An ICG gate deployed globally evaluates before project plugins.
+- `scope: "global"|"local"` on an origin (@103658202: http(s) → global;
+  inside the project dir → local; else global) is provenance metadata for the
+  merge — it does not gate loading.
+
+### 10.2 The kill switch: `--pure`
+
+`opencode --pure …` (or `OPENCODE_PURE=1`) skips **all external plugins**:
+`let A = Q.pure ? [] : w.plugin_origins ?? []` @98341808. Internal/default
+plugins are a separate list (`Q.disableDefaultPlugins ? [] : ek(Q)`
+@98341584; runtime flag `disableDefaultPlugins` from env
+`OPENCODE_DISABLE_DEFAULT_PLUGINS`, RuntimeFlags @104003475) and are
+unaffected by `--pure`. Live: both `opencode --pure debug info` and
+`OPENCODE_PURE=1 opencode debug info` print
+`external plugins disabled (--pure)` instead of the origin list.
+**An ICG gate deployed as a plugin is silently absent under `--pure`.**
+
+### 10.3 Load-time failure behavior — every failure is fail-open
+
+Observed live (three runs) and matching the binary; the failing plugin is
+dropped and **startup, session creation, and tool execution all proceed**:
+
+| Failure mode | What happens | Evidence |
+|---|---|---|
+| Module import fails — syntax error, top-level `throw` | `loadExternal` reports stage `"load"`; `report.error` → `B(...)` @98341007 **publishes an `Event.Error`** on the bus (`Failed to load plugin <spec>: <cause>`, @98342289/98342334) and the plugin is dropped. **Nothing is logged.** No plugin can observe the publish — hooks don't exist yet — and run-mode doesn't render it; only a TUI/client attached during bootstrap sees it. | live: `02-broken-syntax.js`, `03-throws-at-import.js` produced zero log lines across 3 runs while the session was created and the model stream attempted |
+| Exported factory throws when invoked | `Qy` wrapped in `tryPromise` → `logError("failed to load plugin", {path, spec, error})` @98342494, swallowed (`v.catch(→void)`) | live ×3: `failed to load plugin … error="05 factory exploded"` |
+| Export is not a function (e.g. `export default 42`) | `Zy` throws `TypeError("Plugin export is not a function")` @98340540 → same logError + skip | live ×3: `error="Plugin export is not a function"` |
+| `config` hook throws | `logError("plugin config hook failed")` @98342699 + `v.ignore` | live ×3: `error="06 config hook exploded"` |
+| Internal (built-in) plugin factory throws | `logError("failed to load internal plugin")` @98341701, skipped via `v.option` | binary |
+| npm install fails | `Failed to install plugin <pkg>@<ver>: <cause>` via the same `Event.Error` path | binary @98342146 |
+
+The live sequence (single run, DEBUG logs): config files load → plugin
+failures logged at `:03.445` → session created at `:03.593` → model stream
+attempted. A project whose every plugin is broken behaves exactly like a
+project with no plugins.
+
+### 10.4 Runtime failure behavior — the throw boundary
+
+- **`tool.execute.before` throw** = deny for that one tool call: the call
+  aborts before execution and before any permission ask, the model sees
+  `Tool execution failed: <message>`, the loop continues. Pinned at binary
+  level in [`opencode-1.18.29-deny-rewrite-advisory.md`](opencode-1.18.29-deny-rewrite-advisory.md)
+  §1 (same sha256). A **runtime** hook throw is fail-*closed* for that call.
+- **`event` hook throw**: the bus listener fires hooks fire-and-forget; a
+  throw surfaces as an unhandled rejection printed to stderr
+  (`error: 07 event hook exploded: <type>` — 65+ lines across 10 event types
+  in the live capture) and delivery of later events continues; the run
+  proceeded through session creation and the model-call phase.
+- **`config` hook throw** at bootstrap: logged, ignored (§10.3).
+- Nothing observed or found in the binary lets a plugin failure kill the
+  process or abort a session.
+
+### 10.5 The fail-open bound this puts on §6.3
+
+1. **A plugin gate fails open by default, and the failure is quiet.** If the
+   ICG plugin has a syntax error, a bad import, or a throwing factory, every
+   tool call proceeds ungated; for the two import-stage failure classes there
+   is *no log line at all*. §6.3's fail-open-for-unsupported-tools posture is
+   consistent with the platform, but the platform extends it to *the gate
+   itself*.
+2. **`opencode debug info` lists registrations, not loads.** It prints
+   `plugin_origins` (config-level), so it shows a broken plugin as
+   "registered" while it never loaded. There is no CLI command that
+   enumerates successfully loaded external hooks. **ICG must self-verify**:
+   e.g. the plugin's `config` hook proves liveness at bootstrap (a throw
+   there *is* logged at ERROR), or the adapter pings the ICG daemon on first
+   `tool.execute.before`.
+3. **`--pure`/`OPENCODE_PURE` disables the gate entirely** (§10.2) with no
+   warning beyond `debug info`. Deployment docs must name this flag.
+4. **Deployment channel choice:** `~/.config/opencode/plugin/icg.<js|ts>`
+   (global directory glob) — or, if options are needed, a `file://` entry in
+   the global config's `plugin` array. Both are honored (§10.1); the
+   directory form needs no dependency install; global scope loads for every
+   project (subdirectory runs included) and evaluates before any
+   project-local plugin. Avoid npm specs (install machinery, `compatibility`
+   gate) and per-project registration (partial coverage).
+5. **Never rely on filename order** within a plugin directory (§10.1) — one
+   file per concern, or an aggregator module.
+
+### 10.6 Version evidence summary
+
+- `opencode --version` → `1.18.29`; binary re-hashed as in §1 (2026-09-20).
+- Live behavior captured from the installed binary in disposable projects
+  under `~/scratch` (removed after the run; recreated by §16).
+- `opencode debug info`, `opencode --pure debug info`, `opencode serve`,
+  `opencode run --print-logs --log-level DEBUG` outputs quoted above were
+  produced by that binary; log lines are from
+  `--print-logs` stderr and `~/.local/share/opencode/log/opencode.log`.
+
+### 11. Reproduction of the §10 experiments
+
+```bash
+opencode --version            # 1.18.29
+sha256sum ~/.local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64/bin/opencode
+
+# Registration matrix (isolated global dir; nothing under ~/.config touched)
+S=$(mktemp -d ~/scratch/ocplug-XXXX)
+mkdir -p $S/xdg/opencode/plugin $S/xdg/opencode/plugins \
+         $S/proj/.opencode/plugin $S/proj/.opencode/plugins
+echo 'export default async () => ({})' > $S/proj/.opencode/plugin/a.js
+echo 'export default async () => ({})' > $S/proj/.opencode/plugins/b.js
+echo 'export default async () => ({})' > $S/xdg/opencode/plugin/g.js
+echo 'export default async () => ({})' > $S/xdg/opencode/plugins/h.js
+echo 'export default async () => ({})' > $S/xdg/opencode/rel.js
+echo 'export default async () => ({})' > $S/proj/root.js
+printf '{ "plugin": ["./rel.js"] }' > $S/xdg/opencode/opencode.json
+printf '{ "plugin": ["./root.js"] }' > $S/proj/opencode.json
+cd $S/proj && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm i
+XDG_CONFIG_HOME=$S/xdg opencode debug info | sed -n '/plugins:/,$p'
+# → order: global cfg array, project cfg array, global plugin/ + plugins/,
+#   .opencode glob (readdir order, unsorted)
+
+# Kill switch
+opencode --pure debug info | sed -n '/plugins:/,$p'      # "external plugins disabled (--pure)"
+OPENCODE_PURE=1 opencode debug info | sed -n '/plugins:/,$p'
+
+# Load-failure behavior (broken plugins; bogus provider avoids any LLM call)
+mkdir -p $S/fail/.opencode/plugin && cd $S/fail && git init -q
+printf 'export default async () => ({ broken!!!' > $S/fail/.opencode/plugin/02-syntax.js
+printf 'throw new Error("boom")\nexport default async () => ({})' > $S/fail/.opencode/plugin/03-importthrow.js
+printf 'export default 42' > $S/fail/.opencode/plugin/04-badexport.js
+printf 'export default async () => { throw new Error("factory") }' > $S/fail/.opencode/plugin/05-factory.js
+printf 'export default async () => ({ config: async () => { throw new Error("cfg") } })' > $S/fail/.opencode/plugin/06-confighook.js
+printf '{ "provider": { "bogus": { "npm": "@ai-sdk/openai-compatible", "options": { "baseURL": "http://127.0.0.1:1/v1" }, "models": { "m": {} } } }, "model": "bogus/m" }' > $S/fail/opencode.json
+git add -A && git -c user.email=t@t -c user.name=t commit -qm i
+timeout 25 opencode run --print-logs --log-level DEBUG "x" 2>$S/err.txt
+grep -a 'failed to load plugin\|config hook failed' $S/err.txt   # 04/05/06 logged; 02/03 absent
+rm -rf $S
+
+# Binary citations
+python3 - <<'EOF'
+B="/home/coding/.local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64/bin/opencode"
+d=open(B,"rb").read()
+for off,ln,label in [(98341007,120,"B = publish Event.Error"),
+                     (98341808,90,"--pure strips external origins"),
+                     (98341584,120,"disableDefaultPlugins / internal list"),
+                     (103760182,220,"ConfigPlugin.load glob {plugin,plugins}"),
+                     (103760756,260,"dedupe: last declaration wins"),
+                     (103659515,60,"global config file merged first"),
+                     (103659747,80,"project config files walk"),
+                     (103658202,120,"scope: global|local"),
+                     (98340540,60,"TypeError: Plugin export is not a function"),
+                     (98342699,60,"plugin config hook failed"),
+                     (98341701,80,"failed to load internal plugin"),
+                     (98342146,220,"loadExternal error report: install/entry/load")]:
+    print(f"== {label} @{off} =="); print(d[off:off+ln].decode("utf-8","replace")); print()
+EOF
+```
