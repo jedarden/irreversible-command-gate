@@ -518,6 +518,16 @@ const CLAUDE_CODE_CAPABILITIES: Capabilities = Capabilities {
     supports_allow_decision: true,
 };
 
+/// The Codex CLI release the narrowing documented below is pinned to: the
+/// shipped binary whose rejections are quoted here and in
+/// `docs/notes/harness-adapter-contract.md` §6.2. `icg-ci`'s
+/// `codex-hook-compatibility` matrix must always include it --
+/// `tests/codex_compat_matrix_tests.rs` fails the build when the matrix
+/// drops behind the pin, which is how the 0.154 narrowing first shipped
+/// unnoticed against a matrix still frozen at 0.144-0.146
+/// (irrevers-048ce4f8).
+pub const CODEX_RUNTIME_PIN: &str = "0.154.0";
+
 /// Codex parses the same envelope on the wire -- its
 /// `pre-tool-use.command.output` schema accepts `allow|deny|ask` -- but its
 /// runtime honors `deny` alone, and says so: verified against Codex CLI
@@ -1471,7 +1481,7 @@ mod tests {
         );
         assert!(
             !capabilities.supports_allow_decision,
-            "Codex CLI 0.154.0 honors permissionDecision:deny alone"
+            "Codex CLI {CODEX_RUNTIME_PIN} honors permissionDecision:deny alone"
         );
     }
 

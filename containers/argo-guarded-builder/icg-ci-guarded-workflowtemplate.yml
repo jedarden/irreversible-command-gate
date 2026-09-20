@@ -24,9 +24,16 @@ spec:
                 - name: codex-version
                   value: "{{item}}"
             withItems:
+              # Must always include src/adapter.rs's CODEX_RUNTIME_PIN: the
+              # Codex CLI release whose runtime semantics the adapter
+              # encodes (0.154 narrowed the contract to deny-alone). The
+              # 0.154 narrowing shipped while this matrix was frozen at
+              # 0.144-0.146; tests/codex_compat_matrix_tests.rs now fails
+              # the build when the matrix drops behind the pin.
               - "0.144.4"
               - "0.145.0"
               - "0.146.0"
+              - "0.154.0"
         - - name: build-and-release
             template: build-and-release
 
