@@ -21,7 +21,9 @@
 # rebuild at the ~20s the workspace crate costs, not a cold dep tree.
 #
 # Usage: scripts/definition-of-done.sh [--fast|--slow]
-#   --fast (default)  cargo build --all-targets, then cargo test
+#   --fast (default)  cargo build --all-targets, cargo test, and the
+#                     OpenCode plugin's node suite (opencode-plugin/,
+#                     skipped loudly when node/npm are absent)
 #   --slow            additionally cargo clippy --all-targets -- -D warnings
 #                     (fmt is deliberately not gated here: HEAD carries
 #                     unrelated in-flight formatting in tests owned by other
@@ -72,6 +74,17 @@ run() {
 
 run cargo build --all-targets
 run cargo test
+# The OpenCode plugin's runtime suite (node --test, no dependencies): the
+# gate semantics live there, so done includes it. Loud skip, never a silent
+# one, on a box without the runtime.
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  run npm test --prefix opencode-plugin
+else
+  printf 'npm test --prefix opencode-plugin\tSKIP (node/npm not on PATH)\n'
+fi
+# Type-level check on the deployed plugin artifact (skips loudly without
+# tsc — see scripts/opencode-plugin-typecheck).
+run scripts/opencode-plugin-typecheck
 if [ "$SLOW" -eq 1 ]; then
   run cargo clippy --all-targets -- -D warnings
 fi

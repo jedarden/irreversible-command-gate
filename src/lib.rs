@@ -36,6 +36,13 @@ pub mod job_cronjob_yaml;
 pub mod metrics;
 pub mod monitoring;
 pub mod new_pack;
+/// The idempotent OpenCode plugin installer (`icg
+/// install-opencode-plugin`); it deploys the plugin embedded from
+/// `opencode-plugin/icg.ts` into the plugin directory pinned for the
+/// installed 1.18.29 (contract §6.3.1), recognizes its own artifact by
+/// content (`--uninstall` demands the same marker before removing),
+/// and never touches OpenCode's permission configuration.
+pub mod opencode_plugin;
 pub mod overrides;
 pub mod pack_manifest;
 pub mod regex_safety;

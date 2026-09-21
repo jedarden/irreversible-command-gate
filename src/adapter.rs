@@ -75,11 +75,13 @@ pub enum HarnessId {
     /// (`~/.codex/hooks.json`); not cloud-hosted Codex tasks.
     CodexCli,
     /// OpenCode's in-process plugin API (`tool.execute.before`). The plugin
-    /// shells out to `icg hook --harness opencode`, so the payload and the
-    /// response both travel over a subprocess wire even though the hook
-    /// itself is in-process. The flag spelling is the telemetry slug;
-    /// clap's derived kebab-case of the variant (`open-code`) is accepted
-    /// as an alias.
+    /// shells out to `icg hook --harness open-code` — the alias spelling,
+    /// chosen because it is the only one the installed 0.1.62 accepts (the
+    /// slug `opencode` became primary only after that release) — so the
+    /// payload and the response both travel over a subprocess wire even
+    /// though the hook itself is in-process. The flag spelling is the
+    /// telemetry slug; clap's derived kebab-case of the variant
+    /// (`open-code`) is accepted as an alias.
     #[value(name = "opencode", alias = "open-code")]
     OpenCode,
     /// Gemini CLI's `BeforeTool` command hook

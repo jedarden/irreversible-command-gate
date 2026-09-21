@@ -9,8 +9,9 @@ use engine::{Engine, InputSource};
 use fail_closed::PolicyStore;
 use icg::{
     adapter, coverage, cursor_hooks, denial_log, emergency_bypass, engine, fail_closed,
-    gemini_hooks, health, health_server, monitoring, new_pack, overrides, pack_manifest,
-    regex_safety, regression, rollback, rule_pack, state_store, telemetry, trust_pointer, update,
+    gemini_hooks, health, health_server, monitoring, new_pack, opencode_plugin, overrides,
+    pack_manifest, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
+    trust_pointer, update,
 };
 use overrides::*;
 use regex_safety::{check_pack_for_redos, RedosConfig};
@@ -340,6 +341,33 @@ enum Commands {
         #[arg(long, value_name = "PATH")]
         rule_pack: Option<PathBuf>,
         /// Remove ICG entries from the target file instead of installing them
+        #[arg(long)]
+        uninstall: bool,
+    },
+    /// Deploy the ICG plugin into an OpenCode plugin directory
+    ///
+    /// Writes the plugin embedded in this binary (opencode-plugin/icg.ts)
+    /// to the global plugin directory
+    /// (<$XDG_CONFIG_HOME|~/.config>/opencode/plugin/icg.ts) by default,
+    /// or <dir>/.opencode/plugin/icg.ts with --project-dir. The global
+    /// directory is the recommended channel: it loads for every project
+    /// and its hooks evaluate before any project-local plugin's.
+    /// Idempotent: a target already carrying this plugin's bytes is left
+    /// untouched (not even rewritten), a differing one is backed up once as
+    /// <target>.icg-backup and replaced. Uninstall recognizes the ICG
+    /// plugin by a content marker, so a foreign plugin at the target is
+    /// refused, not removed. OpenCode's own permission configuration is
+    /// never read or modified, and no config file is touched — only the
+    /// plugin file (plus its one backup) is written.
+    InstallOpencodePlugin {
+        /// Project directory whose .opencode/plugin/icg.ts is managed
+        /// instead of the global plugin directory
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["file"])]
+        project_dir: Option<PathBuf>,
+        /// Manage this exact path instead of deriving it from --project-dir or the default
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["project_dir"])]
+        file: Option<PathBuf>,
+        /// Remove the ICG plugin from the target instead of installing it
         #[arg(long)]
         uninstall: bool,
     },
@@ -1949,6 +1977,15 @@ fn main() -> Result<()> {
             project_dir,
             file,
             rule_pack,
+            uninstall,
+        }),
+        Commands::InstallOpencodePlugin {
+            project_dir,
+            file,
+            uninstall,
+        } => opencode_plugin::run_install(opencode_plugin::InstallOptions {
+            project_dir,
+            file,
             uninstall,
         }),
         Commands::Trust(subcommand) => match subcommand {

@@ -111,7 +111,9 @@ test("the module ships exactly one export — the 1.18.29 loader constraint", as
 
 test("the pins hold: absolute binary, adapter invocation, tool scope", () => {
   assert.equal(ICG_BINARY, "/usr/local/bin/icg");
-  assert.deepEqual(ICG_ARGS, ["hook", "--harness", "opencode"]);
+  // The alias spelling: the only value 0.1.62 accepts, an alias everywhere
+  // else — the one spelling that works against any installed icg.
+  assert.deepEqual(ICG_ARGS, ["hook", "--harness", "open-code"]);
   assert.deepEqual([...GATED_TOOLS].sort(), ["apply_patch", "bash", "edit", "write"]);
   assert.equal(SPAWN_TIMEOUT_MS > 0, true, "the stall cap is positive");
 });
@@ -137,7 +139,7 @@ test("shell commands reach icg before execution with the pinned payload", async 
   assert.equal(spawn.calls.length, 1);
   const call = spawn.calls[0];
   assert.equal(call.binary, ICG_BINARY, "the root-owned absolute path is spawned");
-  assert.deepEqual(call.args, ["hook", "--harness", "opencode"]);
+  assert.deepEqual(call.args, ["hook", "--harness", "open-code"]);
   // The hook payload: tool/sessionID/callID plus the args object itself —
   // never tool_name/tool_input, and the envelope never leaks into args.
   assert.deepEqual(call.payload, { tool: "bash", sessionID: SESSION, callID: CALL, args });

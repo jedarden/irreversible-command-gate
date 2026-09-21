@@ -51,9 +51,13 @@ const ICG_BINARY = "/usr/local/bin/icg";
 
 /// The adapter invocation this plugin serves: the OpenCode admission path
 /// (`read_opencode_payload_from_stdin`) and its one-object envelope
-/// (`render_opencode_envelope`). `opencode` is the telemetry slug spelling;
-/// clap's derived `open-code` is its alias.
-const ICG_ARGS: readonly string[] = ["hook", "--harness", "opencode"];
+/// (`render_opencode_envelope`). The `open-code` spelling is the one value
+/// every shipped `icg` accepts: it is clap's derived kebab-case — the only
+/// spelling 0.1.62 takes, which is the build this plugin deploys beside at
+/// /usr/local/bin/icg today — and a pinned alias since the telemetry slug
+/// `opencode` became primary. A deployed file must outlive individual icg
+/// upgrades, so it spells the flag the compatible way.
+const ICG_ARGS: readonly string[] = ["hook", "--harness", "open-code"];
 
 /// The tools this gate evaluates: the three the engine models — `bash`
 /// (the command shape), `write` and `edit` (the content-mode shapes,

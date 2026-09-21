@@ -300,7 +300,10 @@ exact official source it was taken from.
   2026-09-18 and re-checked 2026-09-20.
 - **Implementation (ICG):** `OpenCodeAdapter`, served by
   `icg hook --harness opencode` (the flag spelling is the telemetry slug;
-  clap's derived `open-code` is an alias). The plugin serializes the hook's
+  clap's derived `open-code` is an alias — and the spelling the deployed
+  plugin actually sends: the installed 0.1.62 binary predates this adapter
+  and takes only the derived kebab-case, so the alias keeps one deployed
+  file working across both builds). The plugin serializes the hook's
   payload — `tool`, `sessionID`, `callID`, and the mutable `args` object —
   to the process's stdin, which the engine's OpenCode admission path
   (`read_opencode_payload_from_stdin`, the same fail-open stdin boundary as
@@ -395,6 +398,12 @@ two research files named under **Sources** above (the *surface* and
   entry in the global config's `plugin` array; never an npm spec (install
   machinery + compatibility gate); no reliance on filename order within a
   plugin dir (surface §10.1, §10.5).
+- **The plugin file carries exactly one export** — the default factory
+  (found live 2026-09-20, surface §10.3): any static named export beside
+  it makes the 1.18.29 loader reject the module as
+  `Plugin export is not a function`, dropping the gate quietly. The
+  gate's test surface (pins, the gate function, the rewrite applicator)
+  rides on the factory as properties instead of named exports.
 - **Liveness** = the gate must self-verify: a plugin that fails to load is
   dropped **quietly** — import-stage failures leave no log line at all —
   and `opencode debug info` lists registrations, not loads (surface
