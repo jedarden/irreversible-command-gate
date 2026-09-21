@@ -8,7 +8,7 @@ use coverage::*;
 use engine::{Engine, InputSource};
 use fail_closed::PolicyStore;
 use icg::{
-    adapter, coverage, cursor_hooks, denial_log, emergency_bypass, engine, fail_closed,
+    adapter, catalog, coverage, cursor_hooks, denial_log, emergency_bypass, engine, fail_closed,
     gemini_hooks, health, health_server, monitoring, new_pack, opencode_plugin, overrides,
     pack_manifest, regex_safety, regression, rollback, rule_pack, state_store, telemetry,
     trust_pointer, update,
@@ -47,6 +47,8 @@ enum Commands {
     Explain(documented_commands::ExplainArgs),
     /// List the rule packs available to the local installation.
     Coverage(documented_commands::CoverageArgs),
+    /// Export the versioned always/never event catalog for external consumers.
+    Catalog(documented_commands::CatalogArgs),
     /// Create a privacy-conscious diagnostic report.
     BugReport(documented_commands::BugReportArgs),
     /// Create or verify a maintenance backup.
@@ -1490,6 +1492,7 @@ fn main() -> Result<()> {
         Commands::Check(args) => documented_commands::run_check(args),
         Commands::Explain(args) => documented_commands::run_explain(args),
         Commands::Coverage(args) => documented_commands::run_coverage(args),
+        Commands::Catalog(args) => documented_commands::run_catalog(args),
         Commands::BugReport(args) => documented_commands::run_bug_report(args),
         Commands::Backup(command) => documented_commands::run_backup(command),
         Commands::Override(command) => documented_commands::run_override(command),

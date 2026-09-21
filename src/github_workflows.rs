@@ -197,6 +197,58 @@ fn component_eq(a: &str, b: &str) -> bool {
     }
 }
 
+/// Pack attribution for the denial the engine emits when this guard trips.
+///
+/// The guard is built into the hook front-end, not loaded from a pack file,
+/// so these constants are how a downstream step recognizes *this* guard
+/// among all denials the engine can emit. `Engine::evaluate_content_inner`
+/// attributes its denial through them, and `icg catalog` names the event
+/// through them, so a rename fails compile or test instead of silently
+/// breaking the denial's consumers.
+pub const PACK_ID: &str = "github-workflows";
+
+/// Pattern attribution paired with [`PACK_ID`].
+pub const PATTERN_ID: &str = "github-workflows-protected";
+
+/// The event catalog's severity for this guard (`icg catalog`): a workflow
+/// write grants arbitrary CI privileges, which is as irreversible as the
+/// critical pack rules.
+pub const CATALOG_SEVERITY: crate::rule_pack::Severity = crate::rule_pack::Severity::Critical;
+
+/// The event catalog's tier for this guard: a lexical path predicate,
+/// decidable from the invocation alone.
+pub const CATALOG_TIER: crate::rule_pack::Tier = crate::rule_pack::Tier::Tier1;
+
+/// The event catalog's one-line statement of why this event must never
+/// happen. [`PROTECTED_REASON`] carries the full caller-facing redirect.
+pub const CATALOG_EXPLANATION: &str = "Writing under .github/workflows/ grants arbitrary CI \
+    privileges to whatever the workflow defines, so an automated Write/Edit must never touch \
+    them; workflow changes land only through a reviewed human pull request.";
+
+/// The event as the exported catalog names it (`icg catalog`), built from
+/// this module's own constants -- the same ones the engine attributes its
+/// denial with -- so the catalog and the dispatch cannot disagree.
+pub fn catalog_event() -> crate::catalog::CatalogEvent {
+    crate::catalog::CatalogEvent {
+        id: PATTERN_ID.to_string(),
+        pack: PACK_ID.to_string(),
+        severity: CATALOG_SEVERITY,
+        tier: CATALOG_TIER,
+        action: crate::rule_pack::Channel::Deny,
+        destructive: true,
+        enabled: true,
+        check: "predicate".to_string(),
+        matching: crate::catalog::MatchExpression::Predicate {
+            predicate: "is_github_workflows_path".to_string(),
+        },
+        explanation: CATALOG_EXPLANATION.to_string(),
+        sanctioned_alternative: crate::catalog::SanctionedAlternative {
+            reason: PROTECTED_REASON.to_string(),
+            rewrite: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

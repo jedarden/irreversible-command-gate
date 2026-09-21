@@ -433,6 +433,46 @@ fn mapping_value_is_block_header(body: &str) -> bool {
     is_block_scalar_header(value.trim_start_matches([' ', '\t']))
 }
 
+/// The event catalog's severity for this guard (`icg catalog`): Job and
+/// CronJob manifests hold resource reservations forever once they land,
+/// which is as irreversible as the critical pack rules.
+pub const CATALOG_SEVERITY: crate::rule_pack::Severity = crate::rule_pack::Severity::Critical;
+
+/// The event catalog's tier for this guard: a lexical line scan over the
+/// content being written, decidable from the invocation alone.
+pub const CATALOG_TIER: crate::rule_pack::Tier = crate::rule_pack::Tier::Tier1;
+
+/// The event catalog's one-line statement of why this event must never
+/// happen. [`BLOCKED_REASON`] carries the full caller-facing redirect.
+pub const CATALOG_EXPLANATION: &str = "ArgoCD cannot manage Job and CronJob manifests \
+    idempotently and their pods are never pruned, so they hold resource reservations \
+    indefinitely; recurring work is a Deployment with an internal scheduling loop and one-shot \
+    work is an Argo WorkflowTemplate.";
+
+/// The event as the exported catalog names it (`icg catalog`), built from
+/// this module's own constants -- the same ones the engine attributes its
+/// denial with -- so the catalog and the dispatch cannot disagree.
+pub fn catalog_event() -> crate::catalog::CatalogEvent {
+    crate::catalog::CatalogEvent {
+        id: PATTERN_ID.to_string(),
+        pack: PACK_ID.to_string(),
+        severity: CATALOG_SEVERITY,
+        tier: CATALOG_TIER,
+        action: crate::rule_pack::Channel::Deny,
+        destructive: true,
+        enabled: true,
+        check: "predicate".to_string(),
+        matching: crate::catalog::MatchExpression::Predicate {
+            predicate: "is_job_or_cronjob_yaml".to_string(),
+        },
+        explanation: CATALOG_EXPLANATION.to_string(),
+        sanctioned_alternative: crate::catalog::SanctionedAlternative {
+            reason: BLOCKED_REASON.to_string(),
+            rewrite: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

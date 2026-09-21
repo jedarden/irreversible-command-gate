@@ -8,6 +8,10 @@
 /// description lives in `docs/notes/harness-adapter-contract.md`.
 pub mod adapter;
 pub mod alerting;
+/// The versioned always/never event catalog (`icg catalog --json`,
+/// `icg-catalog/v1`); its normative description lives in
+/// `docs/notes/event-catalog-json-api.md`.
+pub mod catalog;
 pub mod coverage;
 /// The idempotent Cursor `hooks.json` installer
 /// (`icg install-cursor-hooks`); merge semantics are documented on the

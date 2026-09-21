@@ -1122,11 +1122,7 @@ fn strip_command_prefixes(
             // `-v/--verbose` are valueless.
             "timeout" => {
                 index += 1;
-                index = skip_options(
-                    tokens,
-                    index,
-                    &["-k", "--kill-after", "-s", "--signal"],
-                );
+                index = skip_options(tokens, index, &["-k", "--kill-after", "-s", "--signal"]);
                 if index < tokens.len() {
                     index += 1; // the duration operand
                 }
@@ -1671,8 +1667,7 @@ impl Engine {
                 encoding: None,
                 mime_type: None,
             },
-            args => serde_json::from_value(args)
-                .context("'args' is not a tool-input object")?,
+            args => serde_json::from_value(args).context("'args' is not a tool-input object")?,
         };
 
         let shaped = PreToolUseInput {
@@ -2890,8 +2885,8 @@ impl Engine {
         {
             return CheckResult::Denied {
                 reason,
-                pack_id: "github-workflows".to_string(),
-                pattern_id: "github-workflows-protected".to_string(),
+                pack_id: crate::github_workflows::PACK_ID.to_string(),
+                pattern_id: crate::github_workflows::PATTERN_ID.to_string(),
                 matched_path: Some(matched_path),
             };
         }
@@ -3830,7 +3825,10 @@ mod tests {
         let source = CommandSource::Hook("echo timeout 30 vault kv destroy".to_string());
         let tokens = engine.segment_command(&source);
         assert_eq!(tokens[0].executable, "echo");
-        assert_eq!(tokens[0].args, vec!["timeout", "30", "vault", "kv", "destroy"]);
+        assert_eq!(
+            tokens[0].args,
+            vec!["timeout", "30", "vault", "kv", "destroy"]
+        );
     }
 
     #[test]

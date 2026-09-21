@@ -29,11 +29,17 @@ To read the enforced policy programmatically rather than scraping text:
 
 ```bash
 icg coverage --list --format json   # "format": "coverage/v1"
+icg catalog --json                  # "format": "icg-catalog/v1"
 ```
 
-Every pack and rule, with severity, redirect channel, check kind and
-explanation — plus an `unreadable` array naming any pack that failed to
-load. Prefer this over parsing `coverage --list`.
+The first is the pack view: every pack and rule, with severity, redirect
+channel, check kind and explanation — plus an `unreadable` array naming any
+pack that failed to load. The second is the event view: what must never
+happen and what is always allowed, keyed by the denial attribution
+(`pack` + `id`) with severity and the sanctioned alternative, digest-stamped
+so a consumer can detect policy drift. Prefer these over parsing
+`coverage --list`; tools outside this repository must consume the catalog
+rather than parse packs or keep a second copy of the list.
 
 ## The rules that actually bind you here
 

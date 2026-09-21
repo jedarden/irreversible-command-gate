@@ -199,6 +199,7 @@ version:
 | Deploying it | [Deployment guide](docs/operators/deployment-guide.md) → [Operator docs](docs/operators/README.md) |
 | Hit a denial | [Deny-message guide](docs/operators/deny-messages.md) |
 | Writing a rule pack | [Rule-pack best practices](docs/developers/rule-pack-best-practices.md) |
+| Building on the policy from another tool | [Event catalog API](docs/notes/event-catalog-json-api.md) — `icg catalog --json` |
 | An agent working in this repo | [AGENTS.md](AGENTS.md) |
 | Curious about the design | [plan.md](docs/plan/plan.md) · [ideas ledger](docs/notes/ideas-ledger.md) |
 

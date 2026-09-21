@@ -47,6 +47,7 @@ Short, ordered procedures for a moment when something is on fire.
 | [notes/github-workflows-detection-seam.md](notes/github-workflows-detection-seam.md) | Where the workflows-path guard detects, and the structured fields a redirect message consumes. |
 | [notes/per-repo-overrides.md](notes/per-repo-overrides.md) | The release-bound per-repository override contract. |
 | [notes/coverage-json-api.md](notes/coverage-json-api.md) | The machine-readable coverage API (`coverage/v1`): key sets, ordering, unreadable packs, failure modes. |
+| [notes/event-catalog-json-api.md](notes/event-catalog-json-api.md) | The machine-readable always/never event catalog (`icg catalog --json`, `icg-catalog/v1`): event identity, the drift digest, schema. |
 
 ## Design and decisions
 

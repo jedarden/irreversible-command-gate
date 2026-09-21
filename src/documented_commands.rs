@@ -109,6 +109,21 @@ pub struct CoverageArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct CatalogArgs {
+    /// Emit the catalog as JSON.
+    ///
+    /// JSON is the only output the catalog has; the flag is the documented
+    /// spelling from the contract note and is accepted for explicitness, so
+    /// `icg catalog` and `icg catalog --json` are the same command.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Rule-pack file(s) or directories to render the catalog from.
+    #[arg(long = "pack", alias = "rule-pack")]
+    pub packs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 pub struct BugReportArgs {
     /// Write the diagnostic report to this path. Without it, print to stdout.
     #[arg(short, long)]
@@ -656,6 +671,22 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
     if !found {
         bail!("no readable rule packs were found")
     }
+    Ok(())
+}
+
+/// Render the versioned always/never event catalog (`icg-catalog/v1`) from
+/// the loaded packs and print it as JSON.
+///
+/// Unlike `coverage`, an unreadable pack is a hard error rather than an
+/// `unreadable` entry: the catalog's digest is a consumer's drift signal,
+/// and a document describing only a *subset* of the packs on disk would be
+/// indistinguishable from a legitimate policy change. Failing loudly means
+/// a broken pack can never quietly shrink the catalog a consumer last saw.
+pub fn run_catalog(args: CatalogArgs) -> Result<()> {
+    let paths = resolve_pack_paths(&args.packs)?;
+    let packs = load_pack_values(&paths)?;
+    let catalog = crate::catalog::build(&packs)?;
+    println!("{}", serde_json::to_string_pretty(&catalog)?);
     Ok(())
 }
 

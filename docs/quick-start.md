@@ -344,6 +344,15 @@ installed pack plus the repository's `packs/` directory when present). The
 `hook` subcommand's equivalent flag is `--rule-pack` — see
 [Hook mode vs check mode](#hook-mode-vs-check-mode).
 
+Tools that want the *events* rather than the packs — what must never
+happen and what is always allowed, each with its severity and the
+sanctioned alternative — read `icg catalog --json` instead: the same rules
+keyed by denial attribution (`pack` + `id`), stamped
+`"format": "icg-catalog/v1"` with a `catalog_digest` that moves whenever
+the event set does. The field-level contract is specified in
+[`docs/notes/event-catalog-json-api.md`](notes/event-catalog-json-api.md),
+and its key sets are pinned by test like the coverage API's.
+
 ---
 
 ## What Gets Protected
