@@ -4,7 +4,8 @@
 //! work together correctly during the interim coexistence period before org-rule-guard.py
 //! is partially deprecated.
 //!
-//! Per docs/plan/plan.md lines 537-545 and docs/notes/existing-enforcement-infrastructure.md:
+//! Per docs/plan/plan.md (Implementation Phases, the `irrevers-62c6f748` bullet's
+//! "Success criterion, precise") and docs/notes/existing-enforcement-infrastructure.md:
 //! - PASS criterion: CONSISTENT verdicts (both deny, or both allow)
 //! - FAIL criterion: DIVERGENT verdict (one denies, the other does not)
 //! - Expected behavior: Both systems fire on the same :latest violation → redundant double-deny
@@ -36,7 +37,8 @@ fn coexistence_both_deny_latest_image_tag_in_yaml() {
     // - org-rule-guard.py's rule 3 ALSO denies :latest in .yaml files
     // - This redundant double-deny is consistent and harmless
     //
-    // Per plan.md lines 537-545: PASS on CONSISTENT verdicts (both deny or both allow)
+    // Per plan.md (the `irrevers-62c6f748` bullet's "Success criterion, precise"):
+    // PASS on CONSISTENT verdicts (both deny or both allow)
     // This test PASSES because both systems deny the same violation.
 
     let engine = load_image_tag_engine();
