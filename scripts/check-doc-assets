@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Fail when an asset README.md references is missing, empty, or the wrong type.
+
+The demo GIF went stale once -- a failed vhs attempt left an artifact nobody
+could vouch for (irrevers-8c3bab0e) -- and nothing in the verification path
+would have caught a missing, emptied, or wrong-typed one either: every gate
+here looks at code and prose, none looks at what the README *points at*, so
+a broken reference renders as a dead image on the mirror with every cargo
+test still green. This script parses README.md's local references (markdown
+links and images, and `<img src="...">`) and fails when a referenced file is
+absent, zero-byte, or does not match the type its extension declares (media
+magic bytes; a shebang for .sh).
+
+Wired into scripts/definition-of-done.sh. The gate semantics are pinned by
+tests/doc_asset_check_tests.rs, which is what CI's cargo test runs -- this
+script never executes under rust-verify, so the tests are the CI half of the
+same gate.
+
+Usage:
+    scripts/check-doc-assets [FILE ...]
+
+Each FILE is repo-root-relative and defaults to README.md; references inside
+a file resolve against that file's own directory, as a markdown renderer
+would resolve them. External URLs and same-document anchors are skipped. A
+run that parses no local reference at all fails rather than pass vacuously
+-- a parser that matches nothing is rot, not health.
+
+Exit codes: 0 every local reference resolves; 1 at least one does not (or no
+reference was found); 2 usage error.
+"""
+
+import bisect
+import re
+import sys
+import urllib.parse
+from pathlib import Path
+
+# [text](target) and ![alt](target) -- one regex covers both link and image
+# forms; an optional "title" after the target is ignored. Matched over the
+# whole text so a tag split across lines still parses; line numbers come
+# from the match offset.
+MARKDOWN_TARGET = re.compile(
+    r"\[[^\]]*\]\(([^()\s]+)(?:\s+\"[^\"]*\"|\s+'[^']*')?\)"
+)
+IMG_SRC = re.compile(r"<img\b[^>]*?\bsrc=(\"[^\"]*\"|'[^']*')", re.IGNORECASE)
+
+SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
+
+# Extension -> (declared type, predicate over the file's first bytes).
+# Extensions without a checkable signature (.md, .json, LICENSE, ...) get
+# the presence and non-emptiness checks only.
+SIGNATURES = (
+    (".gif", "a GIF image", lambda b: b[:6] in (b"GIF87a", b"GIF89a")),
+    (".png", "a PNG image", lambda b: b.startswith(b"\x89PNG\r\n\x1a\n")),
+    (".jpg", "a JPEG image", lambda b: b.startswith(b"\xff\xd8\xff")),
+    (".jpeg", "a JPEG image", lambda b: b.startswith(b"\xff\xd8\xff")),
+    (".webp", "a WebP image", lambda b: b[:4] == b"RIFF" and b[8:12] == b"WEBP"),
+    (".svg", "an SVG image", lambda b: b"<svg" in b[:1024].lower()),
+    (".pdf", "a PDF document", lambda b: b.startswith(b"%PDF-")),
+    (".sh", "a shell script", lambda b: b.startswith(b"#!")),
+)
+
+
+def local_references(text):
+    """Yield (line, reference) for every reference in one scanned file."""
+    line_starts = [0]
+    for offset, char in enumerate(text):
+        if char == "\n":
+            line_starts.append(offset + 1)
+
+    def line_of(offset):
+        return bisect.bisect_right(line_starts, offset)
+
+    for match in MARKDOWN_TARGET.finditer(text):
+        yield line_of(match.start()), match.group(1)
+    for match in IMG_SRC.finditer(text):
+        yield line_of(match.start()), match.group(1)[1:-1]
+
+
+def is_local(reference):
+    """Off-repository targets are someone else's availability problem."""
+    if reference.startswith("#") or reference.startswith("//"):
+        return False
+    return not SCHEME.match(reference)
+
+
+def declared_type(filename):
+    for extension, declared, predicate in SIGNATURES:
+        if filename.lower().endswith(extension):
+            return declared, predicate
+    return None, None
+
+
+def check_file(md_path):
+    """Return the diagnostic lines for one scanned markdown file."""
+    base = md_path.resolve().parent
+    problems = []
+    seen = set()
+    found = 0
+    for line, reference in local_references(md_path.read_text(encoding="utf-8")):
+        reference = urllib.parse.unquote(reference)
+        if not is_local(reference):
+            continue
+        target = reference.partition("#")[0]
+        if not target:
+            continue
+        resolved = (base / target).resolve()
+        if str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        found += 1
+        where = f"{md_path.name}:{line}: {target}"
+        if not resolved.exists():
+            problems.append(f"{where}: missing -- referenced but not in the tree")
+            continue
+        if resolved.is_dir():
+            continue
+        if resolved.stat().st_size == 0:
+            problems.append(f"{where}: empty (0 bytes)")
+            continue
+        declared, predicate = declared_type(resolved.name)
+        if declared and not predicate(resolved.open("rb").read(4096)):
+            problems.append(
+                f"{where}: wrong type -- the extension declares {declared} "
+                "and the content is not"
+            )
+    return problems, found
+
+
+def main(argv):
+    repo_root = Path(__file__).resolve().parent.parent
+    if any(a in ("-h", "--help") for a in argv[1:]):
+        print(__doc__.strip())
+        return 0
+    files = [repo_root / a for a in argv[1:]] or [repo_root / "README.md"]
+    for md in files:
+        if not md.is_file():
+            print(f"check-doc-assets: scanned file not found: {md}", file=sys.stderr)
+            return 2
+
+    problems = []
+    found = 0
+    for md in files:
+        file_problems, file_found = check_file(md)
+        problems += file_problems
+        found += file_found
+    names = ", ".join(md.name for md in files)
+
+    if problems:
+        for problem in problems:
+            print(problem)
+        print(
+            f"check-doc-assets: {len(problems)} broken reference(s) in {names}",
+            file=sys.stderr,
+        )
+        return 1
+    if found == 0:
+        print(
+            f"check-doc-assets: parsed no local reference in {names} -- "
+            "refusing to pass vacuously (parser drift?)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"check-doc-assets: {names}: {found} local asset reference(s), all resolve")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

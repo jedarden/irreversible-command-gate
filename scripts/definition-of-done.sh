@@ -23,10 +23,11 @@
 # Usage: scripts/definition-of-done.sh [--fast|--slow]
 #   --fast (default)  cargo build --all-targets, cargo test, the OpenCode
 #                     plugin's node suite (opencode-plugin/, skipped loudly
-#                     when node/npm are absent), and the repo-side systemd
+#                     when node/npm are absent), the repo-side systemd
 #                     consistency gate (systemd/check-consistency.sh
 #                     --repo-only; the host-side half runs on hosts — see
-#                     systemd/README.md)
+#                     systemd/README.md), and the README asset-reference
+#                     gate (scripts/check-doc-assets)
 #   --slow            additionally cargo clippy --all-targets -- -D warnings
 #                     (fmt is deliberately not gated here: HEAD carries
 #                     unrelated in-flight formatting in tests owned by other
@@ -96,6 +97,13 @@ run scripts/opencode-plugin-typecheck
 # not just what the tests exercise. The host-side half (symlink pairing,
 # installed-unit scan) runs on hosts via systemd/install.sh's self-check.
 run systemd/check-consistency.sh --repo-only
+# README's local asset references must resolve: the demo GIF went stale once
+# (irrevers-8c3bab0e) and a missing, emptied, or wrong-typed one would render
+# broken on the mirror with every code gate green. CI covers the gate
+# semantics via tests/doc_asset_check_tests.rs (rust-verify never runs repo
+# scripts); this direct run also gates the script's executable bit, the way
+# the systemd gate does above.
+run scripts/check-doc-assets
 if [ "$SLOW" -eq 1 ]; then
   run cargo clippy --all-targets -- -D warnings
 fi
