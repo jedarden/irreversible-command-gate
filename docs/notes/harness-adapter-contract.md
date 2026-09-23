@@ -775,6 +775,16 @@ with `<name>.response.json`:
 | `claude-code-unsupported-tool` | claude-code | shipped | MCP tool → plain allow |
 | `codex-cli-deny-patch` | codex-cli | shipped | `apply_patch` deny |
 | `codex-cli-deny-command` | codex-cli | shipped | command deny |
+| `codex-cli-allow` | codex-cli | shipped | allow with the decision field omitted — the runtime refuses a grant (§6.2) |
+| `codex-cli-warning` | codex-cli | shared `warning-verdict` pack | warn: `additionalContext` carried, no decision field |
+| `codex-cli-rewrite-degraded` | codex-cli | fixture `command-rewrite-pack` | rewrite degraded to deny — `updatedInput` is unreachable on the pinned runtime (§6.2) |
+| `cursor-allow-shell` | cursor | shipped | plain `permission: allow` over the `Shell` tool |
+| `cursor-deny-shell` | cursor | shipped | deny with `user_message`/`agent_message` |
+| `cursor-rewrite-shell` | cursor | fixture `command-rewrite-pack` | `updated_input` rewrite preserving unmodeled fields |
+| `cursor-warning-shell` | cursor | shared `warning-verdict` pack | warn degraded to a bare allow — no advisory channel on a permission decision |
+| `cursor-deny-write-edit-shaped` | cursor | shipped | deny of an edit-shaped `Write` |
+| `cursor-shell-event-deny` | cursor | shipped | `beforeShellExecution` deny through the event's dedicated admission path |
+| `cursor-shell-event-rewrite-degraded` | cursor | fixture `command-rewrite-pack` | event rewrite degraded to deny — no `updated_input` field on `beforeShellExecution` |
 | `malformed-input.request.txt` | codex-cli, gemini-cli, opencode | shipped | truncated JSON → exit 0, plain allow, stderr diagnostic |
 | `gemini-cli-allow` | gemini-cli | shipped | permissive empty object — no `decision` field |
 | `gemini-cli-deny-shell` | gemini-cli | shipped | top-level `decision`/`reason` deny of `run_shell_command` |

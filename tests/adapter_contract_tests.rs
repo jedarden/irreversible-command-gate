@@ -89,6 +89,15 @@ fn golden_cases() -> Vec<(
             "claude-code-edit-rewrite-preserved-fields",
             "pre-tool-use",
         ),
+        // Codex CLI: the schema is wider than the runtime -- pinned 0.154.0
+        // honors `permissionDecision: "deny"` alone (§6.2 of the adapter
+        // contract), so the four verdicts render four different shapes. A
+        // rewrite degrades to a deny: `updatedInput`'s only precondition is
+        // an accepted `permissionDecision: "allow"`, which the runtime
+        // refuses, so there is no channel to rewrite with. An allow and a
+        // warning both omit the decision field -- an absent decision is "no
+        // opinion", the same outcome without the per-call hook error --
+        // while the warning's `additionalContext` rides along unacted-on.
         (
             "codex-cli-deny-patch",
             "codex-cli",
@@ -108,6 +117,13 @@ fn golden_cases() -> Vec<(
             "codex-cli",
             "command-rewrite-pack",
             "codex-cli-rewrite-degraded",
+            "pre-tool-use",
+        ),
+        (
+            "codex-cli-warning",
+            "codex-cli",
+            WARNING_PACK,
+            "codex-cli-warning",
             "pre-tool-use",
         ),
         (
