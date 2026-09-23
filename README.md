@@ -105,7 +105,7 @@ steps are in the **[Quick Start Guide](docs/quick-start.md)**.
 
 ## What ships today
 
-Ten rule packs, 26 guarded patterns, 18 safe patterns that keep common
+Eleven rule packs, 29 guarded patterns, 21 safe patterns that keep common
 read-only forms fast and quiet.
 
 | Pack | Rules | Blocks |
@@ -115,6 +115,7 @@ read-only forms fast and quiet.
 | `secrets` | 6 | GitHub tokens and PATs, AWS keys, Slack tokens, Anthropic keys, PEM private-key blocks — in commands *and* file content |
 | `docker` | 3 | `system prune --all`, `volume rm`, `image rm --force` |
 | `image-tag` | 2 | `:latest` and bare-SHA image references in manifests |
+| `kubectl` | 3 | `kubectl delete`; blanket mutating verbs (`apply`, `patch`, `scale`, `rollout restart`); `kubectl create` outside Argo Workflow submission — hook front-end only, never PATH-wrapped |
 | `storage-class` | 1 | storage classes that cannot be expanded or reclassed in place |
 | `beads` · `misc` · `tmux` · `argocd-topology` | 7 | conventions of the fleet this was built for — useful mainly as worked examples |
 

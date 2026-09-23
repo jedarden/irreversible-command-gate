@@ -398,6 +398,235 @@ fn quick_start_coverage_table_matches_every_shipped_pattern() {
     }
 }
 
+/// Pack counts are spelled out in doc prose ("Eleven rule packs"); extend
+/// this as the fleet grows. A count with no arm fails loudly instead of
+/// letting a doc drift silently past it.
+fn count_word(count: usize) -> &'static str {
+    match count {
+        10 => "Ten",
+        11 => "Eleven",
+        12 => "Twelve",
+        13 => "Thirteen",
+        _ => panic!("extend count_word() for {count} packs"),
+    }
+}
+
+/// The README's "What ships today" inventory must agree with packs/*.json.
+///
+/// quick-start's coverage table has been pinned to the shipped packs since
+/// the 2026-08-25 audit; the README had no equivalent guard, so the kubectl
+/// pack (ADR-001, 2026-09-19) shipped while the README went on saying "Ten
+/// rule packs, 26 guarded patterns, 18 safe patterns" with no kubectl row
+/// -- found 2026-09-23, four days later (bead `irrevers-705a39ac`).
+#[test]
+fn readme_what_ships_today_matches_the_shipped_packs() {
+    let doc = repo_relative("README.md");
+    let start = doc
+        .find("## What ships today")
+        .expect("README should keep its 'What ships today' section");
+    let section = doc[start..]
+        .split("\n## ")
+        .next()
+        .expect("the section heading is non-empty");
+
+    let packs_dir = audited_checkout().join("packs");
+    let mut guarded = 0usize;
+    let mut safe = 0usize;
+    let mut ids: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&packs_dir).expect("packs/ should be readable") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let pack: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap())
+                .expect("pack should be valid JSON");
+        guarded += pack["guarded_patterns"]
+            .as_array()
+            .expect("pack should carry guarded_patterns")
+            .len();
+        safe += pack["safe_patterns"]
+            .as_array()
+            .expect("pack should carry safe_patterns")
+            .len();
+        ids.push(
+            pack["id"]
+                .as_str()
+                .expect("pack should carry an id")
+                .to_owned(),
+        );
+    }
+    ids.sort();
+    assert!(!ids.is_empty(), "packs/ directory should not be empty");
+
+    let claim = format!(
+        "{} rule packs, {guarded} guarded patterns, {safe} safe patterns",
+        count_word(ids.len())
+    );
+    assert!(
+        section.contains(&claim),
+        "README's 'What ships today' should say {claim:?}; it disagrees with \
+         packs/*.json"
+    );
+
+    for id in &ids {
+        assert!(
+            section.contains(&format!("`{id}`")),
+            "README's 'What ships today' table omits the shipped pack `{id}` \
+             -- this is exactly how the kubectl pack shipped while the README \
+             still said Ten rule packs"
+        );
+    }
+}
+
+/// The other total-count sentences a new pack invalidates, beside the
+/// README's: quick-start's "What Gets Protected" opener and AGENTS.md's
+/// coverage transcript. Pinning them means pack number twelve cannot land
+/// without every count claim moving with it.
+#[test]
+fn doc_pack_count_claims_match_the_shipped_packs() {
+    let packs_dir = audited_checkout().join("packs");
+    let count = fs::read_dir(&packs_dir)
+        .expect("packs/ should be readable")
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .expect("entry")
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                == Some("json")
+        })
+        .count();
+    assert!(count > 0, "packs/ directory should not be empty");
+
+    let quick = quick_start();
+    assert!(
+        quick.contains(&format!("{} packs ship today", count_word(count))),
+        "quick-start.md's 'What Gets Protected' opener should say {} packs \
+         ship today",
+        count
+    );
+
+    let agents = repo_relative("AGENTS.md");
+    assert!(
+        agents.contains(&format!("the {count} packs load")),
+        "AGENTS.md's coverage --list transcript should say the {count} packs \
+         load"
+    );
+}
+
+/// The kubectl pack's shipped rule ids, and the retired exclusion claim.
+///
+/// ADR-001 (2026-09-19) absorbed org-rule-guard.py's rule 4 as
+/// `packs/kubectl.json`, and the same change removed the pre-ADR statements
+/// -- the README's "It does not cover `kubectl` mutations", quick-start's
+/// "there is deliberately no kubectl pack and there will not be one", the
+/// coexistence suite's "PERMANENTLY not absorbed". This keeps each of them
+/// from returning on a surface an operator reads first. docs/adr/001 quotes
+/// the old wording as superseded history, and plan.md and the
+/// infrastructure note carry quote-and-retract residuals; both sit outside
+/// this scan set on purpose.
+#[test]
+fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
+    let pack: serde_json::Value =
+        serde_json::from_str(&repo_relative("packs/kubectl.json"))
+            .expect("kubectl pack should be valid JSON");
+    let rule_ids: Vec<&str> = pack["guarded_patterns"]
+        .as_array()
+        .expect("kubectl pack should carry guarded_patterns")
+        .iter()
+        .map(|rule| rule["id"].as_str().expect("rule should carry an id"))
+        .collect();
+    assert_eq!(
+        rule_ids,
+        [
+            "kubectl-delete",
+            "kubectl-mutating-verb",
+            "kubectl-create-outside-argo"
+        ],
+        "the kubectl pack's rule ids changed; update quick-start's coverage \
+         table, the README row and this guard together"
+    );
+
+    let quick = quick_start();
+    for id in &rule_ids {
+        assert!(
+            quick.contains(id),
+            "quick-start.md's coverage table should name kubectl rule `{id}`"
+        );
+    }
+    assert!(
+        quick.contains(&format!("| `kubectl` | {} |", rule_ids.len())),
+        "quick-start.md's coverage table should carry a kubectl row with \
+         {} rules",
+        rule_ids.len()
+    );
+
+    let readme = repo_relative("README.md");
+    assert!(
+        readme.contains("Its `kubectl` rules are blanket, not ArgoCD-aware"),
+        "README's non-goals should describe the kubectl pack as it ships -- \
+         blanket, not ArgoCD-aware (ADR-001)"
+    );
+
+    // The coexistence documentation records the absorption, not the
+    // exclusion: the migration guide's rule table says double-deny, and the
+    // infrastructure note says rule 4 moved to the pack.
+    let migration = repo_relative("docs/operators/migration-from-org-rule-guard.md");
+    assert!(
+        migration.contains("**Covered by both**"),
+        "the org-rule-guard migration guide should keep recording mutating \
+         kubectl as denied by both guards during coexistence"
+    );
+    let infrastructure =
+        repo_relative("docs/notes/existing-enforcement-infrastructure.md");
+    assert!(
+        infrastructure.contains("absorbed 2026-09-19 as the `kubectl`"),
+        "existing-enforcement-infrastructure.md should keep recording rule 4 \
+         as absorbed by the kubectl pack"
+    );
+
+    let mut scanned: Vec<(String, String)> = OPERATOR_FACING_DOCS
+        .iter()
+        .map(|doc| (doc.to_string(), repo_relative(doc)))
+        .collect();
+    scanned.push(("README.md".to_owned(), readme));
+    scanned.push(("AGENTS.md".to_owned(), repo_relative("AGENTS.md")));
+
+    // (needle, why it is wrong) -- the same shape
+    // `operator_docs_do_not_cite_a_fictional_surface` uses.
+    let banned = [
+        (
+            "no kubectl pack",
+            "ADR-001 shipped the kubectl pack; a doc may describe its scope \
+             but not claim it does not exist",
+        ),
+        (
+            "deliberately no kubectl",
+            "the pre-ADR-001 exclusion wording quick-start carried until \
+             2026-09-19",
+        ),
+        (
+            "It does not cover `kubectl`",
+            "the pre-ADR-001 README non-goal; the kubectl pack covers these, \
+             blanket rather than ArgoCD-aware",
+        ),
+        (
+            "PERMANENTLY not absorbed",
+            "the pre-ADR-001 coexistence-suite wording; rule 4 is absorbed",
+        ),
+    ];
+    for (doc, text) in &scanned {
+        for (needle, why) in banned {
+            assert!(
+                !text.contains(needle),
+                "{doc} cites {needle:?} -- {why}"
+            );
+        }
+    }
+}
+
 /// Operator-facing docs must not resurrect the fictional inventory the
 /// 2026-08-25 audit removed from quick-start.md.
 ///
