@@ -28,8 +28,8 @@ claim is "shrinks to the Write/Edit credential-value rule" until a future
 phase actually picks up that channel. "Deprecated" means
 "superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is
-framed accordingly. Covers both **Claude Code and Codex CLI** as guarded
-harnesses.
+framed accordingly. Covers **Claude Code, Codex CLI, and Cursor** as
+guarded harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
 knowing the sanctioned alternative, actionable in its very next step — not
@@ -48,7 +48,13 @@ past that line.
 Codex (ChatGPT web / async "Codex cloud tasks") runs in an OpenAI-managed
 container this project has no reach into — neither the PATH-wrapper nor a
 native hook adapter can see it. Only the local `codex` and Claude Code CLIs
-are covered. See `docs/notes/multi-harness-integration.md`.
+are covered there. Cursor is covered as a native-hook harness (below), but
+its cloud-agent mode carries an accepted gap of the same shape: cloud
+agents load only a project-level `.cursor/hooks.json`, and sometimes begin
+in a read-only environment whose early exploratory turns run no hooks at
+all — so those turns are unguarded by both layers
+(`harness-adapter-contract.md` §6.5). See
+`docs/notes/multi-harness-integration.md`.
 
 ## Architecture
 
@@ -226,7 +232,7 @@ The existing `~/.local/bin/cargo` precedent is user-owned because cargo test
 offloading is not a security boundary; this project's guard IS, so it gets
 the stricter deployment shape.
 
-**Integration point: resolved — both layers, both harnesses**, not a
+**Integration point: resolved — both layers, all three harnesses**, not a
 choice between them. Two independent, complementary front-ends sharing one
 engine:
 - A **PATH-wrapper binary** shadowing whatever binaries the *currently
@@ -240,11 +246,13 @@ engine:
   see `CLAUDE.md`'s "Rust Build/Test Offloading"). Confirmed to work for
   Codex CLI too: its command execution is `$PATH`-resolved (`execvp`-style),
   and its sandbox restricts filesystem/network, not binary discovery.
-- **Native PreToolUse hook adapters** for both Claude Code and Codex CLI —
-  Codex ships a structurally similar hook (deny/allow + `updatedInput`, on
-  Bash and `apply_patch`), confirmed via OpenAI's own docs, though notably
-  younger and still stabilizing (~5 months old as of this writing) than
-  Claude Code's.
+- **Native PreToolUse hook adapters** for Claude Code, Codex CLI, and
+  Cursor — Codex ships a structurally similar hook (deny/allow +
+  `updatedInput`, on Bash and `apply_patch`), confirmed via OpenAI's own
+  docs, though notably younger and still stabilizing (~5 months old as of
+  this writing) than Claude Code's; Cursor ships `preToolUse` plus a
+  dedicated `beforeShellExecution` event, each served by its own ICG
+  adapter (below).
 
   **Claude Code installation contract:** the user-level
   `~/.claude/settings.json` registers `icg hook` as its own `PreToolUse`
@@ -268,6 +276,26 @@ engine:
   content-mode payloads, including multi-file patches. The operator
   installation procedure documents the corresponding merge and verification
   steps in `docs/operators/deployment-guide.md`.
+
+  **Cursor installation contract:** `icg install-cursor-hooks` registers
+  the running icg binary as two entries in `.cursor/hooks.json` (the
+  project file, by default; `--user` and `--file` select
+  `~/.cursor/hooks.json` or an exact path) — the `preToolUse` adapter
+  (`icg hook --harness cursor`) and the `beforeShellExecution` adapter
+  (`icg hook --harness cursor --event before-shell-execution`).
+  Installation is idempotent: ICG-owned entries are replaced rather than
+  duplicated, every unrelated hook is preserved verbatim, and a file that
+  does not parse — or carries a `version` other than 1 — fails with a clear
+  error and is left unchanged. Cursor's accepted gaps, each pinned by
+  `docs/notes/harness-adapter-contract.md` §6.5: cloud agents load only a
+  project-level `.cursor/hooks.json` and sometimes begin in a read-only
+  environment whose early exploratory turns run no hooks at all;
+  `beforeShellExecution` has no `updated_input` field, so that event cannot
+  express a rewrite and a Rewrite degrades to a Deny there; `ask` is
+  accepted by the `preToolUse` schema but not enforced, so ICG emits only
+  `allow`/`deny` on Cursor; and none of this has been validated against a
+  live Cursor (a GUI IDE not installed on this box) —
+  `scripts/cursor-dispatch-e2e` plays Cursor's documented dispatch.
 
 Rationale for running both rather than picking one: they have non-
 overlapping blind spots (a wrapper misses structured/MCP tool calls a hook
@@ -319,8 +347,8 @@ for Codex is still maturing). Full reasoning in
   **Each channel is realized differently per front-end — same decision,
   different mechanism.** On the hook front-end (`icg hook`), all three map
   directly onto the native JSON response fields (`permissionDecision:
-  deny`, `updatedInput`, `additionalContext`) both harnesses accept in
-  their schema — though Codex doesn't yet *honor* `additionalContext`
+  deny`, `updatedInput`, `additionalContext`) the Claude Code and Codex CLI
+  hook schemas accept — though Codex doesn't yet *honor* `additionalContext`
   specifically, same caveat as Phase 3 below; "accepts in schema" and
   "acts on it" aren't the same claim. On the PATH-wrapper front-end
   there's no such protocol — the
