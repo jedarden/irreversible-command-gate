@@ -59,8 +59,10 @@ different shape: the installed matcher is anchored to exactly the three
 modeled tool names, so MCP tool calls (`mcp__*`) and Gemini's read-only
 tools never route to ICG through the hook — those calls are unguarded by
 that layer by contract rather than by omission
-(`harness-adapter-contract.md` §6.4, §3.4), and documenting the
-MCP-versus-shell/file coverage split in the contract doc is still pending
+(`harness-adapter-contract.md` §6.4, §3.4); §6.4's coverage-boundary
+bullet documents that MCP-versus-shell/file split — the
+`Unsupported`-classifies-to-allow contract for `mcp__*` and read-only
+names, and the anchored-matcher scoping that keeps them unguarded
 (`irrevers-016b142e`). See
 `docs/notes/multi-harness-integration.md`.
 

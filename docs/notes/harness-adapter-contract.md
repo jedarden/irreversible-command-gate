@@ -491,6 +491,30 @@ investigation**, never a runtime guess in the plugin.
   inertness, and fake-target canaries executing Gemini's documented
   dispatch semantics for the denied, failed-adapter, and dead-adapter
   cases), and the unit tests in `src/adapter.rs`.
+- **Coverage boundary:** the shell and file coverage above is only part of
+  this harness's story; MCP coverage is a separate half with a different
+  shape. MCP tool calls (named with the `mcp__` prefix; the tests exercise
+  the single-underscore spelling `mcp_fs_write_file` alongside it) and
+  Gemini's read-only tools are deliberately unmodeled: they classify to
+  `Unsupported` by contract (§3.4) with `input_source: None` and render a
+  plain allow — the permissive empty object, no stderr diagnostic (§8).
+  The installed matcher carries the same split into dispatch: it is
+  anchored to exactly the three covered names
+  (`^(run_shell_command|write_file|replace)$`), and the anchors are
+  load-bearing — Gemini matchers are regular expressions compared against
+  tool names, so an unanchored `write_file` would also route MCP names
+  (`mcp__fs__write_file`, `mcp_fs_write_file`) and near-collisions
+  (`safe_write_file`, `replace_all`) to ICG, and read-only tools would be
+  one upstream rename away from the gate. Anchored, those names select
+  zero hooks and ICG is never invoked, so MCP and read-only calls are
+  unguarded by the hook layer by contract rather than by omission; the
+  PATH-wrapper layer
+  ([`multi-harness-integration.md`](multi-harness-integration.md)) remains
+  the defense for what structured tools actually execute (§3.4). Locked by
+  `gemini_unmodeled_tools_classify_unsupported_and_allow` in
+  `src/adapter.rs`, `the_installed_matcher_is_the_anchored_three_tool_alternation`
+  in `tests/gemini_hooks_installer_tests.rs`, and the matcher-scoping step
+  (S4) of the e2e proof below.
 - **Versioning:** the hooks system has no wire-protocol version field; the
   hook reference in the repository is normative. Observed against the
   `main` documentation tree of `google-gemini/gemini-cli`; latest release at
