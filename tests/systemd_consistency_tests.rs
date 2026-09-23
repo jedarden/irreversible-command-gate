@@ -5,10 +5,15 @@
 //! five minutes to fail `203/EXEC` for a week. The scaffolding makes that
 //! drift mechanically detectable; these tests keep the scaffolding honest:
 //! the scripts must parse, must stay executable, the README must state the
-//! same-commit invariant, and `check-consistency.sh` must actually flag both
-//! drift directions (against fixtures — the CI runner has no
+//! same-commit invariant, and `check-consistency.sh` must actually flag every
+//! drift direction (against fixtures — the CI runner has no
 //! `~/.config/systemd/user`, which is why the script takes `--repo-only` and
-//! directory overrides).
+//! directory overrides): a tracked unit pointing at a missing path, a host
+//! unit executing a missing repo path, a dangling link into the repo, and —
+//! the direction that closes the loop on `irrevers-833f9353` — a tracked
+//! unit installed as anything other than install.sh's symlink to the
+//! tracked file, which stays invisible to the path checks for as long as
+//! every path it references still exists.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -148,6 +153,13 @@ impl Fixture {
         )
         .expect("write host unit");
     }
+
+    /// `target` may or may not exist — dangling links are a shape under test.
+    #[cfg(unix)]
+    fn host_symlink(&self, name: &str, target: &Path) {
+        std::os::unix::fs::symlink(target, self.root.join("host").join(name))
+            .expect("symlink host unit");
+    }
 }
 
 impl Drop for Fixture {
@@ -283,6 +295,106 @@ fn check_flags_dangling_symlinks_into_the_repo() {
     assert!(
         out.contains("daemon-reload"),
         "remediation should include daemon-reload:\n{out}"
+    );
+}
+
+/// A tracked unit installed on the host as a plain-file COPY. Every path it
+/// references still exists, so direction (b) has nothing to say — only the
+/// tracked -> host pairing check can catch it, and catching it here (while
+/// the script still lives) is the whole point: this is the silent half of
+/// the original incident, one script-deletion away from a week of 203/EXEC.
+#[test]
+fn check_flags_plain_file_copy_of_a_tracked_unit() {
+    let f = Fixture::new();
+    f.script("pair.sh", "#!/bin/bash\n");
+    f.tracked_unit(
+        "pair.service",
+        &format!("{}/scripts/pair.sh", f.root.display()),
+    );
+    f.host_unit(
+        "pair.service",
+        &format!("{}/scripts/pair.sh", f.root.display()),
+    );
+
+    let (code, out) = run_check(
+        &f.root,
+        &f.root.join("systemd"),
+        Some(&f.root.join("host")),
+        false,
+    );
+    assert_eq!(code, 1, "a copy of a tracked unit is drift, got:\n{out}");
+    assert!(out.contains("pair.service"), "should name the unit:\n{out}");
+    assert!(
+        out.contains("regular file"),
+        "should say what the host file is:\n{out}"
+    );
+    assert!(
+        out.contains("install.sh"),
+        "remediation should be to reinstall as a symlink:\n{out}"
+    );
+}
+
+/// A host file at a tracked unit's destination that symlinks somewhere else
+/// — another checkout, a renamed file, someone else's unit. install.sh is
+/// the only creator of links to tracked units and links to the tracked file
+/// itself, so anything else at that destination is drift.
+#[test]
+fn check_flags_installed_unit_symlinking_elsewhere() {
+    let f = Fixture::new();
+    f.script("pair.sh", "#!/bin/bash\n");
+    f.tracked_unit(
+        "pair.service",
+        &format!("{}/scripts/pair.sh", f.root.display()),
+    );
+    f.host_symlink("pair.service", &f.root.join("elsewhere.service"));
+
+    let (code, out) = run_check(
+        &f.root,
+        &f.root.join("systemd"),
+        Some(&f.root.join("host")),
+        false,
+    );
+    assert_eq!(
+        code, 1,
+        "a foreign symlink at our destination is drift:\n{out}"
+    );
+    assert!(out.contains("pair.service"), "should name the unit:\n{out}");
+    assert!(
+        out.contains("elsewhere.service"),
+        "should say where it actually points:\n{out}"
+    );
+}
+
+/// The shape install.sh produces — every tracked unit present on the host as
+/// a symlink to the tracked file — passes the full host scan, and a tracked
+/// unit this host never installed is not a violation.
+#[test]
+fn check_passes_when_installed_units_are_symlinks_to_tracked_units() {
+    let f = Fixture::new();
+    f.script("pair.sh", "#!/bin/bash\n");
+    f.script("spare.sh", "#!/bin/bash\n");
+    f.tracked_unit(
+        "linked.service",
+        &format!("{}/scripts/pair.sh", f.root.display()),
+    );
+    f.tracked_unit(
+        "not-installed-here.service",
+        &format!("{}/scripts/spare.sh", f.root.display()),
+    );
+    f.host_symlink(
+        "linked.service",
+        &f.root.join("systemd").join("linked.service"),
+    );
+
+    let (code, out) = run_check(
+        &f.root,
+        &f.root.join("systemd"),
+        Some(&f.root.join("host")),
+        false,
+    );
+    assert_eq!(
+        code, 0,
+        "install.sh's own output must satisfy the full check, got:\n{out}"
     );
 }
 

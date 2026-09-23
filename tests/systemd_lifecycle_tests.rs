@@ -566,3 +566,27 @@ fn uninstall_reloads_the_daemon_after_removal() {
         "uninstall must daemon-reload, saw: {calls:?}"
     );
 }
+
+/// The lifecycle round trip the consistency check exists to certify: after
+/// install, the FULL host scan (dead-path, dangling-link and copy detection,
+/// and the tracked -> host symlink pairing) passes over what install left
+/// behind; after uninstall, it passes again over what uninstall left behind.
+/// An operation whose own output fails its own gate is not consistent.
+#[test]
+fn consistency_check_passes_after_install_and_after_uninstall() {
+    let e = Env::new("roundtrip");
+    e.unit("a-first.service", true);
+    e.unit("b-second.timer", false);
+
+    e.assert_ok(&e.run("install.sh", &[]), "install");
+    e.assert_ok(
+        &e.run("check-consistency.sh", &[]),
+        "full host-side check after install",
+    );
+
+    e.assert_ok(&e.run("uninstall.sh", &[]), "uninstall");
+    e.assert_ok(
+        &e.run("check-consistency.sh", &[]),
+        "full host-side check after uninstall",
+    );
+}

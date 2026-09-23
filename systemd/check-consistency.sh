@@ -15,6 +15,15 @@
 #   stayed behind in ~/.config/systemd/user/, and the timer kept waking every
 #   five minutes to fail 203/EXEC — for a week.
 #
+# Direction (c), tracked -> host: a unit this repo tracks, when present in the
+#   host unit dir at all, must be install.sh's symlink to the tracked file.
+#   A regular file at that destination is a COPY — invisible to direction (b)
+#   for as long as every path it references still exists, which is precisely
+#   the window in which a copy starts drifting from its tracked unit. A
+#   symlink to anywhere else (another checkout, a renamed file) is the same
+#   drift one checkout-deletion away. A tracked unit simply not installed on
+#   this host is not a violation: not every host installs every unit.
+#
 # "Exists in the repo tree" means exists in the working checkout on this
 # host, because that is what systemd resolves against. A binary under
 # target/ is never in git but is real to a unit once built; a script that
@@ -121,6 +130,37 @@ else
         violations=$((violations + 1))
       fi
     done < <(repo_paths_in_unit "$unit" exec)
+  done
+
+  # --------------------------------------------------------------------------
+  # Direction (c): a tracked unit present on the host must be our symlink
+  # --------------------------------------------------------------------------
+  # install.sh is the only thing that creates a host symlink pointing at a
+  # tracked unit, and it always links to the tracked file itself — so anything
+  # else at that destination is drift, whatever its exec paths say.
+  for unit in "${tracked[@]}"; do
+    name="${unit##*/}"
+    dest="$HOST_DIR/$name"
+    [ -e "$dest" ] || [ -L "$dest" ] || continue
+    if [ -L "$dest" ]; then
+      target="$(readlink "$dest")"
+      if [ "$target" != "$unit" ]; then
+        say "VIOLATION (tracked -> host): installed unit $name does not symlink to the tracked unit:"
+        say "  it points at $target"
+        say "  The tracked unit is $unit"
+        say "  Resolve it by hand (it is not ours to replace), then re-run systemd/install.sh."
+        violations=$((violations + 1))
+      fi
+    else
+      say "VIOLATION (tracked -> host): installed unit $name is a regular file, not a symlink to the tracked unit"
+      say "  A copy is the silent half of the original incident: it keeps working until the day"
+      say "  its script is deleted, then fails 203/EXEC with nothing here pointing at it."
+      say "  The tracked unit is $unit"
+      say "  Remove the copy by hand, then re-run systemd/install.sh:"
+      say "    systemctl --user disable --now '$name'"
+      say "    rm '$dest' && systemctl --user daemon-reload && systemd/install.sh"
+      violations=$((violations + 1))
+    fi
   done
 fi
 

@@ -115,11 +115,15 @@ different places with no link between them. So:
 - A commit that deletes a script must, **in the same commit**, delete its
   tracked unit and say in the commit message that hosts need
   `systemd/uninstall.sh` run.
-- `systemd/check-consistency.sh` fails on either direction of drift: a
-  tracked unit referencing a path missing from the working tree, or a host
-  unit executing a repo path that no longer exists. Run it before pushing
-  anything that touches `systemd/` or a script a unit executes; CI runs the
-  repo-side half (`tests/systemd_consistency_tests.rs`).
+- `systemd/check-consistency.sh` fails on three shapes of drift: a tracked
+  unit referencing a path missing from the working tree, a host unit
+  executing a repo path that no longer exists, and a tracked unit installed
+  on the host as anything other than `install.sh`'s symlink to the tracked
+  file (a copy passes the path checks until the day its script dies — that
+  silence is the original incident). Run it before pushing anything that
+  touches `systemd/` or a script a unit executes; the repo-side half is in
+  the gates — `cargo test` in CI (`tests/systemd_consistency_tests.rs`) and
+  an explicit step in `scripts/definition-of-done.sh`.
 
 ## Repository conventions
 

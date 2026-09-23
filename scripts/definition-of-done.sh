@@ -21,9 +21,12 @@
 # rebuild at the ~20s the workspace crate costs, not a cold dep tree.
 #
 # Usage: scripts/definition-of-done.sh [--fast|--slow]
-#   --fast (default)  cargo build --all-targets, cargo test, and the
-#                     OpenCode plugin's node suite (opencode-plugin/,
-#                     skipped loudly when node/npm are absent)
+#   --fast (default)  cargo build --all-targets, cargo test, the OpenCode
+#                     plugin's node suite (opencode-plugin/, skipped loudly
+#                     when node/npm are absent), and the repo-side systemd
+#                     consistency gate (systemd/check-consistency.sh
+#                     --repo-only; the host-side half runs on hosts — see
+#                     systemd/README.md)
 #   --slow            additionally cargo clippy --all-targets -- -D warnings
 #                     (fmt is deliberately not gated here: HEAD carries
 #                     unrelated in-flight formatting in tests owned by other
@@ -85,6 +88,14 @@ fi
 # Type-level check on the deployed plugin artifact (skips loudly without
 # tsc — see scripts/opencode-plugin-typecheck).
 run scripts/opencode-plugin-typecheck
+# The systemd consistency gate, repo-side half: a tree whose tracked units
+# reference paths missing from the working tree cannot be "done" — that is
+# the drift that once fired 203/EXEC for a week (irrevers-46f2b741). CI
+# covers this via cargo test (tests/systemd_consistency_tests.rs); running
+# the script directly also gates the executable bit and the script itself,
+# not just what the tests exercise. The host-side half (symlink pairing,
+# installed-unit scan) runs on hosts via systemd/install.sh's self-check.
+run systemd/check-consistency.sh --repo-only
 if [ "$SLOW" -eq 1 ]; then
   run cargo clippy --all-targets -- -D warnings
 fi

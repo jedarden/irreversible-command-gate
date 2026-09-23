@@ -60,6 +60,15 @@ disabled unit counts: it is one `enable` away from the same `203/EXEC`, which
 is why `icg-frontier-consistency.service` (found by this check on its first
 run, 2026-09-14) had gone unnoticed — it never fired.
 
+Direction (c), **tracked → host**: a unit this repo tracks, when present in
+the host unit dir at all, must be `install.sh`'s symlink to the tracked
+file. A regular file at that destination is a copy — and a copy is invisible
+to direction (b) for as long as every path it references still exists, which
+is exactly the window in which it starts drifting from its tracked unit. A
+symlink to anywhere else (another checkout, a renamed file) is the same drift
+one checkout-deletion away. A tracked unit this host never installed is not
+a violation: not every host installs every unit.
+
 "Exists in the repo tree" means exists in the working checkout on the host:
 that is what systemd resolves against. A `target/` binary is never in git but
 is real to a unit once built; a script that exists only in git history is
@@ -85,7 +94,10 @@ The required cleanup, in the order it should happen:
 4. **A plain-file copy** (pre-scaffolding residue like the retired
    `icg-frontier-consistency.service`) proves nothing about its origin, so
    nothing deletes it automatically. `check-consistency.sh` names it and
-   prints the exact `systemctl`/`rm` commands until a human removes it.
+   prints the exact `systemctl`/`rm` commands until a human removes it —
+   direction (c) flags every copy sitting at a tracked unit's destination,
+   whether or not its paths still resolve, so it cannot wait quietly for the
+   day its script dies.
 
 ## Limits
 
@@ -93,6 +105,10 @@ The required cleanup, in the order it should happen:
   spaces would be mis-split. No unit here has ever needed one.
 - `%h`-style specifiers are ignored (they never match the repo root).
 - Drop-in overrides (`*.service.d/`) are not parsed; the main unit file is.
-- Direction (b) needs the host, so CI runs only direction (a) via
-  `tests/systemd_consistency_tests.rs` (which also exercises both directions
-  against fixtures).
+- Directions (b) and (c) need the host, so CI runs only direction (a) — via
+  `cargo test` (the release gate in the `icg-ci` workflow) and as an explicit
+  step of `scripts/definition-of-done.sh` — while
+  `tests/systemd_consistency_tests.rs` exercises all three directions against
+  fixtures, and `tests/systemd_lifecycle_tests.rs` proves the round trip:
+  the full check passes over what `install.sh` leaves behind and over what
+  `uninstall.sh` leaves behind.
