@@ -134,7 +134,11 @@ fn guarded_git_rules_fire_through_timeout_xargs_and_nice_wrappers() {
 
     // Allow channel: safe git verbs keep their safe-pattern coverage through
     // a wrapper -- unwrapping must not widen guarded matching.
-    for command in ["timeout 30 git status", "xargs -0 git status", "nice -n 5 git log"] {
+    for command in [
+        "timeout 30 git status",
+        "xargs -0 git status",
+        "nice -n 5 git log",
+    ] {
         assert_eq!(
             engine.evaluate_command(&CommandSource::Hook(command.to_string())),
             CheckResult::Allowed,

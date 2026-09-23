@@ -36,8 +36,12 @@ fn audited_checkout() -> PathBuf {
 
 fn read_repo_file(relative: &str) -> String {
     let path = audited_checkout().join(relative);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("should read {} from the audited checkout: {e}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "should read {} from the audited checkout: {e}",
+            path.display()
+        )
+    })
 }
 
 /// The `withItems` codex versions of the `codex-hook-compatibility` step in
@@ -120,7 +124,8 @@ fn numeric(version: &str) -> (u64, u64, u64) {
 /// while the matrix kept gating 0.144-0.146 only.
 #[test]
 fn the_codex_compatibility_matrix_covers_the_runtime_pin() {
-    let template = read_repo_file("containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml");
+    let template =
+        read_repo_file("containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml");
     let versions = codex_matrix_versions(&template);
 
     assert!(
@@ -137,7 +142,8 @@ fn the_codex_compatibility_matrix_covers_the_runtime_pin() {
 /// in ascending order so the next refresh appends instead of scattering.
 #[test]
 fn matrix_entries_are_well_formed_and_ascending() {
-    let template = read_repo_file("containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml");
+    let template =
+        read_repo_file("containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml");
     let versions = codex_matrix_versions(&template);
 
     for version in &versions {

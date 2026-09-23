@@ -438,9 +438,8 @@ fn readme_what_ships_today_matches_the_shipped_packs() {
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let pack: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap())
-                .expect("pack should be valid JSON");
+        let pack: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap())
+            .expect("pack should be valid JSON");
         guarded += pack["guarded_patterns"]
             .as_array()
             .expect("pack should carry guarded_patterns")
@@ -529,9 +528,8 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
 /// this scan set on purpose.
 #[test]
 fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
-    let pack: serde_json::Value =
-        serde_json::from_str(&repo_relative("packs/kubectl.json"))
-            .expect("kubectl pack should be valid JSON");
+    let pack: serde_json::Value = serde_json::from_str(&repo_relative("packs/kubectl.json"))
+        .expect("kubectl pack should be valid JSON");
     let rule_ids: Vec<&str> = pack["guarded_patterns"]
         .as_array()
         .expect("kubectl pack should carry guarded_patterns")
@@ -579,8 +577,7 @@ fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
         "the org-rule-guard migration guide should keep recording mutating \
          kubectl as denied by both guards during coexistence"
     );
-    let infrastructure =
-        repo_relative("docs/notes/existing-enforcement-infrastructure.md");
+    let infrastructure = repo_relative("docs/notes/existing-enforcement-infrastructure.md");
     assert!(
         infrastructure.contains("absorbed 2026-09-19 as the `kubectl`"),
         "existing-enforcement-infrastructure.md should keep recording rule 4 \
@@ -619,10 +616,7 @@ fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
     ];
     for (doc, text) in &scanned {
         for (needle, why) in banned {
-            assert!(
-                !text.contains(needle),
-                "{doc} cites {needle:?} -- {why}"
-            );
+            assert!(!text.contains(needle), "{doc} cites {needle:?} -- {why}");
         }
     }
 }

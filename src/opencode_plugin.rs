@@ -80,7 +80,10 @@ impl InstallOptions {
             return Ok(file.clone());
         }
         if let Some(project_dir) = &self.project_dir {
-            return Ok(project_dir.join(".opencode").join("plugin").join(PLUGIN_FILE_NAME));
+            return Ok(project_dir
+                .join(".opencode")
+                .join("plugin")
+                .join(PLUGIN_FILE_NAME));
         }
         // Global plugin directory: <$XDG_CONFIG_HOME|~/.config>/opencode/plugin/icg.ts —
         // the same global config dir resolution OpenCode itself uses
@@ -88,13 +91,16 @@ impl InstallOptions {
         let config_dir = match std::env::var_os("XDG_CONFIG_HOME") {
             Some(dir) if !dir.is_empty() => PathBuf::from(dir),
             _ => {
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .context("cannot determine the home directory; pass --file <path> explicitly")?;
+                let home = std::env::var_os("HOME").map(PathBuf::from).context(
+                    "cannot determine the home directory; pass --file <path> explicitly",
+                )?;
                 home.join(".config")
             }
         };
-        Ok(config_dir.join("opencode").join("plugin").join(PLUGIN_FILE_NAME))
+        Ok(config_dir
+            .join("opencode")
+            .join("plugin")
+            .join(PLUGIN_FILE_NAME))
     }
 }
 
@@ -195,8 +201,7 @@ fn uninstall(target: &std::path::Path) -> Result<InstallReport> {
             PLUGIN_MARKER,
         );
     }
-    fs::remove_file(target)
-        .with_context(|| format!("failed to remove {}", target.display()))?;
+    fs::remove_file(target).with_context(|| format!("failed to remove {}", target.display()))?;
     report.removed = true;
     Ok(report)
 }
@@ -230,10 +235,7 @@ fn print_report(target: &std::path::Path, report: &InstallReport, uninstall: boo
         return;
     }
     if report.backup_written {
-        println!(
-            "Prior ICG plugin saved as {}.icg-backup",
-            target.display()
-        );
+        println!("Prior ICG plugin saved as {}.icg-backup", target.display());
     }
     if report.created || report.updated {
         println!(
