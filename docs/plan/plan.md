@@ -28,8 +28,8 @@ claim is "shrinks to the Write/Edit credential-value rule" until a future
 phase actually picks up that channel. "Deprecated" means
 "superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is
-framed accordingly. Covers **Claude Code, Codex CLI, and Cursor** as
-guarded harnesses.
+framed accordingly. Covers **Claude Code, Codex CLI, Cursor, and Gemini
+CLI** as guarded harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
 knowing the sanctioned alternative, actionable in its very next step — not
@@ -53,7 +53,15 @@ its cloud-agent mode carries an accepted gap of the same shape: cloud
 agents load only a project-level `.cursor/hooks.json`, and sometimes begin
 in a read-only environment whose early exploratory turns run no hooks at
 all — so those turns are unguarded by both layers
-(`harness-adapter-contract.md` §6.5). See
+(`harness-adapter-contract.md` §6.5). Gemini CLI is covered as a
+native-hook harness (below), and its accepted coverage boundary has a
+different shape: the installed matcher is anchored to exactly the three
+modeled tool names, so MCP tool calls (`mcp__*`) and Gemini's read-only
+tools never route to ICG through the hook — those calls are unguarded by
+that layer by contract rather than by omission
+(`harness-adapter-contract.md` §6.4, §3.4), and documenting the
+MCP-versus-shell/file coverage split in the contract doc is still pending
+(`irrevers-016b142e`). See
 `docs/notes/multi-harness-integration.md`.
 
 ## Architecture
@@ -232,7 +240,7 @@ The existing `~/.local/bin/cargo` precedent is user-owned because cargo test
 offloading is not a security boundary; this project's guard IS, so it gets
 the stricter deployment shape.
 
-**Integration point: resolved — both layers, all three harnesses**, not a
+**Integration point: resolved — both layers, all four harnesses**, not a
 choice between them. Two independent, complementary front-ends sharing one
 engine:
 - A **PATH-wrapper binary** shadowing whatever binaries the *currently
@@ -246,13 +254,15 @@ engine:
   see `CLAUDE.md`'s "Rust Build/Test Offloading"). Confirmed to work for
   Codex CLI too: its command execution is `$PATH`-resolved (`execvp`-style),
   and its sandbox restricts filesystem/network, not binary discovery.
-- **Native PreToolUse hook adapters** for Claude Code, Codex CLI, and
-  Cursor — Codex ships a structurally similar hook (deny/allow +
+- **Native PreToolUse hook adapters** for Claude Code, Codex CLI, Cursor,
+  and Gemini CLI — Codex ships a structurally similar hook (deny/allow +
   `updatedInput`, on Bash and `apply_patch`), confirmed via OpenAI's own
   docs, though notably younger and still stabilizing (~5 months old as of
   this writing) than Claude Code's; Cursor ships `preToolUse` plus a
   dedicated `beforeShellExecution` event, each served by its own ICG
-  adapter (below).
+  adapter (below); Gemini CLI ships a synchronous `BeforeTool` command
+  hook (JSON on stdin and stdout, a regex matcher over tool names), also
+  served by its own ICG adapter (below).
 
   **Claude Code installation contract:** the user-level
   `~/.claude/settings.json` registers `icg hook` as its own `PreToolUse`
@@ -296,6 +306,38 @@ engine:
   `allow`/`deny` on Cursor; and none of this has been validated against a
   live Cursor (a GUI IDE not installed on this box) —
   `scripts/cursor-dispatch-e2e` plays Cursor's documented dispatch.
+
+  **Gemini CLI installation contract:** `icg install-gemini-hooks`
+  registers the running icg binary as one `BeforeTool` command entry in
+  `.gemini/settings.json` (the project file, by default; `--user`,
+  `--project-dir`, and `--file` select `~/.gemini/settings.json`, another
+  project root, or an exact path), carrying a 10-second `timeout` and a
+  matcher anchored to exactly the three modeled tool names
+  (`^(run_shell_command|write_file|replace)$`) — the anchors are the
+  scoping guarantee, since Gemini matchers are regexes compared against
+  tool names and an unanchored `write_file` would also match an MCP tool
+  named `mcp_fs_write_file`. Installation is idempotent: ICG-owned entries
+  are replaced rather than duplicated, every unrelated hook and setting is
+  preserved verbatim, the prior file is backed up once as
+  `<target>.icg-backup`, and a file that is not valid JSON fails with a
+  clear error and is left unchanged; `--uninstall` removes the ICG entries
+  and never adds keys. Gemini's accepted gaps, each pinned by
+  `docs/notes/harness-adapter-contract.md` §6.4: the `BeforeTool`
+  response has no advisory-context channel, so a Warn degrades to a bare
+  allow carrying the attributed reason on `systemMessage`; a Rewrite rides
+  `hookSpecificOutput.tool_input`, which Gemini merge-overrides
+  field-by-field, so ICG renders the complete replacement input (every
+  field the harness sent preserved, only the rewrite key substituted)
+  rather than Claude Code's whole-object `updatedInput`; ICG deliberately
+  never emits a top-level `decision: "allow"`, whose `BeforeTool` impact
+  is unspecified and could stand in for Gemini's own confirmation flow;
+  the dispatch is natively fail-open — any exit other than 0 or 2, a
+  crash, or a timeout is a non-fatal warning and the CLI continues, so
+  there is no fail-closed knob to set; and the wire carries no version
+  field, so the contract pin (gemini-cli v0.60.0, `docs/hooks/reference.md`,
+  retrieved 2026-09-18) lives in the docs only —
+  `scripts/gemini-dispatch-e2e` plays Gemini's documented dispatch against
+  harmless fake targets.
 
 Rationale for running both rather than picking one: they have non-
 overlapping blind spots (a wrapper misses structured/MCP tool calls a hook
