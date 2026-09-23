@@ -28,8 +28,8 @@ claim is "shrinks to the Write/Edit credential-value rule" until a future
 phase actually picks up that channel. "Deprecated" means
 "superseded for everything a phase has scheduled," not "deleted." `irrevers-62c6f748`
 (install-time smoke test confirming no conflict between the two) is
-framed accordingly. Covers **Claude Code, Codex CLI, Cursor, and Gemini
-CLI** as guarded harnesses.
+framed accordingly. Covers **Claude Code, Codex CLI, Cursor, Gemini
+CLI, and OpenCode** as guarded harnesses.
 
 **The objective is not simply to block.** Every rule must leave the agent
 knowing the sanctioned alternative, actionable in its very next step — not
@@ -63,7 +63,22 @@ that layer by contract rather than by omission
 bullet documents that MCP-versus-shell/file split — the
 `Unsupported`-classifies-to-allow contract for `mcp__*` and read-only
 names, and the anchored-matcher scoping that keeps them unguarded
-(`irrevers-016b142e`). See
+(`irrevers-016b142e`). OpenCode is covered as a native-plugin harness
+(below), and its accepted coverage boundary is plugin-mechanical rather
+than matcher-shaped: the gate only ever sees what `tool.execute.before`
+delivers, so OpenCode's read-only tools (`read`, `glob`, `grep`,
+`webfetch`) and MCP-namespaced calls are `Unsupported` by contract (§3.4)
+and render a quiet plain allow — unguarded at that layer by contract
+rather than by omission — while `apply_patch`'s list-of-operations
+payload does not map onto the engine's patch classification and fails
+open at the classification boundary with a stderr diagnostic
+(`harness-adapter-contract.md` §6.3). The plugin layer also carries
+silent failure modes OpenCode gives no signal about: a plugin that fails
+to load is dropped without any log line, and `--pure`/`OPENCODE_PURE`
+disables every external plugin at once (§6.3.1) — both backstopped by
+the PATH-wrapper layer. OpenCode's live-enforcement canaries (fake
+executables, `irrevers-c1b23b15`) have not run, so live enforcement
+status is pending, not verified. See
 `docs/notes/multi-harness-integration.md`.
 
 ## Architecture
@@ -242,7 +257,7 @@ The existing `~/.local/bin/cargo` precedent is user-owned because cargo test
 offloading is not a security boundary; this project's guard IS, so it gets
 the stricter deployment shape.
 
-**Integration point: resolved — both layers, all four harnesses**, not a
+**Integration point: resolved — both layers, all five harnesses**, not a
 choice between them. Two independent, complementary front-ends sharing one
 engine:
 - A **PATH-wrapper binary** shadowing whatever binaries the *currently
@@ -264,7 +279,11 @@ engine:
   dedicated `beforeShellExecution` event, each served by its own ICG
   adapter (below); Gemini CLI ships a synchronous `BeforeTool` command
   hook (JSON on stdin and stdout, a regex matcher over tool names), also
-  served by its own ICG adapter (below).
+  served by its own ICG adapter (below); OpenCode ships an in-process
+  TypeScript plugin API — `tool.execute.before`, input `{ tool,
+  sessionID, callID }`, output `{ args }` mutated in place, no stdout
+  envelope on OpenCode's side of the hook — served by an ICG plugin that
+  shells out to the same `icg hook` engine front end (below).
 
   **Claude Code installation contract:** the user-level
   `~/.claude/settings.json` registers `icg hook` as its own `PreToolUse`
@@ -340,6 +359,70 @@ engine:
   retrieved 2026-09-18) lives in the docs only —
   `scripts/gemini-dispatch-e2e` plays Gemini's documented dispatch against
   harmless fake targets.
+
+  **OpenCode installation contract:** `icg install-opencode-plugin`
+  deploys the plugin embedded in the running icg binary as one file,
+  `~/.config/opencode/plugin/icg.ts` — the global plugin directory, which
+  loads for every project and evaluates before any project-local plugin;
+  `--project-dir` and `--file` select `<dir>/.opencode/plugin/icg.ts` or
+  an exact path. Unlike the Gemini installer there is no matcher and no
+  dispatcher-side timeout to write: OpenCode gives an in-process hook no
+  timeout of its own, so the tool scoping (`bash`, `write`, `edit`, plus
+  `apply_patch` routed to the gate precisely so its op-list failure is a
+  real diagnostic) and the 10-second subprocess stall cap live inside the
+  plugin itself, and registration is one file in the plugin directory
+  glob — never an npm package spec, never a `plugin` config-array edit —
+  which the installed 1.18.29 picks up with no config change.
+  Installation is idempotent: a target already holding the embedded bytes
+  is left untouched (not even rewritten), a differing ICG-owned copy —
+  recognized by the `@icg-opencode-plugin v1` content marker, never by
+  filename — is backed up once as `<target>.icg-backup` and replaced, a
+  foreign plugin is refused in both directions, and `--uninstall`
+  removes only the marker-bearing file; OpenCode's own configuration,
+  including its native `permissions` system, is never read or modified
+  (a deny throw even pre-empts OpenCode's permission ask). The plugin
+  shells out to `/usr/local/bin/icg hook --harness opencode` by absolute
+  path, so a hostile PATH cannot redirect it (`open-code` is the alias
+  spelling the deployed plugin actually sends, keeping one file working
+  across the installed 0.1.62 binary and this adapter's build), and
+  carries exactly one export — the default factory — because any static
+  named export beside it makes the 1.18.29 loader reject the whole module
+  quietly. OpenCode's accepted gaps, each pinned by
+  `docs/notes/harness-adapter-contract.md` §6.3 with its 1.18.29-pinned
+  addendum §6.3.1 (deny/rewrite/advisory semantics per
+  `docs/research/opencode-1.18.29-deny-rewrite-advisory.md`):
+  `tool.execute.before` has no advisory-context channel, so a Warn
+  degrades to a bare allow, and there is no `systemMessage` channel
+  either — practice-mode and bypass banners go to stderr; the wire has no
+  decision field anywhere, so an Allow is simply "return without
+  throwing"; a Deny is delivered by throwing, whose message is the only
+  model-visible text the gate controls here — it reaches the model as
+  `Tool execution failed: ICG: …`, lands before execution and before the
+  permission ask, and does not end the agent loop, so retries arrive and
+  are gated again; a Rewrite is an in-place property mutation of the
+  hook's `args` object (reassigning `output.args` is a no-op at every
+  1.18.29 call site) whose rewrite OpenCode's transcript does not show —
+  the transcript records the model's original args, so the plugin audits
+  its own rewrites; read-only tools and MCP-namespaced calls are
+  `Unsupported` by contract (§3.4) and render a quiet plain allow, and
+  `apply_patch`'s op-list payload fails open at the classification
+  boundary with a stderr diagnostic; and the wire carries no version
+  field, so the support pin — installed `opencode` 1.18.29, binary and
+  bundled SDK types sha256-pinned, V1-only by decision with re-pin
+  triggers in `docs/research/opencode-1.18.29-plugin-surface.md` §12.3 —
+  lives in the docs only. Two OpenCode-side failure modes remain named
+  residual risk backstopped by the PATH-wrapper layer: a plugin that
+  fails to load is dropped with no log line at all (`opencode debug
+  info` lists registrations, not loads), and `--pure`/`OPENCODE_PURE`
+  silently disables every external plugin. None of this is yet verified
+  against a live OpenCode session: the deployed plugin's mount and hook
+  wiring were probe-verified on the installed 1.18.29 (factory-throw
+  canaries, `irrevers-bba8bcc9`), and the plugin's node suite
+  (`npm test --prefix opencode-plugin`) and the adapter contract fixtures
+  pin the dispatch semantics, but the fake-executable live canaries are
+  still open (`irrevers-c1b23b15`) — and the installed icg binary
+  (0.1.62) predates this adapter, so the deployed gate fails open at the
+  subprocess boundary until a newer icg ships.
 
 Rationale for running both rather than picking one: they have non-
 overlapping blind spots (a wrapper misses structured/MCP tool calls a hook
