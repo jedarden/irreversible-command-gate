@@ -4,7 +4,7 @@
 //! scraping `coverage --list`'s text. This pins the shape of that output and
 //! keeps it in agreement with the packs on disk.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -413,5 +413,263 @@ fn a_missing_pack_path_is_an_error() {
         String::from_utf8_lossy(&output.stderr).contains("rule-pack path does not exist"),
         "stderr names the failure: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// --- ordering, dedup, and drift detection -------------------------------
+//
+// The serialization contract's remaining promises: the order fields and
+// rules are emitted in, what a repeated --pack does, and what a consumer
+// sees when the policy moves under it.
+
+/// A minimal pack whose every string this file authors, so the raw-byte
+/// scan in `fields_are_emitted_in_the_documented_declaration_order` can
+/// never trip over a shipped regex or explanation that happens to contain
+/// a quoted key name.
+fn write_order_fixture_pack(dir: &Path) -> PathBuf {
+    let path = dir.join("order-fixture.json");
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&json!({
+            "id": "order-fixture",
+            "tool_keywords": ["ordercmd"],
+            "applies_to": ["the order fixture pack"],
+            "safe_patterns": [{
+                "id": "ordercmd-dry-run",
+                "type": "command_regex",
+                "regex": "^ordercmd --dry-run"
+            }],
+            "guarded_patterns": [{
+                "id": "ordercmd-destroy",
+                "enabled": true,
+                "type": "command_regex",
+                "regex": "^ordercmd destroy",
+                "tier": "tier1",
+                "severity": "High",
+                "explanation": "ordercmd destroy cannot be undone",
+                "destructive": true,
+                "redirect": {
+                    "channel": "deny",
+                    "reason_template": "run ordercmd destroy --dry-run first"
+                }
+            }]
+        }))
+        .expect("order fixture pack should serialize"),
+    )
+    .expect("order fixture pack should write");
+    path
+}
+
+/// Byte offset of `key` in `doc`, searched from `cursor` and moving the
+/// cursor past the match. A key that only appears before the cursor fails
+/// the test, which is the point: declaration order is "each key after the
+/// previous one".
+fn find_after(doc: &str, cursor: &mut usize, key: &str) {
+    let found = doc[*cursor..]
+        .find(key)
+        .unwrap_or_else(|| panic!("expected {key} after byte {}", *cursor));
+    *cursor += found + key.len();
+}
+
+/// The serialization contract pins field order to the declaration order in
+/// `src/documented_commands.rs` — "and so on down the levels" included.
+/// Parsing into a `Value` loses order (serde_json's map sorts keys), so
+/// this walks the raw bytes with a moving cursor over the quoted key names.
+/// A reordered struct is a wire-format change and must fail here until the
+/// format version moves with it.
+#[test]
+fn fields_are_emitted_in_the_documented_declaration_order() {
+    let dir = TempDir::new().expect("tempdir");
+    let pack = write_order_fixture_pack(dir.path());
+    let output = coverage_json_against(&[&pack]);
+    assert!(
+        output.status.success(),
+        "the order fixture pack should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = String::from_utf8(output.stdout).expect("stdout is utf-8");
+
+    // Top level: format, packs, unreadable, pack_count, guarded_pattern_count.
+    let mut cursor = 0;
+    for key in [
+        "\"format\"",
+        "\"packs\"",
+        "\"unreadable\"",
+        "\"pack_count\"",
+        "\"guarded_pattern_count\"",
+    ] {
+        find_after(&doc, &mut cursor, key);
+    }
+
+    // Pack level. Restarting at "packs" is safe: the fixture has one pack,
+    // so every pack key appears exactly once before the rule object begins.
+    cursor = doc.find("\"packs\"").expect("packs key should be present");
+    for key in [
+        "\"id\"",
+        "\"path\"",
+        "\"tool_keywords\"",
+        "\"applies_to\"",
+        "\"safe_patterns\"",
+        "\"guarded_patterns\"",
+    ] {
+        find_after(&doc, &mut cursor, key);
+    }
+
+    // Rule level: the cursor sits just past the guarded_patterns key, and
+    // the one rule's keys follow in declaration order.
+    for key in [
+        "\"id\"",
+        "\"enabled\"",
+        "\"tier\"",
+        "\"severity\"",
+        "\"channel\"",
+        "\"destructive\"",
+        "\"check\"",
+        "\"explanation\"",
+        "\"redirect\"",
+    ] {
+        find_after(&doc, &mut cursor, key);
+    }
+}
+
+/// `tool_keywords` and `applies_to` are promised verbatim, `safe_patterns`
+/// as the allow-list members' ids, and the rules "in the pack file's own
+/// declaration order". Order is not cosmetic: first-match-wins among
+/// guarded patterns makes pack order part of the policy, so a re-ordered
+/// report would misdescribe the policy even with the identical id set.
+#[test]
+fn packs_are_reported_verbatim_from_their_files_in_declaration_order() {
+    let report = coverage_json();
+    for pack in report["packs"].as_array().unwrap() {
+        let what = pack["id"].as_str().unwrap();
+        let path = PathBuf::from(pack["path"].as_str().unwrap());
+        let file: Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("pack file readable")).unwrap();
+
+        assert_eq!(
+            pack["tool_keywords"], file["tool_keywords"],
+            "{what}: tool_keywords verbatim"
+        );
+        assert_eq!(
+            pack["applies_to"], file["applies_to"],
+            "{what}: applies_to verbatim"
+        );
+
+        let ids = |value: &Value, field: &str| -> Vec<String> {
+            value[field]
+                .as_array()
+                .unwrap_or_else(|| panic!("{what}: {field} should be an array"))
+                .iter()
+                .map(|entry| {
+                    entry["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| entry.as_str().expect("string").to_owned())
+                })
+                .collect()
+        };
+        assert_eq!(
+            ids(pack, "safe_patterns"),
+            ids(&file, "safe_patterns"),
+            "{what}: safe_patterns are the file's ids in file order"
+        );
+        assert_eq!(
+            ids(pack, "guarded_patterns"),
+            ids(&file, "guarded_patterns"),
+            "{what}: guarded_patterns in the pack file's own declaration order"
+        );
+    }
+}
+
+/// "Repeated values naming the same path are deduplicated": a consumer
+/// assembling --pack values from layered config must not see doubled packs
+/// or doubled counts. Dedup plus the same sort makes the document
+/// byte-identical to the single-path invocation.
+#[test]
+fn repeated_pack_paths_are_deduplicated() {
+    let packs = packs_dir();
+    let once = coverage_json_against(&[&packs]);
+    let twice = coverage_json_against(&[&packs, &packs]);
+    assert!(once.status.success() && twice.status.success());
+    assert_eq!(
+        once.stdout, twice.stdout,
+        "a repeated --pack value must not change the document"
+    );
+}
+
+/// The closing promise of both contract notes: a consumer detects policy
+/// drift from the documents alone, without parsing rule-pack files. The
+/// consumer's whole view here is two coverage/v1 documents taken before
+/// and after an edit to the pack file; the diff must localize the change.
+#[test]
+fn a_consumer_diffing_two_documents_sees_the_policy_edit() {
+    let dir = TempDir::new().expect("tempdir");
+    let pack = write_order_fixture_pack(dir.path());
+
+    let before = coverage_json_against(&[&pack]);
+    assert!(before.status.success());
+    let before: Value =
+        serde_json::from_slice(&before.stdout).expect("the before document should parse");
+
+    // The policy author appends a rule to the pack file.
+    let mut file: Value =
+        serde_json::from_str(&fs::read_to_string(&pack).expect("fixture readable")).unwrap();
+    file["guarded_patterns"]
+        .as_array_mut()
+        .expect("guarded_patterns array")
+        .push(json!({
+            "id": "ordercmd-wipe",
+            "enabled": true,
+            "type": "command_regex",
+            "regex": "^ordercmd wipe",
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": "ordercmd wipe cannot be undone",
+            "destructive": true,
+            "redirect": {
+                "channel": "deny",
+                "reason_template": "run ordercmd wipe --dry-run first"
+            }
+        }));
+    fs::write(&pack, serde_json::to_string_pretty(&file).unwrap()).expect("fixture rewritten");
+
+    let after = coverage_json_against(&[&pack]);
+    assert!(after.status.success());
+    let after: Value =
+        serde_json::from_slice(&after.stdout).expect("the after document should parse");
+
+    assert_eq!(
+        after["pack_count"], before["pack_count"],
+        "the edit adds a rule, not a pack"
+    );
+    assert_eq!(
+        after["guarded_pattern_count"].as_u64().unwrap(),
+        before["guarded_pattern_count"].as_u64().unwrap() + 1,
+        "the count moves by exactly the one added rule"
+    );
+    assert!(after["unreadable"].as_array().unwrap().is_empty());
+
+    let ids = |report: &Value| -> Vec<String> {
+        report["packs"][0]["guarded_patterns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| rule["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (before_ids, after_ids) = (ids(&before), ids(&after));
+    let added: Vec<&String> = after_ids
+        .iter()
+        .filter(|id| !before_ids.contains(id))
+        .collect();
+    assert_eq!(
+        added,
+        vec!["ordercmd-wipe"],
+        "the diff names exactly the added rule"
+    );
+    assert_eq!(
+        after_ids.last().map(String::as_str),
+        Some("ordercmd-wipe"),
+        "the appended rule reports where the file declared it: last"
     );
 }

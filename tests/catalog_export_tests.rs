@@ -11,7 +11,7 @@
 //! [`docs/notes/event-catalog-json-api.md`](docs/notes/event-catalog-json-api.md)
 //! is the contract note these tests enforce.
 
-use icg::catalog::{self, CATALOG_FORMAT, MatchExpression};
+use icg::catalog::{self, MatchExpression, CATALOG_FORMAT};
 use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::github_workflows::{
     GUARDED_PATHS, PACK_ID as WORKFLOWS_PACK, PATTERN_ID as WORKFLOWS_PATTERN, PROTECTED_REASON,
@@ -606,7 +606,9 @@ fn catalog_event_fields_match_their_pack_rules() {
     fn expected_expression(check: &Check) -> MatchExpression {
         match check {
             Check::CommandRegex { regex } | Check::ContentRegex { regex } => {
-                MatchExpression::Regex { regex: regex.clone() }
+                MatchExpression::Regex {
+                    regex: regex.clone(),
+                }
             }
             Check::Predicate { predicate_name, .. } => MatchExpression::Predicate {
                 predicate: predicate_name.clone(),
@@ -791,4 +793,166 @@ fn digest_moves_when_the_policy_changes() {
     let mut safe_removed = digest_fixture_pack();
     safe_removed.safe_patterns.clear();
     moved("an always-allowed pattern removed", safe_removed);
+}
+
+/// "Repeated values naming the same path are deduplicated": a consumer
+/// assembling --pack values from layered config must not see doubled
+/// events. Dedup plus the (pack, id) sort makes the catalog byte-identical
+/// to the single-path invocation.
+#[test]
+fn repeated_pack_paths_are_deduplicated() {
+    let once = icg(&["catalog", "--json", "--pack", "packs"]);
+    let twice = icg(&["catalog", "--json", "--pack", "packs", "--pack", "packs"]);
+    assert!(once.status.success() && twice.status.success());
+    assert_eq!(
+        once.stdout, twice.stdout,
+        "a repeated --pack value must not change the catalog"
+    );
+}
+
+/// The contract note's reason for existing: a consumer stores the digest it
+/// last consumed and compares — equal means the policy it reasoned about is
+/// unchanged, different means re-read. This runs that workflow end to end
+/// over the wire format. The consumer's whole view is three stdout
+/// documents; between renders the policy author edits the pack file, and
+/// each edit must move the digest while the document diff localizes the
+/// change — without the consumer ever parsing a rule pack.
+#[test]
+fn a_consumer_detects_policy_drift_without_parsing_rule_packs() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let pack_path = temp.path().join("drift-watch.json");
+    let write_pack = |guarded: Value| {
+        fs::write(
+            &pack_path,
+            serde_json::to_string_pretty(&json!({
+                "id": "drift-watch",
+                "tool_keywords": ["driftcmd"],
+                "applies_to": [],
+                "safe_patterns": [{
+                    "id": "driftcmd-dry-run",
+                    "type": "command_regex",
+                    "regex": "^driftcmd --dry-run"
+                }],
+                "guarded_patterns": guarded
+            }))
+            .expect("drift fixture should serialize"),
+        )
+        .expect("drift fixture pack should write");
+    };
+    let guarded = |id: &str, enabled: bool| {
+        json!({
+            "id": id,
+            "enabled": enabled,
+            "type": "command_regex",
+            "regex": format!("^{} ", id),
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": format!("{id} cannot be undone"),
+            "destructive": true,
+            "redirect": {
+                "channel": "deny",
+                "reason_template": format!("run {id} --dry-run first")
+            }
+        })
+    };
+    let render = |label: &str| -> Value {
+        let output = icg(&["catalog", "--json", "--pack", pack_path.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "{label}: the drift fixture pack should export: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("the catalog should parse")
+    };
+    let never_keys = |catalog: &Value| -> BTreeSet<(String, String)> {
+        catalog["never"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["pack"].as_str().unwrap().to_owned(),
+                    e["id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let always_keys = |catalog: &Value| -> BTreeSet<(String, String)> {
+        catalog["always"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["pack"].as_str().unwrap().to_owned(),
+                    e["id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    write_pack(json!([guarded("driftcmd-destroy", true)]));
+    let first = render("initial");
+    let first_digest = first["catalog_digest"].as_str().unwrap().to_owned();
+
+    // Policy edit 1: a rule added alongside the existing one. The stored
+    // digest no longer matches, and diffing the two catalogs localizes the
+    // change to exactly that event — one added, none removed.
+    write_pack(json!([
+        guarded("driftcmd-destroy", true),
+        guarded("driftcmd-wipe", true)
+    ]));
+    let second = render("after adding a rule");
+    let second_digest = second["catalog_digest"].as_str().unwrap().to_owned();
+    assert_ne!(
+        second_digest, first_digest,
+        "adding a rule must move the digest a consumer last stored"
+    );
+    let first_never = never_keys(&first);
+    let added: Vec<_> = never_keys(&second)
+        .difference(&first_never)
+        .cloned()
+        .collect();
+    assert_eq!(
+        added,
+        vec![("drift-watch".to_string(), "driftcmd-wipe".to_string())],
+        "the diff names exactly the added event"
+    );
+    let second_never = never_keys(&second);
+    let removed: Vec<_> = first_never.difference(&second_never).cloned().collect();
+    assert!(removed.is_empty(), "the edit removed nothing: {removed:?}");
+    assert_eq!(
+        always_keys(&second),
+        always_keys(&first),
+        "the edit touched no always-allowed event"
+    );
+
+    // Policy edit 2: the rule disabled. A gap detector reading only ids
+    // sees nothing move — the event stays cataloged — but the digest still
+    // moves, because what the gate enforces changed.
+    write_pack(json!([
+        guarded("driftcmd-destroy", true),
+        guarded("driftcmd-wipe", false)
+    ]));
+    let third = render("after disabling a rule");
+    assert_ne!(
+        third["catalog_digest"].as_str().unwrap(),
+        second_digest,
+        "disabling an enforced rule must move the digest"
+    );
+    assert_eq!(
+        never_keys(&third),
+        never_keys(&second),
+        "a disabled rule is cataloged, not removed"
+    );
+    let wipe = third["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "driftcmd-wipe")
+        .expect("the disabled event is still cataloged");
+    assert_eq!(
+        wipe["enabled"], false,
+        "the document marks the event not enforced"
+    );
 }
