@@ -11,7 +11,7 @@
 //! [`docs/notes/event-catalog-json-api.md`](docs/notes/event-catalog-json-api.md)
 //! is the contract note these tests enforce.
 
-use icg::catalog::{self, CATALOG_FORMAT};
+use icg::catalog::{self, CATALOG_FORMAT, MatchExpression};
 use icg::engine::{CheckResult, CommandSource, ContentSource, Engine};
 use icg::github_workflows::{
     GUARDED_PATHS, PACK_ID as WORKFLOWS_PACK, PATTERN_ID as WORKFLOWS_PATTERN, PROTECTED_REASON,
@@ -591,4 +591,204 @@ fn catalog_refuses_to_render_when_a_pack_is_unreadable() {
         output.stdout.is_empty(),
         "no catalog document is printed for a broken pack tree"
     );
+}
+
+/// The exported event is the pack rule, field for field — severity, tier,
+/// action, destructive, enabled, check, match, explanation, and the
+/// sanctioned alternative. `catalog_exports_every_shipped_event` proves the
+/// catalog is *complete* (the id sets match disk); this proves it is
+/// *faithful*: what a consumer reads is the same data the engine enforces,
+/// because both are rendered from the same loaded pack. (The CLI document
+/// and this library render are one document — the digest-agreement test
+/// above pins that, since the binary hashes its own rendering.)
+#[test]
+fn catalog_event_fields_match_their_pack_rules() {
+    fn expected_expression(check: &Check) -> MatchExpression {
+        match check {
+            Check::CommandRegex { regex } | Check::ContentRegex { regex } => {
+                MatchExpression::Regex { regex: regex.clone() }
+            }
+            Check::Predicate { predicate_name, .. } => MatchExpression::Predicate {
+                predicate: predicate_name.clone(),
+            },
+        }
+    }
+    fn expected_check_kind(check: &Check) -> &'static str {
+        match check {
+            Check::CommandRegex { .. } => "command_regex",
+            Check::ContentRegex { .. } => "content_regex",
+            Check::Predicate { .. } => "predicate",
+        }
+    }
+
+    let built = catalog::build(&shipped_packs()).expect("shipped packs should build");
+    let never_by_key: std::collections::HashMap<(&str, &str), &catalog::CatalogEvent> = built
+        .never
+        .iter()
+        .map(|event| ((event.pack.as_str(), event.id.as_str()), event))
+        .collect();
+    let always_by_key: std::collections::HashMap<(&str, &str), &catalog::AlwaysEvent> = built
+        .always
+        .iter()
+        .map(|event| ((event.pack.as_str(), event.id.as_str()), event))
+        .collect();
+
+    for pack in shipped_packs() {
+        for rule in &pack.guarded_patterns {
+            let what = format!("{}/{}", pack.id, rule.id);
+            let event = never_by_key
+                .get(&(pack.id.as_str(), rule.id.as_str()))
+                .unwrap_or_else(|| panic!("catalog must contain {what}"));
+            assert_eq!(event.severity, rule.severity, "{what}: severity");
+            assert_eq!(event.tier, rule.tier, "{what}: tier");
+            assert_eq!(event.action, rule.redirect.channel, "{what}: action");
+            assert_eq!(event.destructive, rule.destructive, "{what}: destructive");
+            assert_eq!(event.enabled, rule.enabled, "{what}: enabled");
+            assert_eq!(
+                event.check,
+                expected_check_kind(&rule.check),
+                "{what}: check"
+            );
+            assert_eq!(
+                event.matching,
+                expected_expression(&rule.check),
+                "{what}: match"
+            );
+            assert_eq!(event.explanation, rule.explanation, "{what}: explanation");
+            assert_eq!(
+                event.sanctioned_alternative.reason, rule.redirect.reason_template,
+                "{what}: sanctioned_alternative.reason"
+            );
+            assert_eq!(
+                event.sanctioned_alternative.rewrite, rule.redirect.rewrite_template,
+                "{what}: sanctioned_alternative.rewrite"
+            );
+        }
+        for pattern in &pack.safe_patterns {
+            let what = format!("{}/{}", pack.id, pattern.id);
+            let event = always_by_key
+                .get(&(pack.id.as_str(), pattern.id.as_str()))
+                .unwrap_or_else(|| panic!("catalog must contain {what}"));
+            assert_eq!(
+                event.check,
+                expected_check_kind(&pattern.check),
+                "{what}: check"
+            );
+            assert_eq!(
+                event.matching,
+                expected_expression(&pattern.check),
+                "{what}: match"
+            );
+        }
+    }
+}
+
+/// One guarded rule, rebuilt fresh per call so each digest vector below
+/// starts from the identical policy.
+fn digest_guarded_rule(id: &str) -> icg::rule_pack::GuardedPattern {
+    icg::rule_pack::GuardedPattern {
+        id: id.to_string(),
+        enabled: true,
+        check: Check::CommandRegex {
+            regex: format!("^{id} "),
+        },
+        tier: Tier::Tier1,
+        severity: Severity::High,
+        explanation: format!("{id} is irreversible"),
+        redirect: Redirect {
+            channel: Channel::Deny,
+            reason_template: format!("run {id} --dry-run first"),
+            rewrite_template: None,
+        },
+        destructive: true,
+    }
+}
+
+fn digest_safe_pattern(id: &str) -> icg::rule_pack::Pattern {
+    icg::rule_pack::Pattern {
+        id: id.to_string(),
+        check: Check::CommandRegex {
+            regex: format!("^{id} --dry-run"),
+        },
+    }
+}
+
+fn digest_fixture_pack() -> Pack {
+    Pack {
+        id: "digest-fixture".to_string(),
+        tool_keywords: vec!["digestcmd".to_string()],
+        applies_to: vec![],
+        safe_patterns: vec![digest_safe_pattern("digestcmd-dry-run")],
+        guarded_patterns: vec![digest_guarded_rule("digestcmd-destroy")],
+    }
+}
+
+/// The digest is the consumer's drift signal, so every policy edit the
+/// contract note promises must move it: "a rule added, disabled, reworded,
+/// or removed". A digest that survived any of those would let a consumer
+/// keep reasoning about a policy that no longer exists. This pins each
+/// promised vector plus the quieter edits (a severity retune, a channel
+/// change, an always-allowed pattern change), with unchanged policy as the
+/// control.
+#[test]
+fn digest_moves_when_the_policy_changes() {
+    let digest = |pack: Pack| {
+        catalog::build(&[pack])
+            .expect("fixture pack should build")
+            .catalog_digest
+    };
+    let base = digest(digest_fixture_pack());
+    assert_eq!(
+        base,
+        digest(digest_fixture_pack()),
+        "unchanged policy must keep the digest stable"
+    );
+    let moved = |label: &str, pack: Pack| {
+        assert_ne!(base, digest(pack), "{label} must move the digest");
+    };
+
+    // A guarded rule added / removed.
+    let mut added = digest_fixture_pack();
+    added
+        .guarded_patterns
+        .push(digest_guarded_rule("digestcmd-wipe"));
+    moved("adding a guarded rule", added);
+    let mut removed = digest_fixture_pack();
+    removed.guarded_patterns.clear();
+    moved("removing a guarded rule", removed);
+
+    // The quieter edits — none change the event set's shape, but every one
+    // changes what the policy says.
+    let mut reworded = digest_fixture_pack();
+    reworded.guarded_patterns[0].explanation = "reworded: digestcmd destroy loses data".to_string();
+    moved("a reworded explanation", reworded);
+
+    let mut alternative = digest_fixture_pack();
+    alternative.guarded_patterns[0].redirect.reason_template =
+        "reworded: run digestcmd destroy --dry-run first".to_string();
+    moved("a reworded sanctioned alternative", alternative);
+
+    let mut disabled = digest_fixture_pack();
+    disabled.guarded_patterns[0].enabled = false;
+    moved("a rule disabled", disabled);
+
+    let mut retuned = digest_fixture_pack();
+    retuned.guarded_patterns[0].severity = Severity::Critical;
+    moved("a severity retune", retuned);
+
+    let mut channel = digest_fixture_pack();
+    channel.guarded_patterns[0].redirect.channel = Channel::UpdatedInput;
+    channel.guarded_patterns[0].redirect.rewrite_template =
+        Some("digestcmd destroy --dry-run".to_string());
+    moved("a channel change", channel);
+
+    // The always side is part of the event set too.
+    let mut safe_added = digest_fixture_pack();
+    safe_added
+        .safe_patterns
+        .push(digest_safe_pattern("digestcmd-inspect"));
+    moved("an always-allowed pattern added", safe_added);
+    let mut safe_removed = digest_fixture_pack();
+    safe_removed.safe_patterns.clear();
+    moved("an always-allowed pattern removed", safe_removed);
 }
