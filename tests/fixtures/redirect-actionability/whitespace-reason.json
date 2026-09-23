@@ -1,0 +1,25 @@
+{
+  "id": "redirect-actionability-whitespace-reason",
+  "tool_keywords": ["fixture-tool"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "fixture-whitespace-reason",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "^fixture-tool destroy"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Negative fixture: the redirect reason is whitespace only",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "   \n\t  ",
+        "rewrite_template": null
+      }
+    }
+  ]
+}

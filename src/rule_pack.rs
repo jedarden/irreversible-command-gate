@@ -4,6 +4,7 @@
 //! Supports both JSON and TOML serialization formats.
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -317,6 +318,240 @@ pub enum Channel {
     /// just provides heuristic warnings.
     #[serde(rename = "additional_context")]
     AdditionalContext,
+}
+
+/// The redirect-actionability schema gate
+///
+/// AGENTS.md rule 2: every guarded rule owes the caller an alternative — a
+/// `redirect` whose reason only says "blocked" is an incomplete rule (see
+/// `docs/notes/redirect-not-just-block.md`). This is the structural half of
+/// that doctrine: a predicate deciding whether a `reason_template` names a
+/// concrete sanctioned alternative, and a pack-level validator built on it.
+///
+/// Enforcement lives in `tests/redirect_actionability_tests.rs`, which runs
+/// the validator over every shipped pack and carries the negative fixtures
+/// (empty, whitespace-only, block-only and danger-without-alternative
+/// reasons). It is deliberately NOT wired into `Engine::load_pack`: the
+/// engine fails open, so a load-time rejection would silently drop the
+/// offending pack at runtime — the worst outcome for a policy defect. A bad
+/// redirect must fail loudly at authoring time, in CI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedirectActionabilityError {
+    /// `reason_template` is missing or whitespace-only
+    EmptyReason,
+
+    /// `reason_template` only restates the block or the danger and names no
+    /// concrete sanctioned alternative
+    NonActionable,
+}
+
+impl std::fmt::Display for RedirectActionabilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyReason => write!(f, "redirect reason_template is empty"),
+            Self::NonActionable => write!(
+                f,
+                "redirect reason_template merely restates the block and names \
+                 no concrete sanctioned alternative"
+            ),
+        }
+    }
+}
+
+/// Imperative verbs that signal a next step the agent can act on directly.
+///
+/// Deliberately a curated list, not "any verb": the gate must pass a reason
+/// like "Run 'git pull' first" and reject one like "This command is blocked.
+/// Do not run it." — negated verb phrases are stripped before this list is
+/// consulted, so the verb inside a prohibition never counts.
+const DIRECTIVE_VERBS: &[&str] = &[
+    "use",
+    "run",
+    "pass",
+    "try",
+    "switch",
+    "prefer",
+    "pin",
+    "capture",
+    "record",
+    "invoke",
+    "install",
+    "submit",
+    "apply",
+    "materialize",
+    "inspect",
+    "wait",
+    "let",
+    "add",
+    "remove",
+    "edit",
+    "commit",
+    "push",
+    "write",
+    "read",
+    "set",
+    "create",
+    "call",
+    "retry",
+    "rotate",
+    "consult",
+    "follow",
+    "choose",
+    "pick",
+    "migrate",
+    "replace",
+    "take",
+    "keep",
+    "include",
+    "ask",
+    "restore",
+];
+
+/// Negated verb phrases — "do not run", "never use", "cannot be undone" —
+/// removed before the directive-verb scan. Only the negator and the word
+/// immediately after it are stripped, so an alternative named later in the
+/// sentence ("Never use ssd; use sata-large instead") still reads through.
+const NEGATED_PHRASES: &str = r"(?i)\b(?:do\s+not|don't|don’t|cannot|can't|can’t|could\s+not|must\s+not|should\s+not|never|avoid|without|no\s+longer)\s+\w+";
+
+fn negated_phrases() -> &'static Regex {
+    use std::sync::OnceLock;
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(NEGATED_PHRASES).expect("negated-phrase regex must compile"))
+}
+
+fn directive_verbs() -> &'static Regex {
+    use std::sync::OnceLock;
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(&format!(r"\b(?:{})\b", DIRECTIVE_VERBS.join("|")))
+            .expect("directive-verb regex must compile")
+    })
+}
+
+fn derived_placeholders() -> &'static Regex {
+    use std::sync::OnceLock;
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\{[a-z_][a-z_0-9]*\}").expect("placeholder regex must compile")
+    })
+}
+
+fn urls() -> &'static Regex {
+    use std::sync::OnceLock;
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"https?://\S+").expect("url regex must compile"))
+}
+
+fn code_spans() -> &'static Regex {
+    use std::sync::OnceLock;
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"`[^`\n]+`").expect("code-span regex must compile"))
+}
+
+/// True when `text` carries a quoted snippet that reads like a command, flag
+/// or path: two same-kind quote characters whose content contains whitespace
+/// or one of the structural characters `/ - = $ < >`. The opening quote must
+/// not continue a word, so possessives ("operator's") and contractions
+/// ("doesn't") are prose, never quoted snippets.
+fn contains_quoted_snippet(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte != b'\'' && byte != b'"' {
+            continue;
+        }
+        if i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+            continue;
+        }
+        let Some(close) = bytes[i + 1..].iter().position(|&c| c == byte) else {
+            continue;
+        };
+        let content = &text[i + 1..i + 1 + close];
+        if content.len() >= 2
+            && content
+                .chars()
+                .any(|c| matches!(c, ' ' | '/' | '-' | '=' | '$' | '<' | '>'))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Decide whether a guarded rule's redirect reason names a concrete
+/// sanctioned alternative. A reason counts as actionable when ANY of these
+/// markers is present:
+///
+/// 1. a non-empty `rewrite_template` — an `updated_input` redirect's rewrite
+///    IS the alternative (the git pack's force-push rule);
+/// 2. a derived-value placeholder (`{derived_value}`) — the value computed
+///    at check time, exactly what the doctrine calls for (image-tag);
+/// 3. a URL naming the sanctioned surface (argocd-topology);
+/// 4. an inline code span quoting a command or path (openbao, kubectl);
+/// 5. a quoted command/flag/path snippet (git, beads, docker);
+/// 6. a positive directive verb, outside a negated phrase (most packs).
+fn redirect_names_alternative(pattern: &GuardedPattern) -> bool {
+    let reason = pattern.redirect.reason_template.trim();
+
+    if pattern
+        .redirect
+        .rewrite_template
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|template| !template.is_empty())
+    {
+        return true;
+    }
+
+    if derived_placeholders().is_match(reason) || urls().is_match(reason) {
+        return true;
+    }
+
+    if code_spans().is_match(reason) || contains_quoted_snippet(reason) {
+        return true;
+    }
+
+    let stripped = negated_phrases().replace_all(reason, " ");
+    directive_verbs().is_match(&stripped.to_lowercase())
+}
+
+/// The actionability verdict for one guarded rule's redirect.
+///
+/// `Some(error)` means the rule fails the gate; the caller supplies the
+/// pack/rule identity when reporting. Applies to every guarded rule whether
+/// or not it is currently `enabled: false` — shipped policy data stays
+/// complete regardless of whether it evaluates, because re-enabling a rule
+/// must never resurrect an empty redirect with it.
+pub fn redirect_actionability_violation(
+    pattern: &GuardedPattern,
+) -> Option<RedirectActionabilityError> {
+    if pattern.redirect.reason_template.trim().is_empty() {
+        return Some(RedirectActionabilityError::EmptyReason);
+    }
+    if redirect_names_alternative(pattern) {
+        None
+    } else {
+        Some(RedirectActionabilityError::NonActionable)
+    }
+}
+
+/// Validate every guarded rule in `pack` against the actionability gate.
+///
+/// The error names the pack, the rule and the doctrine, so a failing run
+/// points straight at the redirect to rewrite.
+pub fn validate_redirect_actionability(pack: &Pack) -> Result<()> {
+    for pattern in &pack.guarded_patterns {
+        if let Some(error) = redirect_actionability_violation(pattern) {
+            anyhow::bail!(
+                "guarded rule '{}.{}' has a non-actionable redirect: {}. Every \
+                 guarded rule owes the caller a concrete sanctioned alternative \
+                 -- see docs/notes/redirect-not-just-block.md",
+                pack.id,
+                pattern.id,
+                error
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Load a rule pack from a file (JSON or TOML)
@@ -723,5 +958,145 @@ mod tests {
         );
         assert_eq!(pack.safe_patterns.len(), 5);
         assert_eq!(pack.guarded_patterns.len(), 8);
+    }
+
+    /// A minimal guarded rule carrying just the redirect under test.
+    fn actionability_rule(reason: &str, rewrite: Option<&str>) -> GuardedPattern {
+        GuardedPattern {
+            id: "fixture-rule".to_string(),
+            enabled: true,
+            check: Check::CommandRegex {
+                regex: "^fixture-tool destroy".to_string(),
+            },
+            tier: Tier::Tier1,
+            severity: Severity::Critical,
+            explanation: "fixture rule for the actionability gate".to_string(),
+            redirect: Redirect {
+                channel: Channel::Deny,
+                reason_template: reason.to_string(),
+                rewrite_template: rewrite.map(str::to_string),
+            },
+            destructive: true,
+        }
+    }
+
+    #[test]
+    fn actionability_rejects_empty_reason() {
+        for reason in ["", "   ", " \n\t "] {
+            assert_eq!(
+                redirect_actionability_violation(&actionability_rule(reason, None)),
+                Some(RedirectActionabilityError::EmptyReason),
+                "whitespace-only reason {reason:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn actionability_rejects_block_only_reason() {
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule("This command is blocked.", None)),
+            Some(RedirectActionabilityError::NonActionable)
+        );
+    }
+
+    #[test]
+    fn actionability_verb_inside_a_prohibition_does_not_count() {
+        // The distinguishing negative case: the reason names a directive
+        // verb, but only inside its own prohibition. The negation stripper
+        // must remove "Do not run" so the reason cannot ride to a pass on
+        // the verb it forbids.
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule(
+                "This operation is dangerous and is not allowed. Do not run it. \
+                 There is no alternative.",
+                None
+            )),
+            Some(RedirectActionabilityError::NonActionable)
+        );
+    }
+
+    #[test]
+    fn actionability_directive_verb_passes() {
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule(
+                "Remote HEAD has moved forward since your last fetch/pull. \
+                 Run 'git pull' first to integrate remote changes before pushing.",
+                None
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn actionability_rewrite_template_counts_as_the_alternative() {
+        // An updated_input redirect's rewrite IS the sanctioned alternative,
+        // even when the reason prose is only an explanation.
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule(
+                "Force-push flags can rewrite remote history and lose commits.",
+                Some("{command_without_force}")
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn actionability_quoted_command_counts_but_possessive_does_not() {
+        // 'kv delete' is a quoted command snippet -> actionable.
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule(
+                "This is an irreversible OpenBao operation. 'kv delete' \
+                 soft-deletes and is recoverable.",
+                None
+            )),
+            None
+        );
+        // A possessive apostrophe is prose, not a quoted snippet.
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule(
+                "This is the operator's session and it is blocked.",
+                None
+            )),
+            Some(RedirectActionabilityError::NonActionable)
+        );
+    }
+
+    #[test]
+    fn actionability_derived_placeholder_passes() {
+        assert_eq!(
+            redirect_actionability_violation(&actionability_rule(
+                "The :latest image tag is banned. Pin this image to {derived_value}.",
+                None
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn validate_redirect_actionability_names_pack_rule_and_doctrine() {
+        let mut pack = Pack {
+            id: "fixture-pack".to_string(),
+            tool_keywords: vec!["fixture-tool".to_string()],
+            applies_to: vec![],
+            safe_patterns: vec![],
+            guarded_patterns: vec![actionability_rule("Blocked.", None)],
+        };
+        let error = validate_redirect_actionability(&pack)
+            .expect_err("block-only redirect must fail the gate");
+        let message = error.to_string();
+        assert!(
+            message.contains("fixture-pack.fixture-rule"),
+            "error should name pack and rule, got: {message}"
+        );
+        assert!(
+            message.contains("docs/notes/redirect-not-just-block.md"),
+            "error should point at the doctrine, got: {message}"
+        );
+
+        // An actionable rule validates clean, and an empty one reports
+        // EmptyReason through the same entry point.
+        pack.guarded_patterns[0].redirect.reason_template =
+            "Use 'fixture-tool list' to inspect, then remove one by one.".to_string();
+        validate_redirect_actionability(&pack).expect("directive-verb redirect must pass the gate");
     }
 }

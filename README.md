@@ -162,7 +162,7 @@ scaffolds a pack and its regression test together.
 ## Project status
 
 The engine, the packs, both front-ends (hook and PATH wrapper), the
-release-integrity machinery, and 972 passing tests across `tests/` and
+release-integrity machinery, and 987 passing tests across `tests/` and
 `src/` are in the tree and working. The whole crate is 25,800 lines of
 Rust with 17 dependencies and no C toolchain requirement.
 

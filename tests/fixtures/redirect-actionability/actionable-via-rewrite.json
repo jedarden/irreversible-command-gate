@@ -1,0 +1,25 @@
+{
+  "id": "redirect-actionability-actionable-rewrite",
+  "tool_keywords": ["fixture-tool"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "fixture-actionable-rewrite",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "^fixture-tool push.*(--force|-f)(\\s|$)"
+      },
+      "tier": "tier1",
+      "severity": "High",
+      "explanation": "Positive control: an updated_input redirect whose rewrite_template IS the sanctioned alternative",
+      "destructive": true,
+      "redirect": {
+        "channel": "updated_input",
+        "reason_template": "Removed the destructive flag from fixture-tool push; retrying as a normal push preserves the requested outcome.",
+        "rewrite_template": "{command_without_force}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "redirect-actionability-actionable-verb",
+  "tool_keywords": ["fixture-tool"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "fixture-actionable-verb",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "^fixture-tool destroy"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Positive control: the reason directs the agent to the sanctioned alternative",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "This operation destroys the fixture permanently. Run 'fixture-tool archive' first to keep a recoverable copy, then remove the data one resource at a time.",
+        "rewrite_template": null
+      }
+    }
+  ]
+}

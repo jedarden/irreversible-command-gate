@@ -17,7 +17,7 @@ not writing Rust.
 cargo build --release                       # no system deps; rustls, not OpenSSL
 cargo run --release -- coverage --list      # confirm the 11 packs load
 cargo run --release -- check --command "git push --force origin main"
-cargo test                                  # 972 tests, 0 failures
+cargo test                                  # 987 tests, 0 failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
 ```
 
@@ -59,7 +59,10 @@ rather than parse packs or keep a second copy of the list.
    how coverage disappears silently. `icg coverage-diff` exists to catch
    this; run it.
 2. **Every guarded rule owes the caller an alternative.** A `redirect` whose
-   reason only says "blocked" is an incomplete rule. See
+   reason only says "blocked" is an incomplete rule — enforced: a pack whose
+   redirect reasons are empty or block-only fails
+   `icg::rule_pack::validate_redirect_actionability` (CI gate in
+   `tests/redirect_actionability_tests.rs`). See
    [`docs/notes/redirect-not-just-block.md`](docs/notes/redirect-not-just-block.md).
 3. **The engine does no network I/O** and fails open on any error. Keep it
    that way — one scoped exception exists (stale-remote-head lookup before a

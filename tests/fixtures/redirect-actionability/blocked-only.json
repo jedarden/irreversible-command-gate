@@ -1,0 +1,25 @@
+{
+  "id": "redirect-actionability-blocked-only",
+  "tool_keywords": ["fixture-tool"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "fixture-blocked-only",
+      "enabled": true,
+      "check": {
+        "type": "command_regex",
+        "regex": "^fixture-tool destroy"
+      },
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "Negative fixture: the reason restates the block and nothing else",
+      "destructive": true,
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "This command is blocked.",
+        "rewrite_template": null
+      }
+    }
+  ]
+}

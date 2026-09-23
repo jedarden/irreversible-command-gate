@@ -111,3 +111,36 @@ exclusively today and has never used `updatedInput` or `additionalContext`,
 even in the one case (`:latest`) where the redirect value is programmatically
 derivable; unlike that legacy guard, icg's `image-tag` pack now derives the
 value from the matching `containers/<name>/VERSION` file.
+
+## Enforcement (2026-09-23)
+
+The doctrine above is now a schema gate, not just writing advice:
+`icg::rule_pack::validate_redirect_actionability` rejects any pack whose
+guarded rules fail it, and `tests/redirect_actionability_tests.rs` runs
+that validator over every shipped pack on every `cargo test`.
+
+A `reason_template` passes when it names a concrete sanctioned alternative
+by ANY of these markers:
+
+1. a non-empty `rewrite_template` — the rewrite IS the alternative
+   (`git-force-push`);
+2. a derived-value placeholder (`{derived_value}`) — the value computed at
+   check time (`image-tag-latest`);
+3. a URL naming the sanctioned surface (`duplicate-ardenone-cluster-root`);
+4. an inline code span quoting a command or path (`openbao-kv-get-to-stdout`);
+5. a quoted command/flag/path snippet — whitespace or one of
+   `/ - = $ < >` inside quotes whose opening quote does not continue a
+   word, so possessives and contractions don't count (`beads-*`, `docker-*`);
+6. a directive verb ("use", "run", "pass", …) that is not part of a negated
+   phrase — "Do not run it" never counts as the alternative it forbids.
+
+An empty or whitespace-only `reason_template` is its own failure mode.
+
+Deliberate scope boundary: the gate is enforced in CI, not inside
+`Engine::load_pack`. The engine fails open, so a load-time rejection would
+silently drop the offending pack at runtime — the worst outcome for a
+policy defect. A bad redirect must fail loudly at authoring time instead.
+The negative fixtures live in `tests/fixtures/redirect-actionability/`
+(empty, whitespace-only, block-only, and danger-without-alternative — the
+last proving the negation stripper: its only directive verb sits inside the
+prohibition itself).
