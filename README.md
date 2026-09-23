@@ -69,7 +69,7 @@ curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/downl
 chmod +x icg
 
 # or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
-#      cd irreversible-command-gate && cargo build --release && cd target/release
+#      cd irreversible-command-gate && cargo run --release -- coverage --list
 
 ./icg coverage --list
 ./icg check --command "bao kv destroy secret/app/db"
@@ -162,9 +162,9 @@ scaffolds a pack and its regression test together.
 ## Project status
 
 The engine, the packs, both front-ends (hook and PATH wrapper), the
-release-integrity machinery, and 526 passing tests across 52 files are in
-the tree and working. The whole crate is 25,800 lines of Rust with 17
-dependencies and no C toolchain requirement.
+release-integrity machinery, and 972 passing tests across `tests/` and
+`src/` are in the tree and working. The whole crate is 25,800 lines of
+Rust with 17 dependencies and no C toolchain requirement.
 
 **`v0.1.4` is the current release** (2026-09-08). It is the first release
 cut by the version auto-bump in `icg-ci`: before it, a push that did not

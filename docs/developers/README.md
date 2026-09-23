@@ -702,8 +702,11 @@ ICG_PACK_DIR=./packs/openbao.json \
 echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}' | \
   cargo run --bin icg -- check --stdin
 
-# Test in wrapper mode
-ln -sf $(cargo root)/target/release/icg /tmp/vault
+# Test in wrapper mode (resolve the built binary from cargo -- the target
+# directory follows host policy, so never assume it sits under the checkout)
+BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/icg"
+ln -sf "$BIN" /tmp/vault
 /tmp/vault kv destroy secret/test
 ```
 

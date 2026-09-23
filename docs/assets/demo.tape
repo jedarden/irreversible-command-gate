@@ -1,7 +1,9 @@
 # vhs tape for docs/assets/icg-demo.gif -- see demo.sh for the commands it runs.
 #
 #   cargo build --release
-#   PATH="$PWD/target/release:$PATH" vhs docs/assets/demo.tape
+#   BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
+#     'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/icg"
+#   PATH="$(dirname "$BIN"):$PATH" vhs docs/assets/demo.tape
 
 Output docs/assets/icg-demo.gif
 

@@ -52,8 +52,11 @@ git archive <before-commit> | tar -x -C /tmp/icg-before
 git archive <after-commit>  | tar -x -C /tmp/icg-after
 cp src/bin/corpus-replay.rs /tmp/icg-before/src/bin/
 cp src/bin/corpus-replay.rs /tmp/icg-after/src/bin/
-(cd /tmp/icg-before && cargo build --release --bin corpus-replay)
-(cd /tmp/icg-after  && cargo build --release --bin corpus-replay)
+# Pin a per-tree target dir: a host's shared cargo target-dir policy would
+# otherwise send both builds to one directory, colliding the two binaries
+# this comparison exists to tell apart.
+(cd /tmp/icg-before && CARGO_TARGET_DIR="$PWD/target" cargo build --release --bin corpus-replay)
+(cd /tmp/icg-after  && CARGO_TARGET_DIR="$PWD/target" cargo build --release --bin corpus-replay)
 
 /tmp/icg-before/target/release/corpus-replay packs /tmp/traffic-corpus.jsonl /tmp/results-before.jsonl
 /tmp/icg-after/target/release/corpus-replay  packs /tmp/traffic-corpus.jsonl /tmp/results-after.jsonl

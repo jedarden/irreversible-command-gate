@@ -15,11 +15,22 @@ not writing Rust.
 
 ```bash
 cargo build --release                       # no system deps; rustls, not OpenSSL
-./target/release/icg coverage --list        # confirm the 11 packs load
-./target/release/icg check --command "git push --force origin main"
-cargo test                                  # 526 tests, 0 failures
+cargo run --release -- coverage --list      # confirm the 11 packs load
+cargo run --release -- check --command "git push --force origin main"
+cargo test                                  # 972 tests, 0 failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
 ```
+
+`cargo run --release --` rather than a hard-coded binary path: the hosts
+this repo is worked on share one cargo target directory (the global
+`~/.cargo/config.toml` points `target-dir` at `/build/target-workers`, and
+`CARGO_TARGET_DIR` moves it per invocation), so the binary does not land
+beside the checkout — and build output must never be directed into
+`/home`; a relative target dir resolved against `~/.cargo` filled that
+filesystem to 99% once. To install what you built, use
+`./install.sh --from-checkout`, which resolves the real location via
+`cargo metadata`. `tests/documentation_consistency_tests.rs` fails any doc
+that regresses to a hard-coded build-output path.
 
 `icg check` always exits `0` for allow, warning, rewrite and deny alike —
 parse stdout, never the exit status. `--debug` writes the full evaluation

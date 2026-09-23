@@ -1268,6 +1268,100 @@ fn docs_state_that_the_guard_does_not_check_caller_identity() {
     );
 }
 
+/// Build instructions must not hard-code where cargo puts its output.
+///
+/// The hosts this repository is built on share one cargo target directory:
+/// the global `~/.cargo/config.toml` points `target-dir` at
+/// `/build/target-workers`, and `CARGO_TARGET_DIR` moves it per invocation.
+/// A doc that runs a freshly built binary from an assumed in-checkout
+/// `target/release` path is therefore wrong on those hosts (the path does
+/// not exist -- `install.sh` grew its `cargo metadata` fallback after a
+/// "cannot stat" failure on exactly this), and a reader who "fixes" it by
+/// redirecting the build into the checkout or under `/home` recreates the
+/// 2026-09-07 incident that policy exists to prevent: a relative target dir
+/// resolved against `~/.cargo` filled `/home` to 99%. The sanctioned forms
+/// are the ones the repo itself uses -- `cargo run --release`, and
+/// `install.sh --from-checkout` / `cargo metadata`'s `target_directory`
+/// for locating the artifact.
+#[test]
+fn docs_do_not_hardcode_the_cargo_build_output_location() {
+    let root = audited_checkout();
+    let docs = OPERATOR_FACING_DOCS
+        .iter()
+        .map(|relative| root.join(relative))
+        .chain([
+            root.join("README.md"),
+            root.join("AGENTS.md"),
+            // Shell/tape assets are all instruction -- no fences to stay
+            // inside.
+            root.join("docs/assets/demo.sh"),
+            root.join("docs/assets/demo.tape"),
+        ]);
+
+    let mut offenders = Vec::new();
+    for doc in docs {
+        let text = fs::read_to_string(&doc)
+            .unwrap_or_else(|error| panic!("should read {}: {error}", doc.display()));
+        let relative = doc
+            .strip_prefix(&root)
+            .unwrap_or(&doc)
+            .display()
+            .to_string();
+        // In markdown only fenced blocks are instructions; prose may
+        // discuss the policy (and this file's own doc comments do).
+        let is_markdown = relative.ends_with(".md");
+        let mut fenced = false;
+        for (number, line) in text.lines().enumerate() {
+            if is_markdown && line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            if is_markdown && !fenced {
+                continue;
+            }
+            if line.contains("target/release") {
+                offenders.push(format!(
+                    "{relative}:{}: hard-coded build-output path -- resolve it \
+                     via cargo metadata / install.sh --from-checkout, or use \
+                     cargo run --release",
+                    number + 1
+                ));
+            }
+            if directs_build_output_into_home(line) {
+                offenders.push(format!(
+                    "{relative}:{}: directs cargo build output into /home",
+                    number + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "docs carry build instructions that assume or recreate an in-/home \
+         target directory:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+/// A line that points cargo's build output under `/home` -- the filesystem
+/// the shared-target policy keeps build output off.
+fn directs_build_output_into_home(line: &str) -> bool {
+    const HOME_ROOTS: [&str; 3] = ["/home", "$HOME", "~/"];
+    let home_rooted = |value: &str| {
+        let value = value.trim_matches(|c| c == '"' || c == '\'');
+        HOME_ROOTS.iter().any(|root| value.starts_with(root))
+    };
+    let words: Vec<&str> = line.split_whitespace().collect();
+    words.iter().any(|word| {
+        word.strip_prefix("CARGO_TARGET_DIR=")
+            .or_else(|| word.strip_prefix("--target-dir="))
+            .is_some_and(home_rooted)
+    }) || words
+        .windows(2)
+        .any(|pair| pair[0] == "--target-dir" && home_rooted(pair[1]))
+}
+
 /// Every stanza in the coverage-justification record must name a real rule.
 ///
 /// `coverage-diff` cannot distinguish a widening from a narrowing, so it

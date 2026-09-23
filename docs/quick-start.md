@@ -95,7 +95,13 @@ git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
 cd irreversible-command-gate
 cargo build --release
 
-sudo install -o root -g root -m 0755 target/release/icg /usr/local/bin/icg
+# The binary lands in cargo's target directory, which a global cargo
+# config or CARGO_TARGET_DIR can move away from the checkout -- ask cargo
+# where it is instead of guessing (this is the lookup install.sh
+# --from-checkout performs):
+BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/icg"
+sudo install -o root -g root -m 0755 "$BIN" /usr/local/bin/icg
 
 icg --version
 # icg 0.1.3
