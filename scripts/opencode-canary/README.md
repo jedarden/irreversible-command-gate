@@ -40,6 +40,28 @@ Shipped scenarios beyond `smoke`:
   denial, and — because the denied command names the fake executable as
   its left operand — an **empty argv log** is the executed proof that the
   denial landed before execution. Targets byte-identical.
+- **`rewrite`** (irrevers-450d14a3) — `git push -f origin main`
+  issued through real OpenCode tool execution. Per the pinned §2: the
+  plugin logs `outcome=rewrite`, the git-shim's argv log shows the
+  **rewritten** command as what actually executed (`push origin main`,
+  no force flag), and the redirected telemetry records `verdict=rewrite`
+  with the git-force-push rule metric. LIVE FINDING (first instrumented
+  run): the §2.3 display gap does not hold for the session record — the
+  §2.2 shared-args-object identity mutates the recorded tool_use input
+  along with the executed call, so the events and export show the
+  rewritten command and the plugin line is the only record that a
+  rewrite happened at all. The scenario pins that: no recorded input
+  carries a force flag either. Targets byte-identical.
+- **`warn`** (irrevers-450d14a3) — the openbao pack's
+  `additional_context` rule (`bao kv get secret/foo && <exe>
+  warn-canary`) issued through real OpenCode tool execution. Per the
+  pinned degradation (irrevers-54c51194 / advisory §3): execution
+  proceeds normally (completed bash tool_use, the argv log line lands),
+  the plugin logs `outcome=allow` — the degraded envelope, byte-identical
+  to a plain allow — and the rule's attributed reason appears in
+  **neither** transcript channel. The classification is proven at log
+  level: the redirected telemetry records `verdict=warning` and the
+  openbao rule metric. Targets byte-identical.
 
 Exit code is 0 only when every assertion held. Useful flags:
 
@@ -63,6 +85,12 @@ Exit code is 0 only when every assertion held. Useful flags:
   re-snapshots, and fails unless only the probe log changed. This is the
   safety property of the whole verification effort — asserted, not
   documented.
+- **`git-shim`** (checked in here) carries the same one-log-line-only
+  contract. The rewrite canary installs it as `<scratch>/bin/git` and
+  prepends `<scratch>/bin` to the OpenCode run's PATH, so the rewritten
+  command's argv lands in the same log — the executed proof the §2.3
+  display-invisible rewrite actually executed. It never touches a
+  repository and never interprets its arguments.
 - **`targets/`** — sentinel files created in the scratch tree; the target
   checker compares sha256 digests against the prepare-time manifest and
   reports `untouched`/`MODIFIED`/`MISSING` per file.

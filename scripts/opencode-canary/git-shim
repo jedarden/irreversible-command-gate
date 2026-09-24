@@ -1,0 +1,47 @@
+#!/bin/sh
+# Fake git executable for the ICG OpenCode canary harness
+# (scripts/opencode-canary/).
+#
+# Contract: this script's ONLY write is one appended log line per
+# invocation, into the file named by CANARY_ARGV_LOG (default: argv.log
+# next to this script). It never interprets its arguments and never
+# touches a repository, so shadowing `git` on PATH for one canary run is
+# safe by construction: every argument is recorded verbatim as data and
+# dropped.
+#
+# Why it exists: fake-destructive cannot ride a rewritten command. The
+# force-push rewrite's rendered output is always a plain `git push ...`
+# (its segmenter extracts command substitutions and the render drops
+# composite tails — probed live against the deployed icg 0.1.63), so the
+# fake destructive executable can never be part of what executes. The
+# rewrite canary needs to see the executed form of the rewritten input
+# (docs/research/opencode-1.18.29-deny-rewrite-advisory.md §2.3: the
+# mutation is execution-real but display-invisible), and this shim is the
+# instrument for that: installed as <scratch>/bin/git and reached only
+# through the scenario's PATH prepend, its argv log line IS the rewritten
+# input as it actually executed.
+#
+# The exit status is always 0. Canary assertions read the argv log; they
+# never branch on this script's exit code.
+
+set -u
+
+LOG="${CANARY_ARGV_LOG:-$(dirname "$0")/argv.log}"
+
+# Invocation counter = lines already in the log + 1. Reading the log is
+# the only file access besides the append below.
+INVOCATION=0
+if [ -f "$LOG" ]; then
+  INVOCATION=$(wc -l <"$LOG")
+fi
+INVOCATION=$((INVOCATION + 1))
+
+{
+  printf 'invocation=%s argv0=%s' "$INVOCATION" "$0"
+  for arg in "$@"; do
+    printf '\t%s' "$arg"
+  done
+  printf '\n'
+} >>"$LOG"
+
+exit 0

@@ -24,7 +24,9 @@ Every offset is a byte index into that binary; §5 reproduces each window.
 - **REWRITE** — mutate `output.args` properties **in place**: hook and
   executor share the same args object at all three wrapper sites, so the
   mutation is what executes; reassigning `output.args = {...}` is a no-op.
-  The transcript/UI records the model's **original** args either way.
+  The live TUI renders the model's **original** args, but the session
+  record (events + export) shows the **mutated** args — see the §2.3 live
+  correction.
 - **ADVISORY** — none at tool-call time: the hook's only channels are the
   `{args}` output object and a discarded return value. The degraded signal
   path is **deny-with-message** (throw `Error("ICG: …")`); a true post-hoc
@@ -231,6 +233,40 @@ in-process.)
 execution (identity proven at 96848200 / 96854450 / 96860500); reassignment
 is discarded; the replacement is execution-real but display-invisible.
 
+### 2.4 Live correction: the session record shows the MUTATED args (2026-09-24)
+
+The display-invisibility half of §2.3 does not hold for the session record
+on the live path. Verified by the rewrite canary
+(`scripts/opencode-canary/harness rewrite`, bead `irrevers-450d14a3`) on the
+same artifacts as the rest of this file — `opencode` 1.18.29, the mounted
+`icg.ts` byte-identical to the repo copy — through real headless tool
+execution (session `ses_f2a75c326ffeFUSoIGE22eaEmR`): the model issued six
+`git push -f origin main` bash calls (redirected telemetry: six
+`verdict=rewrite` records, `git/git-force-push` match_count=6), a PATH-shim
+fake `git` logged the executed argv as plain `push origin main` six times
+with no force flag ever executing, and every recorded bash tool_use input in
+both `--format json` events and `opencode export` showed the REWRITTEN
+`git push origin main` — the original `-f` args appear nowhere in the
+session record.
+
+Mechanism: §2.2's object identity is unconditional. The `b` in
+`execute(b, H)` that the hook mutates in place IS the object the tool part
+stores as `state.input` (written once at parse time — by reference, §2.3);
+mutating its properties between parse and completion changes what every
+later reader of the part sees. The original-args display the static analysis
+predicted exists only in a client that rendered the part before the hook ran
+(the live TUI) and never re-reads it — not observable headless, and not what
+the events stream, the export, or `tool.execute.after` readers get.
+
+Practical consequence, stronger than §2.3's: **OpenCode's session record
+carries no trace of the model's original args after a rewrite.** The
+plugin's `[icg] … outcome=rewrite keys …` stderr line is the only marker
+anywhere that a rewrite happened, so the rewrite audit trail is exclusively
+the plugin's own — an ICG deployment that loses the plugin's stderr loses
+rewrite auditability entirely. The rewrite canary pins this: no recorded
+input may carry a rewritten-away flag, and the shim's argv log must show the
+rewritten command as executed.
+
 ## 3. Advisory: can a warning reach the agent?
 
 ### 3.1 No advisory channel on the pre-tool hook — §6.3 confirmed
@@ -302,8 +338,11 @@ execution-already-happened advisory only.
    with the addition that the throw **pre-empts permission prompts** (§1.2)
    and does **not** stop the agent loop (§1.5).
 2. "a Rewrite by mutating `args` in place" — confirmed as the only working
-   form; reassignment is a no-op (§2.2), and the rewrite is invisible in
-   the transcript, so ICG must audit rewrites itself (§2.3).
+   form; reassignment is a no-op (§2.2). The rewrite is invisible in the
+   live TUI rendering, while the session record shows the mutated args
+   with no trace of the originals (§2.4) — either way ICG must audit
+   rewrites itself, because no OpenCode record marks the call as
+   rewritten.
 3. "`supports_additional_context: false` … a Warn degrades to a bare
    allow" — the capability flag is right, but the degraded-path statement
    should be extended: **deny-with-message** is available and
