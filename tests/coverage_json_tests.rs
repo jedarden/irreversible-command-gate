@@ -40,6 +40,18 @@ fn corrupt_pack_contents() -> String {
     .expect("corrupt fixture should be readable")
 }
 
+/// The exact key set of a JSON object, for the key-set pins below. A
+/// serde_json `Value` loses nothing here: its map is a set compare against
+/// the documented field table, so an added, removed, or renamed field fails.
+fn exact_keys(value: &Value) -> BTreeSet<&str> {
+    value
+        .as_object()
+        .expect("expected a JSON object")
+        .keys()
+        .map(String::as_str)
+        .collect()
+}
+
 fn coverage_json() -> Value {
     let packs = packs_dir();
     let output = icg(&[
@@ -145,6 +157,11 @@ fn coverage_rejects_an_unknown_format() {
     let output = icg(&["coverage", "--format", "yaml"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported --format"));
+    assert!(
+        output.stdout.is_empty(),
+        "the rejection happens before anything is written to stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 // --- the coverage/v1 contract ------------------------------------------
@@ -174,6 +191,47 @@ fn coverage_json_pins_its_top_level_key_set() {
     .into_iter()
     .collect();
     assert_eq!(keys, expected, "coverage/v1 top-level keys moved");
+}
+
+/// The same promise one level down: the note's pack and guarded-pattern
+/// field tables are exact sets too, and "consumers key on the full key sets
+/// above, and those sets are pinned by test" is only true if every level is
+/// pinned — a new field on a pack or rule object would otherwise sail past
+/// the top-level pin and still break every strict consumer.
+#[test]
+fn coverage_json_pins_the_key_sets_at_every_level() {
+    let report = coverage_json();
+    for pack in report["packs"].as_array().unwrap() {
+        assert_eq!(
+            exact_keys(pack),
+            BTreeSet::from([
+                "id",
+                "path",
+                "tool_keywords",
+                "applies_to",
+                "safe_patterns",
+                "guarded_patterns",
+            ]),
+            "coverage/v1 pack keys moved"
+        );
+        for rule in pack["guarded_patterns"].as_array().unwrap() {
+            assert_eq!(
+                exact_keys(rule),
+                BTreeSet::from([
+                    "id",
+                    "enabled",
+                    "tier",
+                    "severity",
+                    "channel",
+                    "destructive",
+                    "check",
+                    "explanation",
+                    "redirect",
+                ]),
+                "coverage/v1 guarded-pattern keys moved"
+            );
+        }
+    }
 }
 
 /// Every rule, in every shipped pack, must be fully described: the
@@ -287,6 +345,58 @@ fn icg_pack_dir_replaces_the_default_search_path() {
     );
 }
 
+/// The last link of the documented resolution order: with no `--pack`, no
+/// `ICG_PACK_DIR`, and no `/etc/icg` installation, the `packs/` directory
+/// relative to the working directory is what loads. On a host that does have
+/// `/etc/icg/packs` the report legitimately carries those too, so the
+/// assertion is that every shipped pack reports — never that nothing else
+/// does.
+#[test]
+fn the_working_directory_packs_dir_is_a_default_search_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--format", "json"])
+        .env_remove("ICG_PACK_DIR")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("icg should run");
+    assert!(
+        output.status.success(),
+        "the working directory's packs/ should load with no --pack: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("the default path should emit a document");
+    assert_eq!(report["format"], "coverage/v1");
+    assert!(
+        report["unreadable"].as_array().unwrap().is_empty(),
+        "every shipped pack is readable; nothing here is an unreadable entry"
+    );
+
+    let shipped: BTreeSet<String> = fs::read_dir(packs_dir())
+        .expect("packs/ readable")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .map(|path| {
+            serde_json::from_str::<Value>(&fs::read_to_string(&path).expect("pack file readable"))
+                .expect("shipped pack should parse")["id"]
+                .as_str()
+                .expect("pack id")
+                .to_owned()
+        })
+        .collect();
+    let reported: BTreeSet<String> = report["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pack| pack["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        shipped.is_subset(&reported),
+        "every shipped pack must report from the working-directory default: missing {:?}",
+        shipped.difference(&reported).collect::<Vec<_>>()
+    );
+}
+
 /// An unreadable pack is reported in `unreadable` — path plus reason —
 /// while every readable pack in the same directory still reports, the
 /// command exits 0, and the counts describe only what loaded.
@@ -333,6 +443,11 @@ fn an_unreadable_pack_is_reported_alongside_the_readable_ones() {
     assert!(
         !unreadable[0]["error"].as_str().unwrap().trim().is_empty(),
         "unreadable entries carry the reason"
+    );
+    assert_eq!(
+        exact_keys(&unreadable[0]),
+        BTreeSet::from(["path", "error"]),
+        "unreadable entries carry exactly the documented pair"
     );
 }
 
@@ -594,6 +709,91 @@ fn repeated_pack_paths_are_deduplicated() {
     assert_eq!(
         once.stdout, twice.stdout,
         "a repeated --pack value must not change the document"
+    );
+}
+
+/// "explicit `--pack` values are deduplicated and sorted": the document is
+/// a function of the pack *set*, not the order the caller listed them in. A
+/// consumer assembling --pack values from layered config must not be able
+/// to reorder the report by reordering its config.
+#[test]
+fn explicit_pack_values_are_sorted_not_taken_in_caller_order() {
+    let git = packs_dir().join("git.json");
+    let tmux = packs_dir().join("tmux.json");
+    let forward = coverage_json_against(&[&git, &tmux]);
+    let reverse = coverage_json_against(&[&tmux, &git]);
+    assert!(forward.status.success() && reverse.status.success());
+    assert_eq!(
+        forward.stdout, reverse.stdout,
+        "the caller's --pack order must not change the document"
+    );
+
+    let report: Value = serde_json::from_slice(&forward.stdout).unwrap();
+    let paths: Vec<&str> = report["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pack| pack["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            git.to_str().expect("pack path is utf-8"),
+            tmux.to_str().expect("pack path is utf-8")
+        ],
+        "packs report in resolved-path order"
+    );
+}
+
+/// "A file whose name does not end in `.json` is not treated as a pack,
+/// even when it exists." The same valid pack under a `.txt` name is
+/// refused when named explicitly — the gate must not silently render an
+/// empty report for a path the caller clearly meant — and a `.txt` entry in
+/// a pack directory contributes nothing while its `.json` neighbours still
+/// report, without surfacing as an `unreadable` entry: the gate skips the
+/// file, it does not fail to load it.
+#[test]
+fn a_non_json_file_is_not_treated_as_a_pack_even_when_it_exists() {
+    let dir = TempDir::new().expect("tempdir");
+    let wrong_extension = dir.path().join("pack.txt");
+    fs::copy(packs_dir().join("tmux.json"), &wrong_extension)
+        .expect("shipped tmux pack should copy");
+
+    // Named explicitly: the file exists, is readable, holds a valid pack —
+    // and the extension gate still refuses it.
+    let output = coverage_json_against(&[&wrong_extension]);
+    assert!(
+        !output.status.success(),
+        "an existing non-.json file must not be treated as a pack"
+    );
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no rule packs found"),
+        "the refusal is the empty-pack-set error, got {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Offered as a directory: the .txt entry contributes nothing, the .json
+    // neighbour still reports, and nothing lands in `unreadable`.
+    fs::copy(
+        packs_dir().join("git.json"),
+        dir.path().join("readable.json"),
+    )
+    .expect("shipped git pack should copy");
+    let output = coverage_json_against(&[dir.path()]);
+    assert!(
+        output.status.success(),
+        "the .json neighbour should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("the document should parse");
+    let packs = report["packs"].as_array().unwrap();
+    assert_eq!(packs.len(), 1, "the .txt entry contributed no pack");
+    assert_eq!(packs[0]["id"], "git");
+    assert_eq!(
+        report["unreadable"].as_array().unwrap().len(),
+        0,
+        "the extension gate skips the file; it is not a load failure"
     );
 }
 
