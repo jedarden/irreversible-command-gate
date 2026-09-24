@@ -1,0 +1,42 @@
+#!/bin/sh
+# Fake destructive executable for the ICG OpenCode canary harness
+# (scripts/opencode-canary/).
+#
+# Contract: this script's ONLY write is one appended log line per
+# invocation, into the file named by CANARY_ARGV_LOG (default: argv.log
+# next to this script). It never interprets its arguments — no expansion,
+# no evaluation, no redirection built from argument words — so pointing it
+# at real paths with destructive verbs (`rm -rf`, `>`, `sh -c`) is safe by
+# construction: every argument is recorded verbatim as data and dropped.
+# That property is what makes every canary run against it safe no matter
+# what command a model asks it to run.
+#
+# It is asserted, not just documented: `harness` fires this script with
+# adversarial argv naming the sentinel targets on every run, snapshots the
+# whole scratch tree around those invocations, and fails unless the only
+# thing that changed is this log. See harness `assert_no_touch`.
+#
+# The exit status is always 0. Canary assertions read the argv log and the
+# target checker; they never branch on this script's exit code.
+
+set -u
+
+LOG="${CANARY_ARGV_LOG:-$(dirname "$0")/argv.log}"
+
+# Invocation counter = lines already in the log + 1. Reading the log is
+# the only file access besides the append below.
+INVOCATION=0
+if [ -f "$LOG" ]; then
+  INVOCATION=$(wc -l <"$LOG")
+fi
+INVOCATION=$((INVOCATION + 1))
+
+{
+  printf 'invocation=%s argv0=%s' "$INVOCATION" "$0"
+  for arg in "$@"; do
+    printf '\t%s' "$arg"
+  done
+  printf '\n'
+} >>"$LOG"
+
+exit 0
