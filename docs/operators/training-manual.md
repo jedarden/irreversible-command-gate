@@ -237,8 +237,8 @@ Before installing icg, ensure you have:
 #### Method 1: Release binary (recommended)
 
 ```bash
-# Release binary and packs (v0.1.63, linux x86_64)
-BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.63
+# Release binary and packs (v0.1.64, linux x86_64)
+BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.64
 curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
 
 sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
@@ -402,7 +402,7 @@ icg health --verbose
 
 # ✓ All rule packs valid
 # ✓ Claude Code hook configured
-# ✓ icg binary: /usr/local/bin/icg v0.1.63
+# ✓ icg binary: /usr/local/bin/icg v0.1.64
 # ✓ Rule packs: 11 packs loaded
 #   - argocd-topology (1 patterns)
 #   - beads (3 patterns)
