@@ -728,6 +728,19 @@ valgrind --tool=massif \
   --command "git log --oneline"
 ```
 
+Profiling tools that need full DWARF (`valgrind`/massif, `perf`/`cargo
+flamegraph`, `gdb`, `lldb`) lose variable/type inspection against dev builds:
+`[profile.dev]` sets `debug = "line-tables-only"` — panics and backtraces keep
+file:line frames, but variable/type-level DWARF is dropped (it was ~78% of
+every dev/test binary's bytes). For a single invocation that needs it, restore
+full debuginfo with the profile-environment override, which rebuilds just that
+run:
+
+```bash
+CARGO_PROFILE_DEV_DEBUG=2 valgrind --tool=massif \
+  cargo run --bin icg -- check --command "git log --oneline"
+```
+
 ---
 
 ## Release Process

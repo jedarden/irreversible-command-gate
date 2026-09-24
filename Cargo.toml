@@ -23,3 +23,10 @@ tar = "0.4"
 
 [dev-dependencies]
 tempfile = "3.13"
+
+[profile.dev]
+# Dev/test builds carry line-tables-only debuginfo: panics and backtraces keep
+# file:line frames, but variable/type-level DWARF (~78% of dev/test binary
+# bytes fleet-wide) is dropped. Needs full DWARF for one invocation? Prefix it:
+#   CARGO_PROFILE_DEV_DEBUG=2 cargo <cmd>
+debug = "line-tables-only"
