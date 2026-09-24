@@ -643,12 +643,14 @@ GuardedPattern:
   exists.** Git tags `v0.1.0` through `v0.1.6` shipped 2026-08-27 through
   2026-09-08 (inventoried by `irrevers-eff8909f`), and releases kept
   advancing on every `Cargo.toml` version bump after that — as of this
-  reconciliation (re-collected 2026-09-20, when tag `v0.1.62` was found
-  missing from the inventory) there are 63 tags (`v0.1.0`–`v0.1.62`) and
-  62 GitHub Releases (`v0.1.1`–`v0.1.62`; `v0.1.0` is tagged but was
+  reconciliation (re-collected 2026-09-24, when tags `v0.1.63` and
+  `v0.1.64` were found missing from the inventory, exactly as
+  `v0.1.62` had been in the previous pass) there are 65 tags
+  (`v0.1.0`–`v0.1.64`) and
+  64 GitHub Releases (`v0.1.1`–`v0.1.64`; `v0.1.0` is tagged but was
   never published to GitHub), each non-draft with all four assets (`icg`,
   `icg-packs.tar.gz`, `pack-manifest.json`, `rule-pack.json`), latest
-  `v0.1.62` on 2026-09-19. `irrevers-84b36e47`, the end-to-end release
+  `v0.1.64` on 2026-09-24. `irrevers-84b36e47`, the end-to-end release
   verification bead and the last remaining Phase 0 blocker, **closed
   2026-09-06**: release `v0.1.1` published with all four assets 25 s
   before close, and that shape reproduces on every later release

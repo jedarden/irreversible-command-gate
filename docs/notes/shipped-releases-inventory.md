@@ -16,21 +16,27 @@ through v0.1.62: the tag was found in the checkout but absent here (the
 2026-09-13 pass predated it), and its row was added from the same two
 sources (`git for-each-ref refs/tags/v0.1.62`; `gh api
 repos/jedarden/irreversible-command-gate/releases/tags/v0.1.62`).
+Re-verified again 2026-09-24 through v0.1.64: tags v0.1.63 and v0.1.64
+were found in the checkout but absent here (the 2026-09-20 pass
+predated them), and their rows were added from the same two sources
+(`git for-each-ref refs/tags/v0.1.63 refs/tags/v0.1.64`; `gh api
+repos/jedarden/irreversible-command-gate/releases/tags/v0.1.63` and
+`…/tags/v0.1.64`).
 
 ## The two facts, stated separately
 
 These are distinct claims and downstream edits must cite the right one:
 
-1. **Git tags exist.** The repo carries **63 tags, `v0.1.0` through
-   `v0.1.62`**, contiguous with no gaps. All are lightweight tags
+1. **Git tags exist.** The repo carries **65 tags, `v0.1.0` through
+   `v0.1.64`**, contiguous with no gaps. All are lightweight tags
    (`git for-each-ref` reports `objecttype: commit` for every one), so
    each tag's "date" is the commit's author/commit date, not a separate
    tag-creation date.
 2. **GitHub Releases exist.** `gh release list` on
-   `jedarden/irreversible-command-gate` returns **62 published Releases,
-   `v0.1.1` through `v0.1.62`**, none draft, none prerelease, all
-   targeting `main`. `v0.1.62` is marked **Latest** (published
-   2026-09-19T21:01:59Z).
+   `jedarden/irreversible-command-gate` returns **64 published Releases,
+   `v0.1.1` through `v0.1.64`**, none draft, none prerelease, all
+   targeting `main`. `v0.1.64` is marked **Latest** (published
+   2026-09-24T13:15:40Z).
 
 ### Set differences
 
@@ -54,6 +60,7 @@ These are distinct claims and downstream edits must cite the right one:
   held unchanged — 0 drafts, 0 prereleases, `target_commitish` =
   `main` on all, and every release carrying exactly the four assets
   `icg`, `icg-packs.tar.gz`, `pack-manifest.json`, `rule-pack.json`.
+  Re-run again 2026-09-24 over all 64; the invariants held unchanged.
 
 ## Inventory
 
@@ -128,16 +135,19 @@ Every row from `v0.1.1` down has a published Release.
 | v0.1.59 | `213d384` | 2026-09-12T16:51:40Z | 2026-09-12T16:58:45Z | |
 | v0.1.60 | `5d88357` | 2026-09-13T05:27:42Z | 2026-09-13T05:36:08Z | |
 | v0.1.61 | `566256b` | 2026-09-13T06:49:08Z | 2026-09-13T06:56:38Z | |
-| v0.1.62 | `52e3a26` | 2026-09-19T20:19:57Z | 2026-09-19T21:01:59Z | **Latest** |
+| v0.1.62 | `52e3a26` | 2026-09-19T20:19:57Z | 2026-09-19T21:01:59Z | |
+| v0.1.63 | `1820cec` | 2026-09-24T04:32:00Z | 2026-09-24T05:20:17Z | |
+| v0.1.64 | `560a5ac` | 2026-09-24T12:25:47Z | 2026-09-24T13:15:40Z | **Latest** |
 
 ## Artifact evidence
 
 Releases carry real assets, not just a tag echo. Spot-check on
-`v0.1.62`: `icg` (the binary), `icg-packs.tar.gz`, `pack-manifest.json`,
-`rule-pack.json` — the same four assets verified on `v0.1.61` in the
+`v0.1.64`: `icg` (the binary), `icg-packs.tar.gz`, `pack-manifest.json`,
+`rule-pack.json` — the same four assets verified on `v0.1.63` and
+`v0.1.62` in the 2026-09-24 and 2026-09-20 passes, on `v0.1.61` in the
 2026-09-13 pass and on `v0.1.57` in the initial pass. Release title
 format is `irreversible-command-gate vN.N.N`; `target_commitish` is
-`main` on all 62.
+`main` on all 64.
 
 ## Observations for the plan reconciliation (factual, not analysis)
 
@@ -148,7 +158,9 @@ format is `irreversible-command-gate vN.N.N`; `target_commitish` is
   uninterrupted through v0.1.61 on 2026-09-13 (the release commits
   themselves — `5d88357`, `566256b` — are the tagged commits); `v0.1.62`
   resumed the pattern on 2026-09-19 after a six-day gap (42 min tag→
-  release, `52e3a26` the tagged commit).
+  release, `52e3a26` the tagged commit), and `v0.1.63`/`v0.1.64`
+  continued it on 2026-09-24 (48 and 50 min tag→release, `1820cec` and
+  `560a5ac` the tagged commits).
 - The correct replacement for plan.md's "no release has ever been cut"
-  (line ~457) is: **62 GitHub Releases exist (v0.1.1–v0.1.62); only the
+  (line ~457) is: **64 GitHub Releases exist (v0.1.1–v0.1.64); only the
   very first tag, v0.1.0, lacks a Release.**
