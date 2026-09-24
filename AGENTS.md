@@ -66,7 +66,8 @@ rather than parse packs or keep a second copy of the list.
    [`docs/notes/redirect-not-just-block.md`](docs/notes/redirect-not-just-block.md).
 3. **The engine does no network I/O** and fails open on any error. Keep it
    that way — one scoped exception exists (stale-remote-head lookup before a
-   push) and it is documented in the plan.
+   push) and it is documented in
+   [`docs/notes/no-network-boundary.md`](docs/notes/no-network-boundary.md).
 4. **Docs are tested.** `tests/documentation_consistency_tests.rs` asserts
    that quick-start's coverage table names every shipped rule id and count,
    that no operator doc cites a pack or pattern that does not exist, and that

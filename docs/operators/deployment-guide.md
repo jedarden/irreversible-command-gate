@@ -63,8 +63,15 @@ harness's own approval and sandbox controls enabled.
 - `curl` or another approved artifact-transfer tool is useful for manual
   distribution. It is not required by `icg hook`.
 
-`icg hook` evaluates commands without network access. Only `icg update` talks
-to the GitHub Releases API, and it does so once when explicitly invoked.
+`icg hook` evaluates commands locally. One exception exists on the check
+path: before a non-force `git push` is judged, the `git-stale-remote-head-push`
+rule runs a single `git ls-remote` lookup against the push's upstream — the
+push is itself a network operation, so the check adds no new exposure — and
+any lookup failure (no upstream configured, unreachable remote) fails open
+and lets the push proceed. Apart from that, only `icg update` talks to the
+GitHub Releases API, and it does so once when explicitly invoked. The
+[no-network boundary note](../notes/no-network-boundary.md) documents the
+exception's activation, failure behavior and fail-open semantics in full.
 
 ### Build host
 

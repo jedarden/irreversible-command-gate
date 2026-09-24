@@ -51,13 +51,21 @@ Four verdicts, one per redirect channel a rule can declare — and **only
 | `REWRITE` | `allow` + `updatedInput` | A safe form of the same intent exists — the harness retries with it |
 | `DENY` | `permissionDecision: deny` | Irreversible; the reason carries the alternative |
 
-The engine is deterministic and does no network I/O. It **fails open**: an
-empty pack directory, an unrecognised tool, or a crashed check allows the
-command. A missed violation is recoverable; a wedged agent fleet is not.
+The engine is deterministic, and its evaluation does no network I/O — with
+one documented exception: before a non-force `git push` is judged, the
+`git-stale-remote-head-push` rule runs a single live `git ls-remote` lookup
+against the push's own upstream, and any error in that lookup fails open and
+lets the push proceed. The
+[no-network boundary note](docs/notes/no-network-boundary.md) records the
+exception's activation, failure behavior and fail-open semantics in full.
+The engine **fails open**: an empty pack directory, an unrecognised tool, or
+a crashed check allows the command. A missed violation is recoverable; a
+wedged agent fleet is not.
 A graduated [fail-closed policy](docs/operators/fail-closed-mode.md) exists
 for once a release has proven itself.
 
-Median cost of a check on a warm cache: **~10 ms**.
+Median cost of a check on a warm cache: **~10 ms**. A non-force `git push`
+additionally waits on the stale-remote-head lookup's one network round trip.
 
 ## Try it in a minute
 

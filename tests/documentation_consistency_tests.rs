@@ -1397,6 +1397,150 @@ fn coverage_justifications_name_real_patterns() {
     }
 }
 
+/// The engine's no-network guarantee and its one exception
+/// (bead `irrevers-d8469484`).
+///
+/// `tests/no_network_boundary_tests.rs` enforces the guarantee against the
+/// engine; this guard holds the prose to it. README.md, AGENTS.md rule 3,
+/// deployment-guide.md, training-manual.md and onboarding-guide.md each
+/// stated the guarantee absolutely -- "does no network I/O", "evaluates
+/// commands without network access", "doesn't make network calls" --
+/// while the shipped `git-stale-remote-head-push` rule runs a live
+/// `git ls-remote` before every non-force `git push`
+/// (`push_requires_current_remote_head` -> `check_remote_head_stale` in
+/// src/engine.rs), the exception documented in
+/// docs/notes/no-network-boundary.md. The reconciled pages state the
+/// exception wherever they state the claim, so a reader sizing what an
+/// `icg check` may touch no longer rules out a network round trip the
+/// shipped packs actually make. The needles below are the absolute
+/// phrasings; a page may carry one only with the exception named in the
+/// same document.
+#[test]
+fn no_network_claims_name_the_stale_remote_head_exception() {
+    let claim_needles = [
+        ("no network i/o", "README's absolute sentence"),
+        (
+            "without network access",
+            "deployment-guide's absolute sentence",
+        ),
+        ("make network calls", "onboarding-guide's FAQ answer"),
+        ("zero network", "training-manual's design-principle list"),
+        (
+            "doesn't require external calls",
+            "training-manual's design-principle list",
+        ),
+    ];
+    let names_the_exception = |text: &str| {
+        let lowered = text.to_ascii_lowercase();
+        lowered.contains("stale-remote-head") || lowered.contains("ls-remote")
+    };
+
+    let mut scanned: Vec<(String, String)> = OPERATOR_FACING_DOCS
+        .iter()
+        .map(|doc| (doc.to_string(), repo_relative(doc)))
+        .collect();
+    scanned.push(("README.md".to_owned(), repo_relative("README.md")));
+    scanned.push(("AGENTS.md".to_owned(), repo_relative("AGENTS.md")));
+
+    for (doc, text) in &scanned {
+        let lowered = text.to_ascii_lowercase();
+        for (needle, origin) in claim_needles {
+            if lowered.contains(needle) && !names_the_exception(text) {
+                panic!(
+                    "{doc} states the no-network guarantee ({origin}) without \
+                     naming its one exception -- the stale-remote-head lookup \
+                     before a non-force `git push`, documented in \
+                     docs/notes/no-network-boundary.md"
+                );
+            }
+        }
+    }
+
+    // The reconciled surfaces must keep stating the exception explicitly,
+    // not merely avoid the needles above: activation (the rule and its
+    // ls-remote lookup), failure behavior, and fail-open semantics.
+    let readme = repo_relative("README.md");
+    for marker in [
+        "git-stale-remote-head-push",
+        "ls-remote",
+        "fails open",
+        "docs/notes/no-network-boundary.md",
+    ] {
+        assert!(
+            readme.contains(marker),
+            "README.md's no-network sentence must keep naming {marker}"
+        );
+    }
+    let deployment = repo_relative("docs/operators/deployment-guide.md");
+    for marker in [
+        "git-stale-remote-head-push",
+        "ls-remote",
+        "fails open",
+        "../notes/no-network-boundary.md",
+    ] {
+        assert!(
+            deployment.contains(marker),
+            "deployment-guide.md's network paragraph must keep naming {marker}"
+        );
+    }
+    for (doc, text) in [
+        (
+            "docs/operators/training-manual.md",
+            repo_relative("docs/operators/training-manual.md"),
+        ),
+        (
+            "docs/onboarding-guide.md",
+            repo_relative("docs/onboarding-guide.md"),
+        ),
+        (
+            "docs/developers/README.md",
+            repo_relative("docs/developers/README.md"),
+        ),
+    ] {
+        assert!(
+            names_the_exception(&text),
+            "{doc} must keep naming the stale-remote-head exception to the \
+             no-network guarantee"
+        );
+    }
+
+    // The exception the docs describe is the one that ships: the pack
+    // defines the rule with the push-gated predicate and a deny redirect.
+    let pack: serde_json::Value =
+        serde_json::from_str(&repo_relative("packs/git.json")).expect("git pack parses");
+    let rule = pack["guarded_patterns"]
+        .as_array()
+        .expect("git pack should carry guarded_patterns")
+        .iter()
+        .find(|pattern| pattern["id"] == "git-stale-remote-head-push")
+        .expect(
+            "packs/git.json should define git-stale-remote-head-push; \
+                 the docs' exception names it",
+        );
+    assert_eq!(
+        rule["predicate_name"], "push_requires_current_remote_head",
+        "the documented exception must stay the push-gated predicate"
+    );
+    assert_eq!(
+        rule["redirect"]["channel"], "deny",
+        "the stale-remote-head rule must keep denying a stale push"
+    );
+
+    // ...and the canonical note must keep describing it.
+    let note = repo_relative("docs/notes/no-network-boundary.md");
+    for marker in [
+        "git-stale-remote-head-push",
+        "push_requires_current_remote_head",
+        "ls-remote",
+        "fails open",
+    ] {
+        assert!(
+            note.contains(marker),
+            "docs/notes/no-network-boundary.md must keep naming {marker}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // plan.md release/status claims vs committed ground truth.
 //

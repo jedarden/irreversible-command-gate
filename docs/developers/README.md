@@ -73,10 +73,14 @@ icg consists of several key components:
    - A missed violation is recoverable; a stuck fleet is not
    - Only the guard process crashing graduates to fail-closed after reliability validation
 
-2. **Zero Network I/O**: Core evaluation doesn't make network calls
+2. **Zero Network I/O**: Core evaluation makes no network calls
    - Ensures deterministic behavior
    - Prevents cascading failures
-   - Exception: `git push` stale-HEAD check (already a network operation)
+   - One exception: before a non-force `git push`, the
+     `git-stale-remote-head-push` predicate runs a single `git ls-remote`
+     lookup — the push is already a network operation — and any lookup
+     error fails open and allows the push (see the
+     [no-network boundary note](../notes/no-network-boundary.md))
 
 3. **Modular Rule Packs**: Each tool gets its own pack
    - Easy to add new rules without touching core code

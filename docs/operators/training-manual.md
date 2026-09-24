@@ -45,7 +45,10 @@ icg provides:
 2. **Pattern-based blocking**: Uses regex patterns to identify destructive operations
 3. **Redirect-not-just-block**: Every denial explains what to do instead
 4. **Graduated availability policy**: Fail-Open is the default; approved cohorts can use Fail-Closed when guard availability is more important than workflow continuity. See the [Fail-Closed mode guide](fail-closed-mode.md).
-5. **Zero network dependency**: Core evaluation doesn't require external calls
+5. **Zero network dependency**: Core evaluation makes no external calls — the
+   one exception is the `git-stale-remote-head-push` lookup before a
+   non-force `git push` (one live `git ls-remote`; it fails open on any
+   error). See the [no-network boundary note](../notes/no-network-boundary.md).
 
 ### What icg Protects
 

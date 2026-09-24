@@ -607,7 +607,12 @@ Found a gap in the documentation?
 
 **Q: Will icg slow down my workflow?**
 
-A: No. icg adds <1ms latency per command check. The evaluation is local and doesn't make network calls.
+A: A non-push check adds single-digit milliseconds on a warm cache and never
+touches the network. The one exception is a non-force `git push`: before it
+is judged, the `git-stale-remote-head-push` rule runs a single `git ls-remote`
+lookup against the push's upstream, and any lookup error fails open and lets
+the push proceed. See the
+[no-network boundary note](notes/no-network-boundary.md).
 
 **Q: Can icg block all dangerous operations?**
 

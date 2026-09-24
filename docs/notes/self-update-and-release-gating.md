@@ -81,9 +81,12 @@ resident process. No fleet-wide synchronization point
 either: triggering one host doesn't require pausing or waiting on any
 other host, which is what makes the already-adopted canary-rollout design
 (`irrevers-6de781f4`) actually work as "one host first, the rest later" rather than
-an all-or-nothing flip. This also means there's no network I/O on the
-guarded-check hot path at all under normal operation — the only time the
-guard talks to GitHub is the moment a human explicitly asks it to.
+an all-or-nothing flip. This also means the guarded-check hot path spawns
+nothing and talks to GitHub only where explicitly asked — with the one
+scoped exception to the no-network boundary: the stale-remote-head lookup
+that runs before a non-force `git push`
+([no-network-boundary.md](no-network-boundary.md)). Outside that lookup and
+a human-triggered `icg update`, a check does no network I/O.
 
 Worth noting the asymmetry this creates with `irrevers-ff4f17da`'s poison-pill
 auto-rollback: adopting a new release forward is deliberate and manual,
