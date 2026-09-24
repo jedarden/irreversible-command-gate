@@ -6,7 +6,8 @@
 `docs/notes/existing-enforcement-infrastructure.md` (Rule 4), `docs/quick-start.md`
 ("there is deliberately no kubectl pack and there will not be one") and
 `tests/coexistence_org_rule_guard_tests.rs` ("PERMANENTLY not absorbed")
-**Tracking:** `irrevers-3fc0fbce`; follow-up gap `irrevers-08a4a11b`
+**Tracking:** `irrevers-3fc0fbce`; follow-up gaps `irrevers-08a4a11b`
+(timeout/xargs/nice) and `irrevers-a4779a37` (`sh -c` payloads)
 
 ## Context
 
@@ -69,9 +70,18 @@ unchanged — it needs live cluster state — so the pack stays blanket.
   `org-rule-guard.py` on the same terms as rules 1–3, leaving only its
   Write/Edit credential-value rule.
 - The pack inherits the engine's prefix handling. `sudo`, `env`, env
-  assignments, absolute paths and `&&` chains are normalized; `timeout N`,
-  `xargs` and `bash -c` are not, for every pack, so they evade this one too
-  (`irrevers-08a4a11b`). org-rule-guard.py has the same gap, so this is
-  parity, not a regression.
+  assignments, absolute paths and `&&` chains are normalized, as are
+  `timeout`, `xargs` and `nice` (`irrevers-08a4a11b`) and the `-c` command
+  string of `sh`/`bash`/`dash`/`ash`/`zsh`/`ksh` (`irrevers-a4779a37`): a
+  `-c` payload is, by the shell's own semantics, a command line, so
+  segmentation lexes it with the ordinary lexer and its commands dispatch
+  like any other segment. The boundary that remains is deliberate:
+  commands the guard cannot see as text — a script fed on stdin or by a
+  heredoc (`bash <<'EOF'`), a script file (`bash script.sh`),
+  `eval`/indirect interpreters, and anything a command substitution
+  produces at runtime — stay unevaluated. Modeling those would mean
+  resolving runtime values, not lexing static text, which is the same line
+  the AST-parsing rejection in the ideas ledger draws: the engine lexes
+  what is written, it does not execute or resolve what would be read.
 - A future verb added to kubectl is allowed until a pattern names it. That
   is the same fail-open trade the rest of the engine makes.

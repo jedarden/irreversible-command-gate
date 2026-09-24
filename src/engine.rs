@@ -1188,6 +1188,156 @@ fn command_token_from_words(
     })
 }
 
+/// Shell basenames whose `-c` operand is itself a shell command line. `-c`
+/// means "read commands from the next operand" across the whole POSIX
+/// family, so one scanner covers all of them.
+const SHELL_PAYLOAD_BASENAMES: [&str; 6] = ["sh", "bash", "dash", "ash", "zsh", "ksh"];
+
+/// Nesting cap for payloads that themselves contain `sh -c`. A payload
+/// strictly contains its own nested payload, so recursion terminates without
+/// this; the cap only bounds the work a pathological input can ask for.
+const SHELL_PAYLOAD_MAX_DEPTH: usize = 8;
+
+/// The command string a `sh -c`-style invocation executes.
+enum ShellPayload {
+    /// A separate argv operand (`sh -c '…'`), indexed into the token's args.
+    Operand(usize),
+    /// Glued to the flag cluster by quote removal: the shell lexes
+    /// `sh -c'kubectl delete pod x'` into the single word `-ckubectl …`,
+    /// so the operand rides inside the option cluster.
+    Attached(String),
+}
+
+/// Locate the command string a shell's `-c` flag will execute.
+///
+/// Returns `None` when the shell is not reading commands from a string at
+/// all: no `-c` is present, a script path comes first, `--` ends the
+/// options, or the option shape is not modeled. `None` fails open — the
+/// token evaluates as the bare shell and the payload stays invisible —
+/// which is the same standing trade `strip_command_prefixes` makes for
+/// option tables it does not fully model.
+fn shell_payload_operand(args: &[String]) -> Option<ShellPayload> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "--" {
+            // Everything after `--` is a script path, even if it reads `-c`.
+            return None;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            match long {
+                // The one long option that consumes a separate operand.
+                "rcfile" => index += 2,
+                // Valueless invocation modifiers.
+                "noprofile" | "norc" | "posix" | "restricted" | "verbose" | "noediting"
+                | "debugger" | "login" => index += 1,
+                // Unknown long option (including --help/--version): the
+                // shell exits without running anything, so there is no
+                // payload to find.
+                _ => return None,
+            }
+            continue;
+        }
+        let Some(cluster) = arg.strip_prefix('-') else {
+            // A non-option word is a script path; a shell running a file
+            // takes no command-string operand.
+            return None;
+        };
+        if cluster.is_empty() {
+            // `sh -` reads the script from stdin, not from argv.
+            return None;
+        }
+        // Walk the cluster's flag letters. The first value-consuming flag
+        // decides: `c` takes the command string — consuming the rest of the
+        // cluster, which is where quote removal leaves the payload of a
+        // glued `sh -c'…'` word — or, when nothing follows in the cluster,
+        // the next operand. `o`/`O` (set -o / shopt) take an option name
+        // the same way. Everything else in the shells above is valueless.
+        // A non-letter before any value flag (digits, `=` and the like) is
+        // not a modeled option shape; past the `c` the bytes are payload
+        // and are not validated.
+        let mut consumed_next = false;
+        let mut value_flag_found = false;
+        for (offset, flag) in cluster.char_indices() {
+            if !flag.is_ascii_alphabetic() {
+                return None;
+            }
+            match flag {
+                'c' => {
+                    let attached = cluster[offset + 1..].to_string();
+                    if attached.is_empty() {
+                        return if index + 1 < args.len() {
+                            Some(ShellPayload::Operand(index + 1))
+                        } else {
+                            // `-c` with no operand: the shell errors, so
+                            // nothing runs and there is no payload.
+                            None
+                        };
+                    }
+                    return Some(ShellPayload::Attached(attached));
+                }
+                'o' | 'O' => {
+                    consumed_next = offset + 1 >= cluster.len();
+                    value_flag_found = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if value_flag_found {
+            index += if consumed_next { 2 } else { 1 };
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+/// Expand a segmented token that turns out to be `sh -c 'payload'` into the
+/// shell token plus the command tokens the payload itself contains.
+///
+/// The payload is, by the shell's own semantics, a command line: the shell
+/// will lex and execute exactly that string, so re-lexing it here with the
+/// ordinary lexer is attribution, not approximation. Expansion composes with
+/// prefix stripping in both directions — `sudo bash -c '…'` reaches the
+/// payload because sudo was already unwrapped, and a payload of
+/// `timeout 30 kubectl …` is itself prefix-stripped by the recursive
+/// `command_token_from_words`.
+fn expand_shell_payload_tokens(
+    token: CommandToken,
+    env_assign_pattern: &Regex,
+    ignored_prefixes: &[String],
+    depth: usize,
+) -> Vec<CommandToken> {
+    let payload = if depth < SHELL_PAYLOAD_MAX_DEPTH
+        && SHELL_PAYLOAD_BASENAMES.contains(&token.executable.as_str())
+    {
+        match shell_payload_operand(&token.args) {
+            Some(ShellPayload::Operand(i)) => token.args.get(i).cloned(),
+            Some(ShellPayload::Attached(text)) => Some(text),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let Some(payload) = payload else {
+        return vec![token];
+    };
+
+    let mut expanded = vec![token];
+    for words in lex_shell_commands(&payload) {
+        if let Some(inner) = command_token_from_words(words, env_assign_pattern, ignored_prefixes) {
+            expanded.extend(expand_shell_payload_tokens(
+                inner,
+                env_assign_pattern,
+                ignored_prefixes,
+                depth + 1,
+            ));
+        }
+    }
+    expanded
+}
+
 /// Engine: command-mode input acquisition, segmentation, and pack dispatch
 pub struct Engine {
     /// Detects env assignments like VAR=value or FOO_BAR=value
@@ -1195,7 +1345,9 @@ pub struct Engine {
     /// Prefixes to skip: sudo, command, exec, time, nohup. (sudo and env
     /// additionally get dedicated option-skipping in
     /// `strip_command_prefixes`, as do timeout, xargs and nice — wrappers
-    /// whose options or operands need per-command handling.)
+    /// whose options or operands need per-command handling. A `sh -c`-style
+    /// payload is not a prefix but a nested command line, and is expanded
+    /// after prefix stripping by `expand_shell_payload_tokens`.)
     ignored_prefixes: Vec<String>,
     /// Loaded rule packs (pack_id -> Pack)
     packs: HashMap<String, crate::rule_pack::Pack>,
@@ -1964,9 +2116,12 @@ impl Engine {
     /// This is the core segmentation logic from org-rule-guard.py's check_bash:
     /// - Splits on ;, &&, ||, |, &, newline
     /// - Skips sudo, env assignments, wrapper prefixes
+    /// - Expands a `sh -c`-style command-string payload into its own tokens
     /// - Basename-matches executables against tool_keywords
     ///
-    /// Returns a list of command tokens, one per segment found in the input
+    /// Returns a list of command tokens. There is one per segment found in
+    /// the input, plus the tokens a `sh -c` payload contributes after its
+    /// shell token.
     pub fn segment_command(&self, source: &CommandSource) -> Vec<CommandToken> {
         let Some(env_assign_pattern) = &self.env_assign_pattern else {
             return vec![];
@@ -1978,13 +2133,33 @@ impl Engine {
                 .filter_map(|words| {
                     command_token_from_words(words, env_assign_pattern, &self.ignored_prefixes)
                 })
+                .flat_map(|token| {
+                    expand_shell_payload_tokens(
+                        token,
+                        env_assign_pattern,
+                        &self.ignored_prefixes,
+                        0,
+                    )
+                })
                 .collect(),
             // argv has already gone through the operating system's argument
             // parsing. Do not join it and lex again: an argument such as
-            // `--message=a;b` is data, not a second shell command.
+            // `--message=a;b` is data, not a second shell command. The one
+            // exception is the operand of a `sh -c`-style invocation: that
+            // argument is not data, it is the command line the shell itself
+            // will lex, so it is lexed on its own without ever joining argv.
             CommandSource::Argv(argv) => {
                 command_token_from_words(argv.clone(), env_assign_pattern, &self.ignored_prefixes)
+                    .map(|token| {
+                        expand_shell_payload_tokens(
+                            token,
+                            env_assign_pattern,
+                            &self.ignored_prefixes,
+                            0,
+                        )
+                    })
                     .into_iter()
+                    .flatten()
                     .collect()
             }
         }
@@ -3838,6 +4013,147 @@ mod tests {
             let tokens = engine.segment_command(&CommandSource::Hook(command.to_string()));
             assert!(tokens.is_empty(), "no payload after {command:?}");
         }
+    }
+
+    #[test]
+    fn test_segment_expands_shell_dash_c_payload() {
+        let engine = default_engine();
+        let source = CommandSource::Hook("bash -c 'vault kv destroy secret/foo'".to_string());
+        let tokens = engine.segment_command(&source);
+
+        // The shell token stays (it is a real segment of the input) and the
+        // payload's own command follows it.
+        assert_eq!(tokens.len(), 2, "shell token plus payload token");
+        assert_eq!(tokens[0].executable, "bash");
+        assert_eq!(tokens[1].executable, "vault");
+        assert_eq!(tokens[1].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
+    fn test_segment_shell_dash_c_flag_variants_reach_the_payload() {
+        let engine = default_engine();
+        for command in [
+            "sh -c 'vault kv destroy secret/foo'",
+            "bash -lc 'vault kv destroy secret/foo'",
+            "bash -e -c 'vault kv destroy secret/foo'",
+            "bash --noprofile --norc -c 'vault kv destroy secret/foo'",
+            "bash -o pipefail -c 'vault kv destroy secret/foo'",
+            "bash -opipefail -c 'vault kv destroy secret/foo'",
+            "bash --rcfile /etc/icg/bashrc -c 'vault kv destroy secret/foo'",
+            // Quote removal glues `-c` and the payload into one word.
+            "sh -c'vault kv destroy secret/foo'",
+            "env -i bash -c 'vault kv destroy secret/foo'",
+            "sudo -u root bash -c 'vault kv destroy secret/foo'",
+            "timeout 30 bash -c 'vault kv destroy secret/foo'",
+            "dash -c 'vault kv destroy secret/foo'",
+            "zsh -c 'vault kv destroy secret/foo'",
+        ] {
+            let source = CommandSource::Hook(command.to_string());
+            let executables: Vec<_> = engine
+                .segment_command(&source)
+                .into_iter()
+                .map(|token| token.executable)
+                .collect();
+            assert!(
+                executables.contains(&"vault".to_string()),
+                "payload of {command:?} should yield a vault token, got {executables:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_segment_shell_without_command_operand_stays_unexpanded() {
+        let engine = default_engine();
+        for command in [
+            "bash script.sh",
+            "bash --",
+            "bash -- -c vault",
+            "bash -",
+            "bash -c",
+            "bash --version",
+            "bash -5c 'vault kv destroy secret/foo'",
+        ] {
+            let tokens = engine.segment_command(&CommandSource::Hook(command.to_string()));
+            assert!(
+                tokens.iter().all(|token| token.executable != "vault"),
+                "{command:?} has no `-c` command operand, so nothing may unwrap to vault: \
+                 got {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_segment_shell_payload_composes_with_prefixes_in_both_directions() {
+        let engine = default_engine();
+        // Prefix stripping on the way in, env assignments and another
+        // wrapper inside the payload itself.
+        let source = CommandSource::Hook(
+            "sudo -u root bash -c 'VAULT_TOKEN=x timeout 30 vault kv destroy secret/foo'"
+                .to_string(),
+        );
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[1].executable, "vault");
+        assert_eq!(tokens[1].args, vec!["kv", "destroy", "secret/foo"]);
+    }
+
+    #[test]
+    fn test_segment_nested_shell_payloads_reach_the_innermost_command() {
+        let engine = default_engine();
+        let source = CommandSource::Hook(
+            "bash -c \"sh -c 'bash -c \\\"vault kv destroy secret/foo\\\"'\"".to_string(),
+        );
+        let tokens = engine.segment_command(&source);
+        assert!(
+            tokens.iter().any(|token| token.executable == "vault"),
+            "nested payloads should expand down to the innermost command, got {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn test_segment_shell_word_in_argument_position_does_not_expand() {
+        let engine = default_engine();
+        // A shell name inside another command's arguments is data. The
+        // payload text sits in one quoted word and must stay there.
+        let source = CommandSource::Hook("git commit -m 'bash -c vault kv destroy'".to_string());
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].executable, "git");
+        assert_eq!(
+            tokens[0].args,
+            vec!["commit", "-m", "bash -c vault kv destroy"]
+        );
+    }
+
+    #[test]
+    fn test_segment_argv_shell_payload_is_expanded() {
+        let engine = default_engine();
+        // A PATH-wrapper front end receives OS-parsed argv. The payload
+        // operand is still a command string the shell will lex, so it is
+        // lexed on its own; the rest of argv is never joined and re-lexed.
+        let source = CommandSource::Argv(vec![
+            "bash".to_string(),
+            "-c".to_string(),
+            "vault kv destroy secret/foo".to_string(),
+        ]);
+        let tokens = engine.segment_command(&source);
+
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[1].executable, "vault");
+        assert_eq!(tokens[1].args, vec!["kv", "destroy", "secret/foo"]);
+
+        // A data argument is not a payload even when its text names a shell.
+        let source = CommandSource::Argv(vec![
+            "git".to_string(),
+            "commit".to_string(),
+            "-m".to_string(),
+            "bash -c vault kv destroy".to_string(),
+        ]);
+        let tokens = engine.segment_command(&source);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].executable, "git");
     }
 
     #[test]

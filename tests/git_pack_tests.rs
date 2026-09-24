@@ -146,3 +146,56 @@ fn guarded_git_rules_fire_through_timeout_xargs_and_nice_wrappers() {
         );
     }
 }
+
+#[test]
+fn guarded_git_rules_fire_through_shell_dash_c_payloads() {
+    let engine = load_git_engine();
+
+    // The `-c` operand of a shell is a live command line, so the guarded
+    // rules reach through it. Deny channel:
+    for command in [
+        "bash -c 'git credential fill'",
+        "sh -c 'git credential fill'",
+        "sudo bash -c 'git credential fill'",
+        "bash -lc 'git credential fill'",
+    ] {
+        assert_credential_fill_denied(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            command,
+        );
+    }
+
+    // Rewrite channel: the force-push rule still strips the flag from the
+    // command found inside the payload.
+    let rewrite = engine.evaluate_command(&CommandSource::Hook(
+        "bash -c 'git push --force origin main'".to_string(),
+    ));
+    assert!(
+        matches!(
+            rewrite,
+            CheckResult::Rewrite {
+                ref pack_id,
+                ref pattern_id,
+                ..
+            } if pack_id == "git" && pattern_id == "git-force-push"
+        ),
+        "expected git-force-push rewrite through a shell payload, got {rewrite:?}"
+    );
+
+    // Allow channel: a shell name in argument position is data, and safe
+    // git verbs stay allowed inside a payload. (The commit message quotes
+    // force-push text rather than `git credential fill`: the credential
+    // rule is deliberately unanchored and already fires on that text in a
+    // message on an unexpanded tree, which is its own pre-existing story.)
+    for command in [
+        "bash -c 'git status'",
+        "echo bash -c git push --force origin main",
+        "git commit -m 'bash -c git push --force origin main' src/engine.rs",
+    ] {
+        assert_eq!(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            CheckResult::Allowed,
+            "safe shape should stay allowed around a shell payload: {command}"
+        );
+    }
+}

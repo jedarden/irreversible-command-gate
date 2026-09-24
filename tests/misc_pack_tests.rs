@@ -104,6 +104,38 @@ fn needle_cleanup_is_denied_through_timeout_xargs_and_nice_wrappers() {
 }
 
 #[test]
+fn needle_cleanup_is_denied_through_shell_dash_c_payloads() {
+    let engine = load_misc_engine();
+
+    // The same engine-wide expansion that reaches kubectl through a
+    // `sh -c`-style payload reaches every keyword-dispatched pack: the
+    // payload is a live command line, not inert text.
+    for command in [
+        "bash -c 'needle cleanup'",
+        "sh -c 'needle cleanup --all'",
+        "sudo bash -c 'needle cleanup'",
+        "bash -lc 'needle cleanup'",
+    ] {
+        assert_needle_cleanup_denied(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            command,
+        );
+    }
+
+    for command in [
+        "bash -c 'needle status'",
+        // Payload text under `echo` is printed, not executed.
+        "bash -c 'echo needle cleanup'",
+    ] {
+        assert_eq!(
+            engine.evaluate_command(&CommandSource::Hook(command.to_string())),
+            CheckResult::Allowed,
+            "non-cleanup command should remain allowed inside a shell payload: {command}"
+        );
+    }
+}
+
+#[test]
 fn unrelated_needle_commands_remain_allowed() {
     let engine = load_misc_engine();
 

@@ -202,6 +202,72 @@ fn mutating_verbs_fire_through_timeout_xargs_and_nice_wrappers() {
 }
 
 #[test]
+fn mutating_verbs_fire_through_shell_dash_c_payloads() {
+    let engine = load_kubectl_engine();
+
+    // The `-c` operand of sh/bash/dash is itself a command line the shell
+    // will execute, so a mutating verb hidden there is as live as a bare
+    // one. Segmentation expands the payload into its own tokens; the pack
+    // sees it like any other kubectl segment. The shapes below cover the
+    // flag variants (cluster flags, valueless long options, -o/--rcfile
+    // value consumption, glued `-c'…'` quoting) and composition with the
+    // other wrappers.
+    for (command, pattern_id) in [
+        ("bash -c 'kubectl delete pod x'", "kubectl-delete"),
+        ("sh -c 'kubectl delete namespace scratch'", "kubectl-delete"),
+        (
+            "sudo bash -c 'kubectl delete pvc data-postgres-0 -n commitgraph-production'",
+            "kubectl-delete",
+        ),
+        (
+            "timeout 30 bash -c 'kubectl delete pod x'",
+            "kubectl-delete",
+        ),
+        ("xargs bash -c 'kubectl delete pod x'", "kubectl-delete"),
+        (
+            "bash -lc 'kubectl scale deploy/api --replicas=0 -n prod'",
+            "kubectl-mutating-verb",
+        ),
+        (
+            "bash -o pipefail -c 'kubectl apply -f deployment.yaml -n prod'",
+            "kubectl-mutating-verb",
+        ),
+        (
+            "bash --rcfile /etc/icg/bashrc -c 'kubectl annotate pod x key=val'",
+            "kubectl-mutating-verb",
+        ),
+        // Quote removal glues `-c` and the payload into one word.
+        ("sh -c'kubectl delete pod x'", "kubectl-delete"),
+        // A payload with several segments fires for each of them.
+        (
+            "bash -c 'kubectl get pods && kubectl delete pod x'",
+            "kubectl-delete",
+        ),
+    ] {
+        assert_denied(&engine, command, pattern_id);
+    }
+
+    // Nothing widens: read-only verbs, safe patterns, and non-commands stay
+    // allowed inside or around a payload.
+    for command in [
+        "bash -c 'kubectl get pods -n prod'",
+        "bash -c 'kubectl rollout status deploy/api'",
+        // The sanctioned Argo Workflow carve-out survives the payload.
+        "bash -c 'kubectl create -f workflow.yaml -n argo-workflows'",
+        // `echo` in a payload prints text; it does not run kubectl.
+        "bash -c 'echo kubectl delete pod x'",
+        // A shell name in argument position is data, not a command boundary.
+        "echo bash -c kubectl delete pod x",
+        // No `-c` operand: nothing here names a payload to expand.
+        "bash --version",
+        "bash script.sh",
+        "bash -c",
+    ] {
+        assert_allowed(&engine, command);
+    }
+}
+
+#[test]
 fn mutating_words_as_values_or_downstream_text_do_not_trip_the_rules() {
     let engine = load_kubectl_engine();
 
