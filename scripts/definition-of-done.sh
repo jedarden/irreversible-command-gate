@@ -21,17 +21,20 @@
 # rebuild at the ~20s the workspace crate costs, not a cold dep tree.
 #
 # Usage: scripts/definition-of-done.sh [--fast|--slow]
-#   --fast (default)  cargo build --all-targets, cargo test, the OpenCode
-#                     plugin's node suite (opencode-plugin/, skipped loudly
-#                     when node/npm are absent), the repo-side systemd
-#                     consistency gate (systemd/check-consistency.sh
-#                     --repo-only; the host-side half runs on hosts — see
-#                     systemd/README.md), and the README asset-reference
-#                     gate (scripts/check-doc-assets)
+#   --fast (default)  cargo fmt --all -- --check (icg-ci's first gate in
+#                     build-and-release; the local DoD skipped it while HEAD
+#                     carried other beads' in-flight formatting, and fmt debt
+#                     sailed through three times — irrevers-59887aa4,
+#                     irrevers-9bb1c696, and the 2026-09-23 five-file
+#                     failure — before surfacing in CI), cargo build
+#                     --all-targets, cargo test, the OpenCode plugin's node
+#                     suite (opencode-plugin/, skipped loudly when node/npm
+#                     are absent), the repo-side systemd consistency gate
+#                     (systemd/check-consistency.sh --repo-only; the
+#                     host-side half runs on hosts — see systemd/README.md),
+#                     and the README asset-reference gate
+#                     (scripts/check-doc-assets)
 #   --slow            additionally cargo clippy --all-targets -- -D warnings
-#                     (fmt is deliberately not gated here: HEAD carries
-#                     unrelated in-flight formatting in tests owned by other
-#                     beads, and fmt does not affect the built contract)
 # Prints one "command<TAB>exit" line per step and exits non-zero if any step
 # failed.
 set -u
@@ -76,6 +79,10 @@ run() {
   return 0
 }
 
+# First, to match CI: build-and-release gates fmt before anything else, and
+# a fmt failure there costs a full CI cycle to discover. Content-based, so
+# the mtime touches above are irrelevant to it; runs in seconds.
+run cargo fmt --all -- --check
 run cargo build --all-targets
 run cargo test
 # The OpenCode plugin's runtime suite (node --test, no dependencies): the
