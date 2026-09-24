@@ -19,8 +19,27 @@ canary verdicts belong to the canary children, which add their scenarios to
 
 ```bash
 scripts/opencode-canary/harness smoke            # the built-in end-to-end control
+scripts/opencode-canary/harness allow            # irrevers-e6388069: allow canary
+scripts/opencode-canary/harness deny             # irrevers-e6388069: deny canary
 scripts/opencode-canary/harness <scenario>       # a canary child's scenario
 ```
+
+Shipped scenarios beyond `smoke`:
+
+- **`allow`** (irrevers-e6388069) — a non-denied command executes normally
+  through the gated path: `outcome=allow` in the plugin log, a completed
+  bash tool_use, the invocation recorded in the argv log (the fake
+  executable's one sanctioned write — that line is the harmless effect),
+  targets byte-identical.
+- **`deny`** (irrevers-e6388069) — the composite
+  `<exe> audit-dump && needle cleanup` issued through real OpenCode tool
+  execution. Per the pinned semantics
+  (`docs/research/opencode-1.18.29-deny-rewrite-advisory.md` §1): the
+  plugin logs `outcome=deny` with the ICG reason, the call dies as an
+  errored bash tool_use carrying that reason, the loop continues past the
+  denial, and — because the denied command names the fake executable as
+  its left operand — an **empty argv log** is the executed proof that the
+  denial landed before execution. Targets byte-identical.
 
 Exit code is 0 only when every assertion held. Useful flags:
 
