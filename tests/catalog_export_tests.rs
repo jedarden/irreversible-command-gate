@@ -810,6 +810,535 @@ fn repeated_pack_paths_are_deduplicated() {
     );
 }
 
+/// The note defines the digest as "the SHA-256 of the canonical JSON
+/// serialization of `{"format": "icg-catalog/v1", "never": [...], "always":
+/// [...]}` — the entire event set and nothing else". Every other digest
+/// assertion here compares one `catalog::build` against another, so they
+/// share the recipe and cannot see it change: fold `icg_version` (or
+/// anything else) into the hash and they all still pass while the note
+/// starts lying. This recomputes the digest from the emitted document alone,
+/// exactly as a consumer following the note would, so the recipe itself is
+/// pinned and `icg_version` is provably not an input.
+///
+/// The event mirrors repeat the wire field order field for field. The
+/// canonical serialization's key order is the struct declaration order, and
+/// a round-trip through `serde_json::Value` would silently re-sort it — so
+/// the arrays are parsed into these mirrors to preserve it. A field the
+/// implementation adds but the mirror drops therefore breaks this test:
+/// that is the point. The digest's bytes move with any shape change, the
+/// note says so, and the mirror + note + format version move together in
+/// the same commit or nothing builds. (`match` and
+/// `sanctioned_alternative` need no mirror — a tagged union is always one
+/// key, and `reason`/`rewrite` are already in sort order.)
+#[derive(serde::Deserialize, serde::Serialize)]
+struct DigestInputEvent {
+    id: String,
+    pack: String,
+    severity: String,
+    tier: String,
+    action: String,
+    destructive: bool,
+    enabled: bool,
+    check: String,
+    #[serde(rename = "match")]
+    matching: Value,
+    explanation: String,
+    sanctioned_alternative: Value,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct DigestInputAlwaysEvent {
+    id: String,
+    pack: String,
+    check: String,
+    #[serde(rename = "match")]
+    matching: Value,
+}
+
+#[derive(serde::Serialize)]
+struct DocumentedDigestInput<'a> {
+    format: &'a str,
+    never: Vec<DigestInputEvent>,
+    always: Vec<DigestInputAlwaysEvent>,
+}
+
+#[test]
+fn catalog_digest_matches_the_documented_recipe() {
+    let catalog = catalog_from_cli();
+    let input = DocumentedDigestInput {
+        format: catalog["format"].as_str().unwrap(),
+        never: serde_json::from_value(catalog["never"].clone()).expect("never array"),
+        always: serde_json::from_value(catalog["always"].clone()).expect("always array"),
+    };
+    let canonical = serde_json::to_vec(&input).expect("digest input should serialize");
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(&canonical);
+    let recomputed: String = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        catalog["catalog_digest"].as_str().unwrap(),
+        recomputed,
+        "catalog_digest must be SHA-256 of {{format, never, always}} exactly as the \
+         note defines it — icg_version and nothing else may enter the hash"
+    );
+}
+
+/// The note's error contract: a pack that fails to load — malformed JSON,
+/// failed validation, an unreadable file — exits non-zero, prints nothing on
+/// stdout, and puts an `Error:` line on stderr. The unreadable-file case is
+/// covered by `catalog_refuses_to_render_when_a_pack_is_unreadable`; this
+/// pins the full shape, including the validation arm (well-formed JSON that
+/// is not a valid pack) and a `--pack` path that does not exist.
+#[test]
+fn broken_packs_fail_the_export_with_the_documented_error_shape() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let dir = temp.path();
+
+    // Malformed JSON.
+    fs::write(dir.join("broken.json"), "{not json").expect("broken fixture writes");
+    // Well-formed JSON whose guarded rule is missing a required field —
+    // readable, parseable, and still not a pack.
+    fs::write(
+        dir.join("invalid.json"),
+        r#"{"id":"shape-pack","tool_keywords":["shapecmd"],"applies_to":[],"safe_patterns":[],
+            "guarded_patterns":[{"id":"shape-rule","type":"command_regex","regex":"^shapecmd",
+            "tier":"tier1","explanation":"no severity here",
+            "redirect":{"channel":"deny","reason_template":"r"},"destructive":false}]}"#,
+    )
+    .expect("invalid fixture writes");
+
+    for name in ["broken.json", "invalid.json"] {
+        let path = dir.join(name);
+        let output = icg(&["catalog", "--json", "--pack", path.to_str().unwrap()]);
+        assert!(
+            !output.status.success(),
+            "{name}: a pack that fails to load must fail the export"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{name}: no catalog document is printed"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).starts_with("Error:"),
+            "{name}: stderr must carry an Error: line, got {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // An explicit --pack path that does not exist is a caller error, not an
+    // empty catalog.
+    let missing = dir.join("does-not-exist.json");
+    let output = icg(&["catalog", "--json", "--pack", missing.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "a nonexistent explicit --pack path must fail the export"
+    );
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("does not exist"),
+        "the error should say the path does not exist, got {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// "A file whose name does not end in `.json` is not treated as a pack,
+/// even when it exists." A consumer assembling --pack values from layered
+/// config relies on that gate: a stray `pack.txt` next to the real packs
+/// must neither load nor shrink the catalog. Both spellings fail loudly
+/// rather than rendering a silent subset.
+#[test]
+fn a_non_json_file_is_not_treated_as_a_pack_even_when_it_exists() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let valid_pack = json!({
+        "id": "extension-gate-pack",
+        "tool_keywords": ["extcmd"],
+        "applies_to": [],
+        "safe_patterns": [],
+        "guarded_patterns": [{
+            "id": "ext-rule",
+            "enabled": true,
+            "type": "command_regex",
+            "regex": "^extcmd",
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": "ext-rule is irreversible",
+            "redirect": {"channel": "deny", "reason_template": "run extcmd --dry-run first"},
+            "destructive": false
+        }]
+    });
+    let wrong_extension = temp.path().join("pack.txt");
+    fs::write(
+        &wrong_extension,
+        serde_json::to_string_pretty(&valid_pack).expect("fixture serializes"),
+    )
+    .expect("fixture writes");
+
+    // Named explicitly: the file exists, is readable, holds a valid pack —
+    // and the extension gate still refuses it.
+    let output = icg(&[
+        "catalog",
+        "--json",
+        "--pack",
+        wrong_extension.to_str().unwrap(),
+    ]);
+    assert!(
+        !output.status.success(),
+        "an existing non-.json file must not be treated as a pack"
+    );
+    assert!(output.stdout.is_empty());
+
+    // Offered as a directory: the .txt entry contributes nothing, so the
+    // export fails rather than rendering a catalog without its pack.
+    let output = icg(&["catalog", "--json", "--pack", temp.path().to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "a pack directory with no .json entries must fail the export, not render the built-ins alone"
+    );
+    assert!(output.stdout.is_empty());
+}
+
+/// "Duplicate ids within one pack are a pack-authoring bug and fail the
+/// export loudly rather than silently collapsing two events into one."
+/// `duplicate_ids_within_a_pack_fail_loudly` (in `src/catalog.rs`) proves
+/// `build` refuses; this proves the *export command* refuses, over the wire
+/// format a pack author actually ships. Event identity is (pack, id) — a
+/// silent collapse would make a denial record ambiguous, on the never side
+/// and (the quieter path) the always side alike.
+#[test]
+fn duplicate_ids_fail_the_export_command_loudly() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let guarded_rule = |regex: &str| {
+        json!({
+            "id": "dup-rule",
+            "enabled": true,
+            "type": "command_regex",
+            "regex": regex,
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": "dup-rule cannot be undone",
+            "redirect": {"channel": "deny", "reason_template": "run dupcmd --dry-run first"},
+            "destructive": true
+        })
+    };
+    let pack = |safe_patterns: Value, guarded_patterns: Value| {
+        json!({
+            "id": "duplicate-ids-pack",
+            "tool_keywords": ["dupcmd"],
+            "applies_to": [],
+            "safe_patterns": safe_patterns,
+            "guarded_patterns": guarded_patterns
+        })
+    };
+
+    // Two distinct events, one id — the pack-authoring bug the note names.
+    let cases = [
+        (
+            "dup-never.json",
+            pack(
+                json!([]),
+                json!([guarded_rule("^dupcmd a "), guarded_rule("^dupcmd b ")]),
+            ),
+            "event",
+        ),
+        (
+            "dup-always.json",
+            pack(
+                json!([
+                    {"id": "dup-safe", "type": "command_regex", "regex": "^dupcmd --dry-run-a"},
+                    {"id": "dup-safe", "type": "command_regex", "regex": "^dupcmd --dry-run-b"}
+                ]),
+                json!([]),
+            ),
+            "safe-pattern",
+        ),
+    ];
+
+    for (name, pack, what) in cases {
+        let path = temp.path().join(name);
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&pack).expect("fixture serializes"),
+        )
+        .expect("fixture writes");
+        let output = icg(&["catalog", "--json", "--pack", path.to_str().unwrap()]);
+        assert!(
+            !output.status.success(),
+            "duplicate {what} ids must fail the export"
+        );
+        assert!(output.stdout.is_empty(), "no document is printed");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("duplicate"),
+            "the error should name the duplicate, got {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// "The two built-in guards are always included; they are not packs and
+/// cannot be excluded." Rendering from a fixture pack that names neither
+/// built-in must still emit both entries under their synthetic pack ids —
+/// a consumer's gap detection counts on the built-ins being in every
+/// document, because the engine enforces them in code before any pack.
+#[test]
+fn builtin_guards_are_included_even_when_no_pack_names_them() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    fs::write(
+        temp.path().join("only.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "builtin-exclusion-pack",
+            "tool_keywords": ["bexcmd"],
+            "applies_to": [],
+            "safe_patterns": [],
+            "guarded_patterns": [{
+                "id": "bex-rule",
+                "enabled": true,
+                "type": "command_regex",
+                "regex": "^bexcmd",
+                "tier": "tier1",
+                "severity": "Medium",
+                "explanation": "bex-rule cannot be undone",
+                "redirect": {"channel": "deny", "reason_template": "run bexcmd --dry-run first"},
+                "destructive": false
+            }]
+        }))
+        .expect("fixture serializes"),
+    )
+    .expect("fixture writes");
+
+    let output = icg(&["catalog", "--json", "--pack", temp.path().to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: Value =
+        serde_json::from_slice(&output.stdout).expect("catalog should emit valid JSON");
+    let exported: BTreeSet<(String, String)> = catalog["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["pack"].as_str().unwrap().to_owned(),
+                e["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    for builtin in [
+        (WORKFLOWS_PACK, WORKFLOWS_PATTERN),
+        (JOBCRON_PACK, JOBCRON_PATTERN),
+    ] {
+        assert!(
+            exported.contains(&(builtin.0.to_string(), builtin.1.to_string())),
+            "{}/{} must be in every catalog, whatever packs were named",
+            builtin.0,
+            builtin.1
+        );
+    }
+}
+
+/// "With no `--pack`, the loader uses `ICG_PACK_DIR` when that environment
+/// variable is set" — the same default chain as `coverage` and the hook,
+/// spelled for the catalog. The environment is set for the child process
+/// only; no other test sees it.
+#[test]
+fn no_pack_argument_uses_icg_pack_dir() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    fs::write(
+        temp.path().join("env-dir.json"),
+        serde_json::to_string_pretty(&json!({
+            "id": "icg-pack-dir-pack",
+            "tool_keywords": ["envcmd"],
+            "applies_to": [],
+            "safe_patterns": [],
+            "guarded_patterns": [{
+                "id": "env-dir-rule",
+                "enabled": true,
+                "type": "command_regex",
+                "regex": "^envcmd",
+                "tier": "tier1",
+                "severity": "High",
+                "explanation": "env-dir-rule cannot be undone",
+                "redirect": {"channel": "deny", "reason_template": "run envcmd --dry-run first"},
+                "destructive": false
+            }]
+        }))
+        .expect("fixture serializes"),
+    )
+    .expect("fixture writes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["catalog", "--json"])
+        .env("ICG_PACK_DIR", temp.path())
+        .output()
+        .expect("icg should run");
+    assert!(
+        output.status.success(),
+        "ICG_PACK_DIR should feed the no-argument catalog: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: Value =
+        serde_json::from_slice(&output.stdout).expect("catalog should emit valid JSON");
+    let exported: BTreeSet<(String, String)> = catalog["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["pack"].as_str().unwrap().to_owned(),
+                e["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        exported.contains(&("icg-pack-dir-pack".to_string(), "env-dir-rule".to_string())),
+        "the pack in ICG_PACK_DIR must be cataloged"
+    );
+    assert!(
+        exported.contains(&(WORKFLOWS_PACK.to_string(), WORKFLOWS_PATTERN.to_string())),
+        "the built-ins ride along on the environment-resolved catalog too"
+    );
+}
+
+/// "`icg explain --pattern <id>` renders one event's full caller-facing
+/// redirect. The catalog's `id` is the same key" — for every *pack* event,
+/// never and always alike. The two built-in guards are code, not packs, and
+/// `explain` reads packs only, so their ids resolve in denial records and in
+/// the catalog but deliberately not in `explain`; the note says exactly
+/// that, and this pins both halves so neither the contract note nor
+/// `explain` can drift from the other.
+#[test]
+fn icg_explain_accepts_every_pack_event_id() {
+    let catalog = catalog_from_cli();
+    let ids = |array: &str| -> Vec<(String, String)> {
+        catalog[array]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["pack"].as_str().unwrap().to_owned(),
+                    e["id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    for (pack, id) in ids("never").into_iter().chain(ids("always")) {
+        let output = icg(&["explain", "--pattern", &id, "--pack", "packs"]);
+        if pack == WORKFLOWS_PACK || pack == JOBCRON_PACK {
+            assert!(
+                !output.status.success(),
+                "{id}: a built-in guard is code, not a pack, and explain must not pretend to render it"
+            );
+        } else {
+            assert!(
+                output.status.success(),
+                "{pack}/{id}: the catalog's id must be the key icg explain --pattern accepts: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+/// The note is the contract; this keeps its field tables synchronized with
+/// the document the CLI actually emits, in both directions. The wire shape
+/// is already pinned by `catalog_schema_pins_its_key_sets` — this pins the
+/// *prose* to the same reality, so a field renamed in code fails here until
+/// the note's tables move with it (and a table edit that invents a field
+/// fails too). The table sections are named by their exact lead-ins; a
+/// reworded lead-in fails loudly and is fixed alongside the doc it renamed.
+#[test]
+fn catalog_note_field_tables_match_the_export() {
+    let note = fs::read_to_string("docs/notes/event-catalog-json-api.md")
+        .expect("the contract note should exist");
+
+    assert!(
+        note.contains(CATALOG_FORMAT),
+        "the note must name the wire contract {CATALOG_FORMAT} verbatim"
+    );
+    // The Versioning section may cite a hypothetical next version as policy;
+    // anywhere else, the only contract the note may name is the shipped one.
+    let versioning = note
+        .find("## Versioning")
+        .expect("the note should have a Versioning section");
+    let before_versioning = &note[..versioning];
+    assert!(
+        !before_versioning.contains("icg-catalog/v2"),
+        "outside the Versioning policy the note must not name an unshipped format version"
+    );
+    assert!(
+        !note.contains("icg-catalog/v3"),
+        "the note must not promise a format version that does not exist"
+    );
+
+    let documented_fields = |section_start: &str, section_end: &str| -> BTreeSet<String> {
+        let start = note
+            .find(section_start)
+            .unwrap_or_else(|| panic!("the note should contain {section_start:?}"));
+        let body = &note[start + section_start.len()..];
+        let body = match section_end {
+            "" => body,
+            _ => body.split(section_end).next().expect("non-empty split"),
+        };
+        body.lines()
+            .filter_map(|line| line.trim().strip_prefix("| `"))
+            .filter_map(|cell| cell.split('`').next())
+            .map(|field| field.to_string())
+            .collect()
+    };
+
+    let catalog = catalog_from_cli();
+    let top_level: BTreeSet<String> = catalog.as_object().unwrap().keys().cloned().collect();
+    let emitted_keys = |array: &str| -> BTreeSet<String> {
+        catalog[array]
+            .as_array()
+            .unwrap()
+            .first()
+            .expect("the shipped catalog is never empty")
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    };
+
+    let sync = |what: &str, documented: BTreeSet<String>, emitted: &BTreeSet<String>| {
+        assert_eq!(
+            documented, *emitted,
+            "{what}: the note's field table and the emitted document disagree"
+        );
+    };
+    sync(
+        "top level",
+        documented_fields("One JSON object on stdout", "Each entry of"),
+        &top_level,
+    );
+    sync(
+        "never events",
+        documented_fields("Each entry of `never`:", "Each `sanctioned_alternative`:"),
+        &emitted_keys("never"),
+    );
+    sync(
+        "always events",
+        documented_fields("Each entry of `always`:", "Always events carry no severity"),
+        &emitted_keys("always"),
+    );
+    // The sanctioned_alternative table is a subset check: `rewrite` is
+    // optional and absent from every shipped event, so no emitted document
+    // carries both keys to compare against.
+    let alternative = documented_fields("Each `sanctioned_alternative`:", "Each entry of");
+    assert_eq!(
+        alternative,
+        BTreeSet::from(["reason".to_string(), "rewrite".to_string()]),
+        "the note's sanctioned_alternative table should document reason and optional rewrite"
+    );
+}
+
 /// The contract note's reason for existing: a consumer stores the digest it
 /// last consumed and compares — equal means the policy it reasoned about is
 /// unchanged, different means re-read. This runs that workflow end to end

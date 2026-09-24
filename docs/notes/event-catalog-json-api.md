@@ -66,7 +66,7 @@ Each entry of `never`:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | Stable event id — the same id a denial record carries as `pattern_id` and `icg explain --pattern` accepts. |
+| `id` | string | Stable event id — the same id a denial record carries as `pattern_id` and, for pack events, the key `icg explain --pattern` accepts. The two built-in guards are code, not packs, so `explain` — which reads packs only — does not resolve their ids; see [Relationship to other interfaces](#relationship-to-other-interfaces). |
 | `pack` | string | Owning pack id — the denial record's `pack_id`. Built-in guards use their synthetic pack ids `github-workflows` and `job-cronjob-yaml`. |
 | `severity` | string | `Critical`, `High`, or `Medium`. |
 | `tier` | string | Deterministic-difficulty tier: `tier1`, `tier2`, or `tier3` (lowercase; `coverage/v1` spells the same values `Tier1`… in its debug output). |
@@ -152,7 +152,11 @@ can never quietly shrink the catalog a consumer last saw.
   pack-author's view. The catalog is the *event* view consumers reason
   about, keyed by denial attribution, with hook-wire spellings.
 - `icg explain --pattern <id>` renders one event's full caller-facing
-  redirect. The catalog's `id` is the same key.
+  redirect, and every *pack* event in the catalog — `never` and `always`
+  alike — resolves there. The two built-in guards are code, not packs, and
+  `explain` reads packs only: their ids resolve in denial records and in
+  the catalog, but not in `explain`. Both halves are pinned by
+  `icg_explain_accepts_every_pack_event_id`.
 - Per-repo runtime overrides change what the hook *does* for a specific
   repository; they are not folded into the catalog. The catalog describes
   the policy surface as shipped, which is the thing that must not drift.

@@ -93,8 +93,10 @@ pub struct SanctionedAlternative {
 /// recorded denial against the catalog without a translation table.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CatalogEvent {
-    /// Stable event id, as emitted in denial records and accepted by
-    /// `icg explain --pattern`.
+    /// Stable event id, as emitted in denial records — and, for pack
+    /// events, accepted by `icg explain --pattern`. The built-in guards are
+    /// code, not packs, and `explain` reads packs only, so it does not
+    /// resolve their ids.
     pub id: String,
     /// Owning pack id, as emitted in denial records. Built-in guards use
     /// their synthetic pack id (`github-workflows`, `job-cronjob-yaml`).
