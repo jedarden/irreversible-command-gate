@@ -28,7 +28,8 @@ the rule silently declined to fire. The new alternation accepts that
 re-quoted form.
 
 Measured by replaying 20,007 unique real agent Bash commands, taken from the
-last 1,500 agent transcripts on ex44:
+last 1,500 agent transcripts on codinghome (the measurement postdates ex44's
+2026-08-30 decommission; earlier text here mislabeled the host as ex44):
 
 | | before | after |
 | --- | --- | --- |

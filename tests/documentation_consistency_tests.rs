@@ -2050,8 +2050,10 @@ fn claimed_status(window: &str) -> Option<ClaimedStatus> {
 /// checkpoint.
 ///
 /// - `irrevers-6b4ded56` -- first host installation (closed 2026-09-18;
-///   ex44 enforcement cutover deliberately retained Generation 0 FailOpen,
-///   so the paragraph's fail-closed point still stands)
+///   codinghome enforcement cutover deliberately retained Generation 0
+///   FailOpen, so the paragraph's fail-closed point still stands; the
+///   bead title's `ex44` naming is stale — codinghome replaced that
+///   decommissioned host)
 /// - `irrevers-beee1069` -- builder image shipped /etc/icg world-writable
 ///   (closed 2026-09-18; reconciled 2026-09-19)
 /// - `irrevers-c36bba27` -- fixed builder image publication (closed

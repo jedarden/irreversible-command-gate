@@ -77,7 +77,9 @@ pathspec being present). Review individual inputs with
 
 ### 2026-09-06 — the re-quoting widening (v0.1.2 baseline)
 
-20,007 unique commands from the last 1,500 transcripts on ex44.
+20,007 unique commands from the last 1,500 transcripts on codinghome (the
+measurement postdates ex44's 2026-08-30 decommission; this note originally
+mislabeled the host as ex44).
 `git commit` invocations denied by this rule: 35 → **106** of 476; false
 positives against the 152 pathspec-passing commits: 0 → **0**. No input
 previously denied became allowed. Remaining misses attributed to the lexer's

@@ -660,7 +660,9 @@ GuardedPattern:
   deliverables and its end-to-end release proof are both complete.
   **What remains open is deployment, not release**: the first host
   installation has landed (`irrevers-6b4ded56`, closed 2026-09-18 —
-  ex44 enforcement cutover, FailOpen retained), and the CI builder
+  codinghome enforcement cutover, FailOpen retained; the bead title's
+  `ex44` naming is stale — that host was decommissioned 2026-08-30 and
+  codinghome is the cutover host), and the CI builder
   image's world-writable `/etc/icg` fix has landed too
   (`irrevers-beee1069`, closed 2026-09-18) — downstream work may now cite
   released artifacts and a host-installed guard as existing.)*
