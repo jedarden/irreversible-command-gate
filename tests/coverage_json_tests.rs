@@ -909,3 +909,427 @@ fn a_consumer_diffing_two_documents_sees_the_policy_edit() {
         "the appended rule reports where the file declared it: last"
     );
 }
+
+// --- value domains, disabled rules, and the not-a-pack inputs ------------
+//
+// The note's field tables promise more than key sets: literal domains for
+// `tier`/`severity`/`channel`, a report side for "a disabled rule is
+// reported but not enforced", and an `unreadable` entry for every pack that
+// "fails to load — malformed JSON, failed validation, an unreadable file".
+// The pins above cover key sets and the malformed-JSON member of that load
+// failure class; the pins below cover the rest.
+
+/// A minimal valid pack whose every string this file authors, so shipped
+/// pack drift cannot change what the fixtures below mean.
+fn minimal_pack_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "guarded_patterns": [{
+            "id": format!("{id}-destroy"),
+            "enabled": true,
+            "type": "command_regex",
+            "regex": "^orderctl destroy",
+            "tier": "tier1",
+            "severity": "High",
+            "explanation": "orderctl destroy cannot be undone",
+            "destructive": true,
+            "redirect": {
+                "channel": "deny",
+                "reason_template": "run orderctl destroy --dry-run first"
+            }
+        }]
+    })
+}
+
+fn write_minimal_pack(dir: &Path, id: &str) -> PathBuf {
+    let path = dir.join(format!("{id}.json"));
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&minimal_pack_json(id))
+            .expect("minimal pack should serialize"),
+    )
+    .expect("minimal pack should write");
+    path
+}
+
+/// One guarded rule of the domain fixture: `tier`/`severity`/`channel` are
+/// free parameters so the fixture can say every documented value once.
+fn domain_rule(id: &str, tier: &str, severity: &str, channel: &str, enabled: bool) -> Value {
+    let mut redirect = json!({
+        "channel": channel,
+        "reason_template": format!("run mapctl --dry-run first ({id})"),
+    });
+    if channel == "updated_input" {
+        redirect["rewrite_template"] = Value::String("mapctl --dry-run".to_string());
+    }
+    json!({
+        "id": id,
+        "enabled": enabled,
+        "type": "command_regex",
+        "regex": "^mapctl destroy",
+        "tier": tier,
+        "severity": severity,
+        "explanation": format!("{id} cannot be undone"),
+        "destructive": true,
+        "redirect": redirect,
+    })
+}
+
+/// The pack that says every documented domain value once: all three tiers,
+/// all three severities, all three channels, and one disabled rule. The
+/// shipped packs exercise `tier1`/`tier2` only and ship every rule enabled,
+/// so the mapping pins below have no shipped specimen for `tier3` or for a
+/// disabled rule — without this fixture those wire spellings could move
+/// silently.
+fn write_domain_fixture_pack(dir: &Path) -> PathBuf {
+    let pack = json!({
+        "id": "map-pack",
+        "tool_keywords": ["mapctl"],
+        "guarded_patterns": [
+            domain_rule("map-tier1", "tier1", "Critical", "deny", true),
+            domain_rule("map-tier2", "tier2", "High", "updated_input", true),
+            domain_rule("map-tier3", "tier3", "Medium", "additional_context", true),
+            domain_rule("map-off", "tier1", "High", "deny", false),
+        ],
+    });
+    let path = dir.join("map.json");
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&pack).expect("domain fixture pack should serialize"),
+    )
+    .expect("domain fixture pack should write");
+    path
+}
+
+/// `tier` and `severity` are documented literal domains — `Tier1`/`Tier2`/
+/// `Tier3` and `Critical`/`High`/`Medium` — not free-form strings. A
+/// variant rename or an addition is a wire change and must fail here until
+/// the format version moves with it, exactly like a key-set change.
+#[test]
+fn tier_and_severity_stay_inside_their_documented_domains() {
+    let report = coverage_json();
+    for rule in report["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|pack| pack["guarded_patterns"].as_array().unwrap())
+    {
+        let id = rule["id"].as_str().unwrap();
+        assert!(
+            matches!(rule["tier"].as_str(), Some("Tier1" | "Tier2" | "Tier3")),
+            "{id}: undocumented tier spelling {:?}",
+            rule["tier"]
+        );
+        assert!(
+            matches!(
+                rule["severity"].as_str(),
+                Some("Critical" | "High" | "Medium")
+            ),
+            "{id}: undocumented severity spelling {:?}",
+            rule["severity"]
+        );
+    }
+}
+
+/// The pack-file spellings map to fixed wire spellings — `tier3` reports as
+/// `Tier3` (the Debug spelling the note promises), `updated_input` as
+/// `UpdatedInput` — and a rename in either direction breaks a consumer
+/// matching on the documented values.
+#[test]
+fn every_documented_domain_value_maps_to_its_wire_spelling() {
+    let dir = TempDir::new().expect("tempdir");
+    let pack = write_domain_fixture_pack(dir.path());
+    let output = coverage_json_against(&[&pack]);
+    assert!(
+        output.status.success(),
+        "the domain fixture pack should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("the domain fixture should emit a document");
+
+    let expected = [
+        ("map-tier1", "Tier1", "Critical", "Deny", true),
+        ("map-tier2", "Tier2", "High", "UpdatedInput", true),
+        ("map-tier3", "Tier3", "Medium", "AdditionalContext", true),
+        ("map-off", "Tier1", "High", "Deny", false),
+    ];
+    let rules = report["packs"][0]["guarded_patterns"]
+        .as_array()
+        .expect("guarded_patterns array");
+    assert_eq!(rules.len(), expected.len(), "every fixture rule reports");
+    for (rule, (id, tier, severity, channel, enabled)) in rules.iter().zip(expected) {
+        assert_eq!(rule["id"], id, "rules report in declaration order");
+        assert_eq!(rule["tier"], tier, "{id}: tier wire spelling moved");
+        assert_eq!(
+            rule["severity"], severity,
+            "{id}: severity wire spelling moved"
+        );
+        assert_eq!(
+            rule["channel"], channel,
+            "{id}: channel wire spelling moved"
+        );
+        assert_eq!(rule["enabled"], enabled, "{id}: enabled moved");
+    }
+}
+
+/// "A disabled rule is reported but not enforced" has a report side: the
+/// rule still appears in `guarded_patterns`. And `guarded_pattern_count` is
+/// documented as the sum of the arrays' lengths — not of the enforced
+/// rules — so a disabled rule is still counted. A consumer reading the
+/// count as "rules that will fire" would under-count by every disabled
+/// rule if the implementation ever filtered them, so the count is pinned
+/// against a pack that ships one.
+#[test]
+fn a_disabled_rule_is_still_reported_and_counted() {
+    let dir = TempDir::new().expect("tempdir");
+    let pack = write_domain_fixture_pack(dir.path());
+    let output = coverage_json_against(&[&pack]);
+    assert!(
+        output.status.success(),
+        "the domain fixture pack should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("the domain fixture should emit a document");
+
+    let rules = report["packs"][0]["guarded_patterns"]
+        .as_array()
+        .expect("guarded_patterns array");
+    let disabled: Vec<&Value> = rules
+        .iter()
+        .filter(|rule| rule["enabled"] == Value::Bool(false))
+        .collect();
+    assert_eq!(disabled.len(), 1, "the disabled rule reports");
+    assert_eq!(disabled[0]["id"], "map-off");
+
+    assert_eq!(
+        report["guarded_pattern_count"].as_u64(),
+        Some(rules.len() as u64),
+        "the count sums the arrays, including the disabled rule"
+    );
+}
+
+/// "Malformed JSON, failed validation, an unreadable file" are one class in
+/// the note: a load failure recorded in `unreadable`. The truncated fixture
+/// pins the malformed-JSON member; these are the valid-JSON members — a
+/// channel value outside the documented domain, a rule missing its
+/// redirect, and a file whose root is not an object. Each must be named,
+/// none may abort the command, and none may be counted.
+#[test]
+fn a_valid_json_file_that_fails_to_load_is_unreadable_not_fatal() {
+    let dir = TempDir::new().expect("tempdir");
+    let readable = write_minimal_pack(dir.path(), "readable");
+
+    let mut unknown_channel = minimal_pack_json("bad-channel");
+    unknown_channel["guarded_patterns"][0]["redirect"]["channel"] =
+        Value::String("block".to_string());
+    fs::write(
+        dir.path().join("bad-channel.json"),
+        serde_json::to_string_pretty(&unknown_channel).expect("pack should serialize"),
+    )
+    .expect("write bad-channel pack");
+
+    let mut missing_redirect = minimal_pack_json("missing-redirect");
+    missing_redirect["guarded_patterns"][0]
+        .as_object_mut()
+        .expect("rule is an object")
+        .remove("redirect")
+        .expect("the rule had a redirect");
+    fs::write(
+        dir.path().join("missing-redirect.json"),
+        serde_json::to_string_pretty(&missing_redirect).expect("pack should serialize"),
+    )
+    .expect("write missing-redirect pack");
+
+    fs::write(dir.path().join("root-array.json"), "[]").expect("write root-array pack");
+
+    let output = coverage_json_against(&[dir.path()]);
+    assert!(
+        output.status.success(),
+        "a valid-JSON load failure must not abort the command: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("partial readability still emits a document");
+
+    let packs = report["packs"].as_array().unwrap();
+    assert_eq!(packs.len(), 1, "only the readable pack reports");
+    assert_eq!(packs[0]["id"], "readable");
+    assert_eq!(
+        packs[0]["path"].as_str().unwrap(),
+        readable.to_str().unwrap()
+    );
+    assert_eq!(report["pack_count"].as_u64(), Some(1));
+    assert_eq!(
+        report["guarded_pattern_count"].as_u64(),
+        Some(1),
+        "counts describe only what loaded"
+    );
+
+    let unreadable = report["unreadable"].as_array().unwrap();
+    let names: BTreeSet<String> = unreadable
+        .iter()
+        .map(|entry| {
+            Path::new(
+                entry["path"]
+                    .as_str()
+                    .expect("unreadable entries carry the path"),
+            )
+            .file_name()
+            .expect("unix path")
+            .to_string_lossy()
+            .to_string()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        BTreeSet::from([
+            "bad-channel.json".to_string(),
+            "missing-redirect.json".to_string(),
+            "root-array.json".to_string(),
+        ]),
+        "every valid-JSON load failure is named, exactly once"
+    );
+    for entry in unreadable {
+        assert!(
+            !entry["error"].as_str().unwrap().trim().is_empty(),
+            "each failure carries its reason: {:?}",
+            entry
+        );
+        assert_eq!(
+            exact_keys(entry),
+            BTreeSet::from(["path", "error"]),
+            "valid-JSON failures use the same unreadable shape"
+        );
+    }
+}
+
+/// "Rule id, the same id `icg explain --pattern` accepts": the document and
+/// the explainer share one id space, and this pins it from the document's
+/// side. A rule coverage reports but explain cannot resolve splits the
+/// agent-facing surface in two — the agent reads a policy it cannot be
+/// walked through. (The reverse direction is held by
+/// `coverage_json_reports_every_shipped_pack_and_rule`, which equates the
+/// reported rule set with the pack files'.)
+#[test]
+fn every_reported_rule_id_is_accepted_by_explain() {
+    let packs = packs_dir();
+    let report = coverage_json();
+    let ids: Vec<String> = report["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|pack| pack["guarded_patterns"].as_array().unwrap())
+        .map(|rule| rule["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(!ids.is_empty(), "the shipped packs should report rules");
+
+    for id in &ids {
+        let output = icg(&[
+            "explain",
+            "--pattern",
+            id,
+            "--pack",
+            packs.to_str().unwrap(),
+        ]);
+        assert!(
+            output.status.success(),
+            "explain should resolve the coverage-reported id {id}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // The negative control: an id outside the document is refused, so a
+    // pass above means explain resolved the id, not that it exits 0 anyway.
+    let output = icg(&[
+        "explain",
+        "--pattern",
+        "ordercmd-destroy",
+        "--pack",
+        packs.to_str().unwrap(),
+    ]);
+    assert!(
+        !output.status.success(),
+        "an id the document does not carry must not explain"
+    );
+}
+
+/// "a directory's entries are sorted": readdir order is the filesystem's,
+/// not the caller's, so the report must not inherit it. Three packs written
+/// in reverse-lexical order give the reader every chance to disagree with
+/// the sort; the document must not.
+#[test]
+fn a_directorys_entries_are_reported_in_sorted_order() {
+    let dir = TempDir::new().expect("tempdir");
+    for id in ["sort-z", "sort-m", "sort-a"] {
+        write_minimal_pack(dir.path(), id);
+    }
+
+    let output = coverage_json_against(&[dir.path()]);
+    assert!(
+        output.status.success(),
+        "the sorted-directory fixture should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("the directory should emit a document");
+
+    let ids: Vec<&str> = report["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pack| pack["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["sort-a", "sort-m", "sort-z"],
+        "directory entries report sorted by path, not in readdir order"
+    );
+    assert_eq!(report["pack_count"].as_u64(), Some(3));
+}
+
+/// The failure-modes table promises the refusals "exit non-zero, write
+/// nothing to stdout, and put an `Error:` line on stderr". The message
+/// substrings are pinned per case above; the line's shape — stderr leading
+/// with `Error: ` — is what a consumer's fault handling keys on, so it is
+/// pinned across all three documented refusals here.
+#[test]
+fn documented_failures_put_an_error_line_on_stderr() {
+    // Every requested pack failed to load.
+    let corrupt_dir = TempDir::new().expect("tempdir");
+    fs::write(
+        corrupt_dir.path().join("corrupt.json"),
+        corrupt_pack_contents(),
+    )
+    .expect("write corrupt pack");
+
+    // A --pack path that does not exist.
+    let absent_dir = TempDir::new().expect("tempdir");
+    let missing = absent_dir.path().join("does-not-exist");
+
+    // A directory with no .json entries.
+    let empty_dir = TempDir::new().expect("tempdir");
+
+    let refusals = [
+        coverage_json_against(&[corrupt_dir.path()]),
+        coverage_json_against(&[&missing]),
+        coverage_json_against(&[empty_dir.path()]),
+    ];
+    for output in &refusals {
+        assert!(
+            !output.status.success(),
+            "the documented refusals exit non-zero"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "the documented refusals write nothing to stdout"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let first = stderr.lines().next().unwrap_or_default();
+        assert!(
+            first.starts_with("Error: "),
+            "stderr leads with an Error line, got {first:?}"
+        );
+    }
+}
