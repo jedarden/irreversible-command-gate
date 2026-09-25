@@ -971,10 +971,9 @@ fn catalog_digest_matches_the_documented_recipe() {
 
 /// The note's error contract: a pack that fails to load — malformed JSON,
 /// failed validation, an unreadable file — exits non-zero, prints nothing on
-/// stdout, and puts an `Error:` line on stderr. The unreadable-file case is
-/// covered by `catalog_refuses_to_render_when_a_pack_is_unreadable`; this
-/// pins the full shape, including the validation arm (well-formed JSON that
-/// is not a valid pack) and a `--pack` path that does not exist.
+/// stdout, and puts an `Error:` line on stderr. This pins the full shape,
+/// including the validation arm (well-formed JSON that is not a valid pack),
+/// a `--pack` path that does not exist, and the genuinely unreadable file.
 #[test]
 fn broken_packs_fail_the_export_with_the_documented_error_shape() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -1024,6 +1023,47 @@ fn broken_packs_fail_the_export_with_the_documented_error_shape() {
         String::from_utf8_lossy(&output.stderr).contains("does not exist"),
         "the error should say the path does not exist, got {:?}",
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The note's third arm: an actually *unreadable* file — well-formed JSON
+    // sitting on disk, but the loader cannot open it. A catalog describing
+    // only the readable packs would be indistinguishable from a legitimate
+    // policy change, so a permission failure must fail the export exactly
+    // like a parse failure. Root reads through 0o000 (CAP_DAC_OVERRIDE), so
+    // the arm is skipped loudly where it cannot be produced.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping the unreadable-pack arm: root reads through 0o000");
+        return;
+    }
+    let unreadable = dir.join("unreadable.json");
+    fs::write(
+        &unreadable,
+        r#"{"id":"unreadable-pack","tool_keywords":["unreadable-cmd"],"applies_to":[],
+            "safe_patterns":[],"guarded_patterns":[]}"#,
+    )
+    .expect("unreadable fixture writes");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000))
+            .expect("unreadable fixture permissions");
+    }
+    let output = icg(&["catalog", "--json", "--pack", unreadable.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "an unreadable pack file must fail the export"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "no catalog document is printed for an unreadable pack"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error:"),
+        "stderr must carry an Error: line, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("Failed to read rule pack"),
+        "the error must be the read arm, not a parse arm, got {stderr:?}"
     );
 }
 
