@@ -106,9 +106,15 @@ The required cleanup, in the order it should happen:
 - `%h`-style specifiers are ignored (they never match the repo root).
 - Drop-in overrides (`*.service.d/`) are not parsed; the main unit file is.
 - Directions (b) and (c) need the host, so CI runs only direction (a) — via
-  `cargo test` (the release gate in the `icg-ci` workflow) and as an explicit
-  step of `scripts/definition-of-done.sh` — while
+  `cargo test` (the release gate in the `icg-ci` workflow) — while
   `tests/systemd_consistency_tests.rs` exercises all three directions against
   fixtures, and `tests/systemd_lifecycle_tests.rs` proves the round trip:
   the full check passes over what `install.sh` leaves behind and over what
-  `uninstall.sh` leaves behind.
+  `uninstall.sh` leaves behind. `scripts/definition-of-done.sh` runs the
+  script directly: the repo side always, and the host-side scan too whenever
+  the tree being verified is the checkout the host's unit symlinks point
+  into — a `git archive` extraction (NEEDLE's close gate, this repo's own
+  verification checklist) cannot be that checkout, so there it runs
+  `--repo-only` and prints a note saying so. The operator procedure for all
+  of this — install, verify, drift response, retirement — is
+  [the systemd unit lifecycle runbook](../docs/runbooks/systemd-unit-lifecycle.md).

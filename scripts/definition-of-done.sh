@@ -29,9 +29,13 @@
 #                     failure — before surfacing in CI), cargo build
 #                     --all-targets, cargo test, the OpenCode plugin's node
 #                     suite (opencode-plugin/, skipped loudly when node/npm
-#                     are absent), the repo-side systemd consistency gate
-#                     (systemd/check-consistency.sh --repo-only; the
-#                     host-side half runs on hosts — see systemd/README.md),
+#                     are absent), the systemd consistency gate
+#                     (systemd/check-consistency.sh — the repo side always,
+#                     plus the host-side orphan/copy scan whenever this tree
+#                     is the checkout the host's unit symlinks point into; a
+#                     git-archive extraction gets --repo-only, loudly — see
+#                     systemd/README.md and
+#                     docs/runbooks/systemd-unit-lifecycle.md),
 #                     and the README asset-reference gate
 #                     (scripts/check-doc-assets), and the README latency
 #                     claim's regression gate (a release build plus
@@ -101,14 +105,41 @@ fi
 # Type-level check on the deployed plugin artifact (skips loudly without
 # tsc — see scripts/opencode-plugin-typecheck).
 run scripts/opencode-plugin-typecheck
-# The systemd consistency gate, repo-side half: a tree whose tracked units
-# reference paths missing from the working tree cannot be "done" — that is
-# the drift that once fired 203/EXEC for a week (irrevers-46f2b741). CI
-# covers this via cargo test (tests/systemd_consistency_tests.rs); running
-# the script directly also gates the executable bit and the script itself,
-# not just what the tests exercise. The host-side half (symlink pairing,
-# installed-unit scan) runs on hosts via systemd/install.sh's self-check.
-run systemd/check-consistency.sh --repo-only
+# The systemd consistency gate: a tree whose tracked units reference paths
+# missing from the working tree cannot be "done" — that is the drift that
+# once fired 203/EXEC for a week (irrevers-46f2b741). CI covers the check's
+# semantics via cargo test (tests/systemd_consistency_tests.rs,
+# tests/systemd_lifecycle_tests.rs); running the script directly also gates
+# the executable bit and the script itself, not just what the tests exercise.
+#
+# The host-side half — orphaned installed units executing dead repo paths,
+# copies sitting at tracked-unit destinations — runs here too, as the full
+# scan, not only via install.sh's self-check. One guard: a tree that tracks
+# units yet has no host symlink pointing into it (a git-archive extraction,
+# such as NEEDLE's close gate produces, or a second checkout) cannot be the
+# checkout the host linked, so there direction (c)'s symlink comparison would
+# false-positive against the installed checkout's links and direction (b) has
+# nothing to match. Those trees run --repo-only, with a note saying so.
+host_dir="${ICG_HOST_UNIT_DIR:-$HOME/.config/systemd/user}"
+tracked_units=0
+for unit in "$REPO_ROOT"/systemd/*.service "$REPO_ROOT"/systemd/*.timer; do
+  [ -e "$unit" ] && tracked_units=1
+done
+linked_here=1
+if [ "$tracked_units" -eq 1 ] && [ -d "$host_dir" ]; then
+  linked_here=0
+  for unit in "$host_dir"/*; do
+    [ -L "$unit" ] || continue
+    case "$(readlink "$unit")" in "$REPO_ROOT"/*) linked_here=1 ;; esac
+  done
+fi
+if [ "$tracked_units" -eq 1 ] && [ "$linked_here" -eq 0 ]; then
+  echo "note: units are tracked but no host symlink in $host_dir points into this tree" \
+       "(extraction or non-installed checkout) — running --repo-only"
+  run systemd/check-consistency.sh --repo-only
+else
+  run systemd/check-consistency.sh
+fi
 # README's local asset references must resolve: the demo GIF went stale once
 # (irrevers-8c3bab0e) and a missing, emptied, or wrong-typed one would render
 # broken on the mirror with every code gate green. CI covers the gate

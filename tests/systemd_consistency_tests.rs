@@ -414,3 +414,70 @@ fn check_repo_only_passes_on_the_real_repository() {
         "the real repo should be repo-side consistent, got:\n{out}"
     );
 }
+
+/// The DoD is where the host-side half of the check is actually wired. CI's
+/// fixture suites prove the detector; only a gate run on a real host can see
+/// real drift, because the orphan/copy scan needs `~/.config/systemd/user`.
+/// A refactor that quietly downgraded the gate back to `--repo-only` would
+/// silence the repo's only always-on host-drift enforcement, so pin the
+/// wiring: the full scan is the default, `--repo-only` survives only as the
+/// loud extraction form, and the guard that chooses between them honors the
+/// same `ICG_HOST_UNIT_DIR` override the scripts themselves do.
+#[test]
+fn definition_of_done_wires_the_host_side_systemd_gate() {
+    let dod = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join("definition-of-done.sh"),
+    )
+    .expect("scripts/definition-of-done.sh should exist");
+    assert!(
+        dod.contains("run systemd/check-consistency.sh\n"),
+        "the DoD must run the FULL consistency check — host scan included, \
+         not just the repo-side half:\n{dod}"
+    );
+    assert!(
+        dod.contains("--repo-only"),
+        "the extraction form (--repo-only) must stay reachable for trees the \
+         host did not link — that is the guard, not a downgrade:\n{dod}"
+    );
+    assert!(
+        dod.contains("ICG_HOST_UNIT_DIR"),
+        "the host-vs-extraction guard must honor ICG_HOST_UNIT_DIR, the same \
+         override install.sh, uninstall.sh and the check itself take:\n{dod}"
+    );
+}
+
+/// The operator-facing runbook is what this scaffolding previously lacked:
+/// three scripts and a design README, but no procedure to follow at the
+/// moment a host drifts. It must exist, cover the scripts it runbook-izes,
+/// state the symlink requirement, and stay reachable from the documentation
+/// map — otherwise the next operator rediscovers all of it from the journal.
+#[test]
+fn systemd_runbook_exists_and_is_linked_from_the_documentation_map() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runbook = fs::read_to_string(root.join("docs/runbooks/systemd-unit-lifecycle.md"))
+        .expect("docs/runbooks/systemd-unit-lifecycle.md should exist");
+    for covered in [
+        "systemd/install.sh",
+        "systemd/uninstall.sh",
+        "systemd/check-consistency.sh",
+    ] {
+        assert!(
+            runbook.contains(covered),
+            "the systemd runbook must cover {covered}:\n{runbook}"
+        );
+    }
+    assert!(
+        runbook.contains("symlink"),
+        "the systemd runbook must state the symlink requirement — units are \
+         installed as symlinks, never copies:\n{runbook}"
+    );
+    let map = fs::read_to_string(root.join("docs/README.md"))
+        .expect("docs/README.md — the documentation map — should exist");
+    assert!(
+        map.contains("runbooks/systemd-unit-lifecycle.md"),
+        "the documentation map must link the systemd runbook, or no operator \
+         will find it when a gate goes red:\n{map}"
+    );
+}

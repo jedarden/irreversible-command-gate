@@ -34,6 +34,7 @@ Short, ordered procedures for a moment when something is on fire.
 - [runbooks/rollback.md](runbooks/rollback.md)
 - [runbooks/release-cutting.md](runbooks/release-cutting.md)
 - [runbooks/rule-pack-updates.md](runbooks/rule-pack-updates.md)
+- [runbooks/systemd-unit-lifecycle.md](runbooks/systemd-unit-lifecycle.md) — installing, verifying and retiring the units `systemd/` tracks: symlink-only installs, the drift check, host cleanup
 - [runbooks/override-approval.md](runbooks/override-approval.md)
 
 ## Extending it
