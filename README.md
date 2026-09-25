@@ -85,7 +85,7 @@ Grab the release binary — or build from source, which needs nothing but a
 Rust toolchain:
 
 ```bash
-curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.67/icg
+curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.68/icg
 chmod +x icg
 
 # or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
