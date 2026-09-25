@@ -82,7 +82,12 @@ unchanged — it needs live cluster state — so the pack stays blanket.
   kubectl pack in `tests/kubectl_pack_tests.rs`: guarded verbs fire
   through `timeout`, `xargs` and `nice`, through `sh -c`, and through the
   wrappers composed with each other, while read-only verbs stay allowed
-  through the same wrappers. The boundary that remains is deliberate:
+  through the same wrappers. The `sh -c` shapes are pinned end-to-end
+  through the hook front-end over the shipped `packs/` directory in
+  `tests/kubectl_shell_payload_hook_integration_tests.rs` (`irrevers-1b126a97`),
+  including the negative arms: quoted text that is not a command and
+  read-only verbs stay allowed through a payload. The boundary that
+  remains is deliberate:
   commands the guard cannot see as text — a script fed on stdin or by a
   heredoc (`bash <<'EOF'`), a script file (`bash script.sh`),
   `eval`/indirect interpreters, and anything a command substitution
