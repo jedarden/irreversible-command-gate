@@ -83,7 +83,8 @@ boundaries, all from Cursor's own documentation (retrieved 2026-09-19):
   by the hook layer — and the PATH wrapper has no reach inside the cloud
   VM either. This is Cursor's partial analog of the Codex cloud gap:
   coverage exists for the writable portion of the session, zero during
-  read-only exploration.
+  read-only exploration. Disposition: accepted-permanent (no surface to
+  adapt to; see the inventory below and `icg status`'s Known Limitations).
 - **The third-party import is a second, independent wiring path.** With
   Cursor Settings → Agents → Third-Party Imports enabled (on by default),
   Cursor loads Claude Code hooks from `.claude/settings.local.json` →
@@ -113,17 +114,39 @@ boundaries, all from Cursor's own documentation (retrieved 2026-09-19):
   is `preToolUse` matching `Write`, and is never claimed on the strength
   of `afterFileEdit`.
 
-## A gap neither layer covers
+## Gaps neither layer covers — accepted-permanent inventory
 
-**OpenAI's cloud-hosted Codex** (ChatGPT web / async "Codex cloud tasks")
-runs in an OpenAI-managed container, not on this host — a host-level PATH
-wrapper has no reach there, and it's unconfirmed whether cloud tasks honor
-`hooks.json` at all. Only the local `codex` CLI is covered by either layer.
-Worth stating explicitly rather than silently assuming full coverage:
-anything routed through cloud-hosted Codex tasks is currently unguarded by
-this project. Cursor cloud agents have a partial analog — repo-level hooks
-do run there, but not during the early read-only exploratory turns (see
-the Cursor section above).
+Two blind spots named in this note have no hook/plugin surface to adapt to
+(re-verified against vendor docs 2026-09-25). Both are **accepted-permanent
+for now** — tracked by watching the vendors, not by open adapter beads
+(the OpenCode chain is what a harness *with* a surface gets) — and both
+are enumerated operationally in `icg status`'s Known-Limitations
+self-report (bead `irrevers-1cad33d2`), so an operator running
+`icg status` sees them without reading this file.
+
+- **OpenAI's cloud-hosted Codex** (ChatGPT web / async "Codex cloud
+  tasks") runs in an OpenAI-managed container, not on this host — a
+  host-level PATH wrapper has no reach there. The earlier "unconfirmed
+  whether cloud tasks honor `hooks.json`" question now has an answer from
+  OpenAI's own docs (retrieved 2026-09-25): the hooks page discovers hooks
+  only from `~/.codex/hooks.json` and trust-gated repo `.codex/hooks.json`,
+  with no cloud-task provision, and the cloud-environment page documents
+  `AGENTS.md` as the only repo-level file a cloud task honors —
+  customization otherwise flows through Codex environment settings (setup
+  scripts, env vars, pinned runtimes). A setup script installing a wrapper
+  into the container is conceivable but is not a hook surface, and nothing
+  documents PATH persistence from setup into the agent phase ("commands
+  like `export` do not persist into the agent phase"). Only the local
+  `codex` CLI is covered by either layer. Revisit if OpenAI documents hook
+  execution inside cloud tasks.
+- **Cursor cloud agents' early read-only turns** are the partial analog:
+  repo-level `.cursor/hooks.json` hooks do run in the writable portion of
+  a cloud session, but per Cursor's own docs "hooks do not run during
+  those turns" — Cursor defers even `sessionStart` for exactly this
+  reason — and no hook event, setting, or import path covers the
+  read-only phase (retrieved 2026-09-25; no roadmap commitment for adding
+  one). The PATH wrapper has no reach inside the cloud VM. Revisit when
+  Cursor ships hook coverage for read-only turns.
 
 ## How to apply
 
@@ -147,7 +170,10 @@ mapping was taken from. The wrapper remains a separate, payload-less front end
 
 ## Sources
 
-- <https://developers.openai.com/codex/hooks>
+- <https://developers.openai.com/codex/hooks> (308-redirects to
+  <https://learn.chatgpt.com/docs/hooks> as of 2026-09-25)
+- <https://learn.chatgpt.com/codex/environments/cloud-environment>
+  (cloud-task customization surface; retrieved 2026-09-25)
 - <https://developers.openai.com/codex/concepts/sandboxing>
 - <https://developers.openai.com/codex/agent-approvals-security>
 - `github.com/openai/codex` issues #14882, #14754, #18491, #19385 (hook

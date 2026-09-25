@@ -2367,7 +2367,9 @@ fn main() -> Result<()> {
             println!();
 
             let limitations = [
-                ("Cloud-hosted Codex", "Checks run locally on the agent's host; cloud-hosted Claude Code/Claude.ai sessions bypass the wrapper entirely. Protection requires those environments to invoke their own PreToolUse hook integration."),
+                ("Cloud-hosted Claude Code/Claude.ai", "Checks run locally on the agent's host; cloud-hosted Claude Code/Claude.ai sessions bypass the wrapper entirely. Protection requires those environments to invoke their own PreToolUse hook integration."),
+                ("Codex cloud tasks", "ChatGPT web / async \"Codex cloud tasks\" run in OpenAI-managed containers: the PATH wrapper has no reach there, and OpenAI's own docs (hooks; cloud environment; retrieved 2026-09-25) document no hooks.json support in cloud tasks — AGENTS.md is the only repo-level file a cloud task honors. Unguarded by both enforcement layers; revisit if OpenAI documents a cloud hook surface."),
+                ("Cursor cloud-agent read-only turns", "Cursor cloud agents sometimes begin in a read-only environment for early exploratory turns, and per Cursor's docs hooks do not run during those turns (retrieved 2026-09-25); the PATH wrapper has no reach inside the cloud VM. Coverage exists only for the writable portion of the session. Revisit when Cursor ships hook coverage for read-only turns."),
                 ("Absolute-path wrapper bypass", "If the user invokes a binary by its absolute path (e.g., `/usr/bin/git` instead of `git`), the shell resolves it directly and the wrapper is not triggered. PATH-order shadowing is not a security boundary."),
                 ("Content-mode coverage gaps", "Only YAML files are checked for storage-class violations. Other formats (JSON, manifests with explicit storageClassName references) are not yet covered. Image-tag enforcement similarly has format gaps."),
                 ("State-dependent checks (Tier 2)", "Patterns requiring cross-invocation state (e.g., \"did a git pull happen earlier in this session\") are not yet implemented. State-store infrastructure exists but no checks use it yet."),
