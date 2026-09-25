@@ -89,12 +89,16 @@ The original framing here — "this project should not duplicate rules 1–5" �
 assumed indefinite coexistence with `org-rule-guard.py`. That's stale: per
 `docs/plan/plan.md`'s Overview (2026-08-13 direction, since refined), that
 hook is expected to shrink toward deprecation as this project's coverage
-supersedes it — but not to full removal. Its kubectl-mutation rule is
-*permanently* excluded from absorption; its `.github/workflows` rule
-(1 below) and its `kind: Job`/`CronJob` rule (2 below) have since been
-scheduled and absorbed — see plan.md's Overview for the precise current wording,
-which this note only paraphrases and shouldn't be treated as a substitute
-for. Coexistence is an interim state for whichever rules *do* get
+supersedes it — but not to full removal. Its `.github/workflows` rule,
+its `kind: Job`/`CronJob` rule, and its kubectl-mutation rule have all
+since been scheduled and absorbed — see plan.md's Overview for the precise
+current wording, which this note only paraphrases and shouldn't be treated
+as a substitute for. (This note itself once recorded the kubectl rule as
+permanently excluded; [ADR-001](../adr/001-kubectl-mutation-pack.md)
+reversed that on 2026-09-19 — the exclusion's zero-I/O reason only ever
+ruled out ArgoCD-aware narrowing, which stays not attempted — and the
+rule-4 bullet below records the absorption.) Coexistence is an interim
+state for whichever rules *do* get
 scheduled, not a permanent policy for all five. The plan already
 absorbs pieces of the five rules above rather than avoiding them:
 

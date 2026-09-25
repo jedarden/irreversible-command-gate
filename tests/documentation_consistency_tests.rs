@@ -570,6 +570,16 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
 /// the old wording as superseded history, and plan.md and the
 /// infrastructure note carry quote-and-retract residuals; both sit outside
 /// this scan set on purpose.
+///
+/// The 2026-09-25 sweep found two post-ADR survivors of the same fiction:
+/// the infrastructure note's "How to apply" paragraph still called the
+/// kubectl rule permanently excluded from absorption (contradicting its own
+/// rule-4 bullet), and the wrapper-fallback doc plus the deploy script
+/// still justified the wrapper skip with "absent from every shipped pack"
+/// -- false since the pack ships and lists the keyword; the skip is
+/// wrapper-channel policy, not pack absence. Both phrasings are banned
+/// below, and the two non-scanned homes of the second one are asserted
+/// directly.
 #[test]
 fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
     let pack: serde_json::Value = serde_json::from_str(&repo_relative("packs/kubectl.json"))
@@ -628,6 +638,34 @@ fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
          as absorbed by the kubectl pack"
     );
 
+    // The wrapper channel's skip is policy ("never shadowed per policy",
+    // src/documented_commands.rs), not pack absence: the shipped kubectl
+    // pack lists the keyword and guards the hook front-end only. Neither
+    // the operator doc nor the deploy script may explain the skip with the
+    // pre-ADR "absent from every shipped pack" rationale.
+    for (path, text) in [
+        (
+            "docs/operators/path-wrapper-fallback.md",
+            repo_relative("docs/operators/path-wrapper-fallback.md"),
+        ),
+        (
+            "scripts/deploy-path-wrappers.sh",
+            repo_relative("scripts/deploy-path-wrappers.sh"),
+        ),
+    ] {
+        assert!(
+            !text.contains("absent from every shipped pack"),
+            "{path} justifies the kubectl wrapper skip with pack absence -- \
+             the kubectl pack ships and lists the keyword; the skip is \
+             wrapper-channel policy (ADR-001)"
+        );
+    }
+    assert!(
+        repo_relative("docs/operators/path-wrapper-fallback.md").contains("never shadowed"),
+        "path-wrapper-fallback.md should keep describing kubectl as never \
+         shadowed by the wrapper"
+    );
+
     let mut scanned: Vec<(String, String)> = OPERATOR_FACING_DOCS
         .iter()
         .map(|doc| (doc.to_string(), repo_relative(doc)))
@@ -656,6 +694,16 @@ fn kubectl_pack_is_documented_as_shipped_and_the_exclusion_claim_stays_dead() {
         (
             "PERMANENTLY not absorbed",
             "the pre-ADR-001 coexistence-suite wording; rule 4 is absorbed",
+        ),
+        (
+            "permanently excluded from absorption",
+            "the pre-ADR-001 how-to-apply wording the infrastructure note \
+             carried until 2026-09-25; rule 4 is absorbed",
+        ),
+        (
+            "absent from every shipped pack",
+            "the pre-ADR-001 wrapper-skip rationale; the kubectl pack ships \
+             and lists the keyword, so the skip is wrapper-channel policy",
         ),
     ];
     for (doc, text) in &scanned {

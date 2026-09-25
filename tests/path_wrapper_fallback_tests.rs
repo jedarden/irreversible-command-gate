@@ -342,7 +342,8 @@ fn staged_install_verify_and_idempotency() {
             .join("kubectl")
             .symlink_metadata()
             .is_err(),
-        "kubectl must never be shadowed: it is intentionally outside the packs"
+        "kubectl must never be shadowed: icg install hard-skips the keyword, \
+         so the kubectl pack guards the hook front-end only"
     );
     assert!(
         stage.launcher().is_file(),

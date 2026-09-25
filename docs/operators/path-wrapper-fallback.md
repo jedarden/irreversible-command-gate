@@ -159,7 +159,7 @@ mechanically.
 | Structured edits | A harness `Write`/`Edit` tool call does not spawn a process; the wrapper cannot see it. Only the native hook front-end evaluates content. |
 | MCP and library calls | Tools invoked over MCP, or destructive operations inside a program (a Rust binary calling git plumbing), never cross a shell `PATH` lookup. |
 | `ICG_DISABLED=1` | The documented emergency bypass stands the guard down with a loud warning on stderr; the real binary runs without rule evaluation (the activation itself is recorded as an emergency-bypass event). `icg-harness-env` prints a warning when it is set at launch. |
-| Tools absent from the packs | Only pack `tool_keywords` get wrappers. `kubectl` is intentionally absent from every shipped pack and hard-skipped by `icg install` — cluster triage must stay un-intercepted. |
+| Tools without wrappers | Only pack `tool_keywords` get wrappers, and `icg install` hard-skips `kubectl` even though the shipped `kubectl` pack lists it (`never shadowed per policy`) — that pack guards the hook front-end only, so cluster triage stays un-intercepted. |
 | Harness's own hook | If the harness has a native PreToolUse hook, that hook — not this fallback — is the enforcement path; deploying both double-evaluates Bash commands. |
 | Every process on the launched PATH | The wrapper shadows tools for the whole launched process tree (build scripts, test suites), not only the agent's tool calls. Misfires there are the cost of the launch-scoped PATH. |
 

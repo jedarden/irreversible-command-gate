@@ -410,14 +410,14 @@ cmd_verify() {
   fi
   [ "$count" -gt 0 ] || { warn "no icg wrapper symlinks found"; failures=$((failures + 1)); }
 
-  # kubectl is never shadowed: it is absent from every shipped pack on
-  # purpose (cluster triage must stay un-intercepted), and icg install skips
-  # it even if a future pack lists it.
+  # kubectl is never shadowed: the shipped kubectl pack lists the keyword,
+  # but icg install hard-skips it (never shadowed per policy), so that pack
+  # guards the hook front-end only and cluster triage stays un-intercepted.
   if [ -e "$WRAPPER_DIR/kubectl" ]; then
     warn "kubectl is present in the wrapper directory -- shadowing kubectl is against policy"
     failures=$((failures + 1))
   else
-    ok "kubectl is not shadowed (intentionally outside the packs)"
+    ok "kubectl is not shadowed (pack guards the hook front-end only)"
   fi
 
   # Resolution: every wrapper must find a REAL binary later in PATH. This
