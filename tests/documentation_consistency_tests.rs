@@ -482,6 +482,12 @@ fn readme_what_ships_today_matches_the_shipped_packs() {
 /// README's: quick-start's "What Gets Protected" opener and AGENTS.md's
 /// coverage transcript. Pinning them means pack number twelve cannot land
 /// without every count claim moving with it.
+///
+/// The count is derived twice: from the packs/ directory and from `icg
+/// coverage --list --format json`, the surface AGENTS.md itself points at.
+/// A shipped pack that fails to parse drops the loaded count below the
+/// file count -- the sentence would be false while a directory-count guard
+/// alone still passed.
 #[test]
 fn doc_pack_count_claims_match_the_shipped_packs() {
     let packs_dir = audited_checkout().join("packs");
@@ -498,6 +504,43 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
         })
         .count();
     assert!(count > 0, "packs/ directory should not be empty");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "coverage",
+            "--list",
+            "--format",
+            "json",
+            "--pack",
+            packs_dir.to_str().expect("packs path should be UTF-8"),
+        ])
+        .output()
+        .expect("icg coverage --list should run");
+    assert!(
+        output.status.success(),
+        "coverage --list --format json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("coverage --format json should emit valid JSON");
+    assert_eq!(report["format"], "coverage/v1");
+    let unreadable = report["unreadable"]
+        .as_array()
+        .expect("coverage/v1 should carry an unreadable array");
+    assert!(
+        unreadable.is_empty(),
+        "every shipped pack should load; coverage reported unreadable: \
+         {unreadable:?}"
+    );
+    let loaded = report["packs"]
+        .as_array()
+        .expect("coverage/v1 should carry a packs array")
+        .len();
+    assert_eq!(
+        loaded, count,
+        "coverage --list loads {loaded} packs but packs/ holds {count} JSON \
+         files -- a shipped pack is not loading"
+    );
 
     let quick = quick_start();
     assert!(

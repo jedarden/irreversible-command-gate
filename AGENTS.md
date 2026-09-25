@@ -17,7 +17,7 @@ not writing Rust.
 cargo build --release                       # no system deps; rustls, not OpenSSL
 cargo run --release -- coverage --list      # confirm the 11 packs load
 cargo run --release -- check --command "git push --force origin main"
-cargo test                                  # 987 tests, 0 failures
+cargo test                                  # the whole suite, zero failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
 ```
 
