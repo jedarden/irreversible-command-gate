@@ -724,6 +724,8 @@ that times whole `icg check` processes:
 scripts/bench-check-latency
 # Method and the measured baseline record:
 #   docs/notes/check-latency-benchmark.md
+# The claim's budget is gated in scripts/definition-of-done.sh:
+# release build + --assert-under 50 on the shipped pack set.
 
 # Profile hot paths
 cargo flamegraph --bin icg -- check \

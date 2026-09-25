@@ -69,6 +69,10 @@ environment, measured and reproducible —
 [`scripts/bench-check-latency`](scripts/bench-check-latency), record and
 method in the
 [check-latency benchmark note](docs/notes/check-latency-benchmark.md).
+That note's budget is enforced, not aspirational: the repo's
+[definition of done](scripts/definition-of-done.sh) builds the release
+binary and fails if a warm-cache p50 reaches **50 ms** on the shipped pack
+set — a rot gate at roughly 3× the measured median, not a tail SLA.
 A non-force `git push` additionally waits on the stale-remote-head lookup's
 one network round trip.
 

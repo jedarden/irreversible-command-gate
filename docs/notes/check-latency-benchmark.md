@@ -92,26 +92,39 @@ this record does not assume it.
 ## Regression guidance
 
 A latency number without a threshold invites both rot and flakiness. The
-practical gate is the script's own:
+script's own gate is `--assert-under`:
 
 ```bash
 scripts/bench-check-latency --assert-under 50
 ```
 
-exit 1 if any selected case's p50 lands at or above the threshold. Run it
-against a release build before a release cut, or from whatever scheduler
-watches the fleet; the number to compare against is this note's measured
-record **from a comparable machine and load** — a busy 2-vCPU runner will
-not reproduce a 16-core desktop's tail.
+exit 1 if any selected case's p50 lands at or above the threshold.
 
-Deliberately **not** wired into `cargo test` or CI: an absolute-time
-assertion on a dev-profile binary on shared runners is a flake generator,
-and the fleet auto-reopens beads on red gates. The suite's timing-sensitive
-work stays in this script, where the operator chooses the threshold and the
-machine. A smoke test
-(`tests/check_latency_benchmark_tests.rs`) does pin the script's mechanics —
+**The standing gate is the definition of done**
+(`scripts/definition-of-done.sh`). It builds the release profile — the
+profile the claim is about; a dev-profile binary measures something else —
+then runs the gate at **50 ms** on the shipped pack set (`--pack
+$REPO_ROOT/packs --cwd /tmp`, the canonical form above, so the gate
+measures what README claims rather than whatever `/etc/icg/packs` holds on
+the box running the gate). 50 ms is ~3× the measured median under
+reference load: loose enough that background load moving the p50 between
+15 and 20 ms cannot flake it — a *median* needs a sustained multi-fold
+slowdown to move that far, not one straggler — and tight enough to catch
+the rot modes that would hollow the claim out: pack-count growth, hot-path
+I/O, a per-pattern compile regression. A tighter threshold, or one for a
+different machine class, stays operator-invoked: the number to compare
+against is this note's measured record **from a comparable machine and
+load** — a busy 2-vCPU runner will not reproduce a 16-core desktop's tail.
+
+Still deliberately **not** wired into `cargo test` or the shared-runner
+CI: this suite runs a dev-profile binary (the wrong thing to time), CI
+runners' timings are foreign to this record, and the fleet auto-reopens
+beads on red gates — an absolute-time assertion in either is a flake
+generator. The timing-sensitive work stays in this script. A smoke test
+(`tests/check_latency_benchmark_tests.rs`) pins the script's mechanics —
 JSON shape, verdict verification, and that the `--assert-under` gate fails
-closed — so the tool itself cannot silently rot.
+closed — plus the DoD wiring itself, so neither the tool nor its gate can
+silently rot.
 
 When the record here is stale (new packs, new engine, new reference
 hardware), re-run the canonical command, update this note with the new table

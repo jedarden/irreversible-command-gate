@@ -33,7 +33,10 @@
 #                     (systemd/check-consistency.sh --repo-only; the
 #                     host-side half runs on hosts — see systemd/README.md),
 #                     and the README asset-reference gate
-#                     (scripts/check-doc-assets)
+#                     (scripts/check-doc-assets), and the README latency
+#                     claim's regression gate (a release build plus
+#                     scripts/bench-check-latency --assert-under 50 on the
+#                     shipped pack set — docs/notes/check-latency-benchmark.md)
 #   --slow            additionally cargo clippy --all-targets -- -D warnings
 # Prints one "command<TAB>exit" line per step and exits non-zero if any step
 # failed.
@@ -69,9 +72,11 @@ find src tests examples -name '*.rs' -exec touch {} + 2>/dev/null
 touch Cargo.toml 2>/dev/null
 
 status=0
+last_rc=0
 run() {
   "$@"
   rc=$?
+  last_rc=$rc
   printf '%s\t%d\n' "$*" "$rc"
   if [ "$rc" -ne 0 ]; then
     status=1
@@ -111,6 +116,29 @@ run systemd/check-consistency.sh --repo-only
 # scripts); this direct run also gates the script's executable bit, the way
 # the systemd gate does above.
 run scripts/check-doc-assets
+# The README's warm-cache latency claim, held up by a gate (the claim: p50
+# ~15–20 ms on the shipped 11-pack set; the record:
+# docs/notes/check-latency-benchmark.md). The gate builds the RELEASE
+# profile first — the profile the claim is about; a dev-profile binary
+# measures something else — then asserts every case's p50 under 50 ms:
+# ~3x the measured median under reference load, loose enough that
+# background load moving the p50 between 15 and 20 ms cannot flake a
+# median, tight enough to catch the rot that would hollow the claim out
+# (pack-count growth, hot-path I/O, a per-pattern compile regression). The
+# shipped pack set is pinned (--pack + --cwd /tmp, the note's canonical
+# run) so the gate measures what README claims, not whatever /etc/icg/packs
+# happens to hold on the box running the gate. Deliberately absent from
+# cargo test and the shared-runner CI — the same absolute-time-assertion
+# reasoning, recorded in the note. Skipped, loudly, when the release build
+# itself fails: benchmarking the previous tree's stale binary would gate
+# nothing.
+run cargo build --release
+if [ "$last_rc" -eq 0 ]; then
+  run scripts/bench-check-latency --pack "$REPO_ROOT/packs" --cwd /tmp \
+    --assert-under 50 --iterations 40 --warmup 5
+else
+  printf 'scripts/bench-check-latency --assert-under 50\tSKIP (release build failed)\n'
+fi
 if [ "$SLOW" -eq 1 ]; then
   run cargo clippy --all-targets -- -D warnings
 fi

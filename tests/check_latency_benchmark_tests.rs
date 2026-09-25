@@ -1,5 +1,6 @@
 //! Guards for the warm-cache latency benchmark, landed with bead
-//! `irrevers-0d3487b3`.
+//! `irrevers-0d3487b3`; the standing gate wired into the definition of done
+//! with bead `irrevers-f10cfae4`.
 //!
 //! README's "~10 ms" warm-cache claim had no reproducible measurement behind
 //! it — no bench target exists here, and the figure predates the current
@@ -7,9 +8,11 @@
 //! and docs/notes/check-latency-benchmark.md is its record; these tests pin
 //! the script's *mechanics* so the tool cannot silently rot: the JSON report
 //! shape, the environment capture, and the `--assert-under` gate failing
-//! closed. Deliberately absent is any absolute-time assertion — a dev-profile
-//! binary on shared runners makes those flake generators, which is exactly
-//! why the threshold lives in an operator-invoked flag, not this suite.
+//! closed. Deliberately absent is any absolute-time assertion — this suite
+//! runs a dev-profile binary (the wrong thing to time) and CI runners'
+//! timings are foreign to the record; the standing 50 ms budget lives in the
+//! definition of done, on the release profile and the shipped pack set,
+//! where the machine is the reference environment.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -62,6 +65,37 @@ fn bench_script_is_executable() {
         mode & 0o111 != 0,
         "scripts/bench-check-latency must be executable; the benchmark note \
          and the release checklist run it directly"
+    );
+}
+
+#[test]
+fn definition_of_done_wires_the_latency_gate() {
+    // The DoD is where the README claim's budget actually lives; a refactor
+    // that dropped the release build or the gate would silence the claim's
+    // only enforcement without anything failing. Pin both halves and the
+    // shipped-pack-set form (the note's canonical run), but not the budget
+    // value itself — raising 50 ms with evidence must not require touching
+    // this test.
+    let dod = fs::read_to_string(repo_root().join("scripts").join("definition-of-done.sh"))
+        .expect("scripts/definition-of-done.sh should exist");
+    assert!(
+        dod.contains("cargo build --release"),
+        "the latency gate needs a release build first; a dev-profile binary \
+         measures the wrong thing:\n{dod}"
+    );
+    assert!(
+        dod.contains("bench-check-latency"),
+        "definition-of-done.sh must run the latency gate:\n{dod}"
+    );
+    assert!(
+        dod.contains("--assert-under"),
+        "a bench run without a budget is a report, not a gate; the DoD must \
+         pass --assert-under:\n{dod}"
+    );
+    assert!(
+        dod.contains("--pack"),
+        "the gate must pin the shipped pack set, not the dev-checkout \
+         default that picks up /etc/icg/packs:\n{dod}"
     );
 }
 
