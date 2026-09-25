@@ -6,8 +6,11 @@
 `docs/notes/existing-enforcement-infrastructure.md` (Rule 4), `docs/quick-start.md`
 ("there is deliberately no kubectl pack and there will not be one") and
 `tests/coexistence_org_rule_guard_tests.rs` ("PERMANENTLY not absorbed")
-**Tracking:** `irrevers-3fc0fbce`; follow-up gaps `irrevers-08a4a11b`
-(timeout/xargs/nice) and `irrevers-a4779a37` (`sh -c` payloads)
+**Tracking:** `irrevers-3fc0fbce`; the follow-up gaps are all resolved —
+`irrevers-08a4a11b` (timeout/xargs/nice, closed 2026-09-20) and
+`irrevers-a4779a37` (`sh -c` payloads, closed 2026-09-25). No open gap
+remains from this decision; the remaining boundary is the deliberate one
+described under Consequences below.
 
 ## Context
 
@@ -75,7 +78,11 @@ unchanged — it needs live cluster state — so the pack stays blanket.
   string of `sh`/`bash`/`dash`/`ash`/`zsh`/`ksh` (`irrevers-a4779a37`): a
   `-c` payload is, by the shell's own semantics, a command line, so
   segmentation lexes it with the ordinary lexer and its commands dispatch
-  like any other segment. The boundary that remains is deliberate:
+  like any other segment. These shapes are regression-pinned for the
+  kubectl pack in `tests/kubectl_pack_tests.rs`: guarded verbs fire
+  through `timeout`, `xargs` and `nice`, through `sh -c`, and through the
+  wrappers composed with each other, while read-only verbs stay allowed
+  through the same wrappers. The boundary that remains is deliberate:
   commands the guard cannot see as text — a script fed on stdin or by a
   heredoc (`bash <<'EOF'`), a script file (`bash script.sh`),
   `eval`/indirect interpreters, and anything a command substitution
