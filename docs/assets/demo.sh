@@ -71,5 +71,5 @@ demo 'git credential fill' 2
 demo_file 'image: ronaldraygun/armor:latest
 ' "'image: ronaldraygun/armor:latest'" 2
 
-printf '%s# ~10 ms per check. Nothing ran. Each verdict names the rule and the way forward.%s\n' "$DIM" "$RESET"
+printf '%s# ~15–20 ms per check. Nothing ran. Each verdict names the rule and the way forward.%s\n' "$DIM" "$RESET"
 sleep 3

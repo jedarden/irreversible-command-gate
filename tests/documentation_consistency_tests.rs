@@ -2176,3 +2176,180 @@ fn plan_bead_status_claims_match_the_bead_checkpoint() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The warm-cache latency figure vs its measurement of record.
+//
+// README's headline claimed **~10 ms** with no measurement behind it (the
+// note's own opening records this). Commit 70d6c87 added
+// scripts/bench-check-latency and docs/notes/check-latency-benchmark.md,
+// revised the claim to the measured ~15–20 ms -- and missed the repo's own
+// front-page showcase: docs/assets/demo.sh kept printing "~10 ms per check"
+// into docs/assets/icg-demo.gif, so the GIF contradicted the README headline
+// until 2026-09-25 (bead `irrevers-25075873`). The guards below parse the
+// measured range out of the note's Result section and hold every quoting
+// surface to it, so the note's closing rule -- re-measure, then "update any
+// doc quoting the old range in the same commit" -- is enforced by a failing
+// build instead of another manual sweep.
+// ---------------------------------------------------------------------------
+
+/// End of the run of ASCII digits starting at `at`.
+fn digits_end(bytes: &[u8], mut at: usize) -> usize {
+    while at < bytes.len() && bytes[at].is_ascii_digit() {
+        at += 1;
+    }
+    at
+}
+
+/// Every `~N ms` / `~N–M ms` latency figure in `text`, as (offset, figure).
+///
+/// The warm-cache claim is always written this way -- tilde, digits, an
+/// optional dash and upper bound, a space, `ms` -- so this shape is what the
+/// drift guard audits. A hyphenated range is captured too: the record writes
+/// en-dashes, so a `~15-20 ms` figure is formatting drift the equality check
+/// should reject, not silently accept. `~2-4ms` (no space) is a different
+/// figure class -- the org-rule-guard wrapper's overhead, not a check
+/// latency -- and deliberately does not match.
+fn tilde_ms_figures(text: &str) -> Vec<(usize, String)> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find('~') {
+        let start = from + rel;
+        let after_first = digits_end(bytes, start + 1);
+        if after_first > start + 1 {
+            let mut end = after_first;
+            let rest = &text[after_first..];
+            let (dashed, dash_len) = if rest.starts_with('\u{2013}') {
+                (true, '\u{2013}'.len_utf8())
+            } else if rest.starts_with('-') {
+                (true, 1)
+            } else {
+                (false, 0)
+            };
+            if dashed {
+                let after_second = digits_end(bytes, after_first + dash_len);
+                if after_second > after_first + dash_len {
+                    end = after_second;
+                }
+            }
+            let mut at = end;
+            // The space is mandatory: the no-space `~1-2ms` shape is the
+            // org-rule-guard wrapper's overhead figures (a different
+            // subject), not a check-latency claim.
+            if at >= bytes.len() || bytes[at] != b' ' {
+                from = start + 1;
+                continue;
+            }
+            at += 1;
+            if text[at..].starts_with("ms") {
+                found.push((start, text[start..at + 2].to_owned()));
+                from = at + 2;
+                continue;
+            }
+        }
+        from = start + 1;
+    }
+    found
+}
+
+/// The measured warm-cache range, parsed out of the benchmark note's Result
+/// section: the first `~N–M ms` figure on a non-heading line. Parsing (rather
+/// than pinning a literal) is what re-keys this guard automatically when the
+/// note is re-measured -- the parse and the quoting surfaces then have to
+/// move in the same commit, which is exactly the note's own rule.
+fn benchmark_recorded_range() -> String {
+    let note = repo_relative("docs/notes/check-latency-benchmark.md");
+    let result = &note[note
+        .find("## Result")
+        .expect("check-latency-benchmark.md should keep its '## Result' section; it is the measurement of record")..];
+    for line in result.lines() {
+        if line.starts_with('#') {
+            // The heading quotes the withdrawn figure ("the ~10 ms claim is
+            // revised"); the measured range is stated in the prose below it.
+            continue;
+        }
+        if let Some((_, figure)) = tilde_ms_figures(line).first() {
+            return figure.clone();
+        }
+    }
+    panic!(
+        "the '## Result' section of check-latency-benchmark.md should state \
+         its measured warm-cache range as a '~N–M ms' figure; none found"
+    );
+}
+
+/// Every surface's latency figure must be the one the benchmark measured.
+#[test]
+fn latency_figures_match_the_recorded_benchmark() {
+    let range = benchmark_recorded_range();
+
+    // The two surfaces the claim lives on -- the README headline and the
+    // demo banner the GIF renders -- must keep quoting the record, not
+    // merely avoid a stale figure.
+    for doc in ["README.md", "docs/assets/demo.sh"] {
+        let text = repo_relative(doc);
+        assert!(
+            text.contains(&range),
+            "{doc} should quote the recorded warm-cache range {range:?} (from \
+             docs/notes/check-latency-benchmark.md); it quotes something else, \
+             or the record and the quotes drifted apart"
+        );
+    }
+
+    let root = audited_checkout();
+    let mut surfaces: Vec<(String, String)> = vec![
+        ("README.md".to_owned(), repo_relative("README.md")),
+        ("AGENTS.md".to_owned(), repo_relative("AGENTS.md")),
+        (
+            "docs/assets/demo.sh".to_owned(),
+            repo_relative("docs/assets/demo.sh"),
+        ),
+        (
+            "docs/assets/demo.tape".to_owned(),
+            repo_relative("docs/assets/demo.tape"),
+        ),
+        (
+            "scripts/definition-of-done.sh".to_owned(),
+            repo_relative("scripts/definition-of-done.sh"),
+        ),
+    ];
+    for path in markdown_files(&root.join("docs")) {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        if relative.contains("ideas-ledger") || relative.contains("notes/archive/") {
+            continue;
+        }
+        if let Ok(text) = fs::read_to_string(&path) {
+            surfaces.push((relative, text));
+        }
+    }
+
+    for (doc, text) in &surfaces {
+        if doc == "docs/notes/check-latency-benchmark.md" {
+            // The record itself is where the withdrawn ~10 ms figure lives,
+            // quoted in order to be revised; the equality scan does not
+            // apply to it.
+            continue;
+        }
+        for (at, figure) in tilde_ms_figures(text) {
+            if figure == range {
+                continue;
+            }
+            let window = &text[at..(at + figure.len() + 90).min(text.len())];
+            let marked_residual = ["stale", "revised", "withdrawn", "once claimed", "no longer"]
+                .iter()
+                .any(|marker| window.contains(*marker));
+            assert!(
+                marked_residual,
+                "{doc} quotes the warm-cache figure {figure:?}, which is not \
+                 the recorded {range:?} -- docs/notes/check-latency-benchmark.md \
+                 is the measurement of record; quote its range, and update the \
+                 record and every quoting surface in the same commit"
+            );
+        }
+    }
+}
