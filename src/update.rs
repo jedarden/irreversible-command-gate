@@ -992,6 +992,141 @@ mod tests {
         assert!(archive_pack_filename(Path::new("./secrets.json")).is_ok());
     }
 
+    /// A production-shaped manifest that passes load_pack and engine
+    /// validation, mirroring packs/misc.json's guarded-pattern shape.
+    const JOINT_LAYOUT_PACK_JSON: &str = r#"{
+  "id": "joint-layout",
+  "tool_keywords": ["joint-layout-tool"],
+  "applies_to": [],
+  "safe_patterns": [],
+  "guarded_patterns": [
+    {
+      "id": "joint-layout-block",
+      "type": "command_regex",
+      "regex": "^joint-layout-tool\\s+destroy(?:\\s|$)",
+      "tier": "tier1",
+      "severity": "Critical",
+      "explanation": "joint layout test guard",
+      "destructive": true,
+      "example_command": "joint-layout-tool destroy",
+      "redirect": {
+        "channel": "deny",
+        "reason_template": "blocked by the joint layout test pack",
+        "rewrite_template": null
+      }
+    }
+  ]
+}"#;
+
+    /// Write a gzip tar archive whose entries are (name, contents) pairs; a
+    /// `None` value emits a directory entry.
+    fn write_pack_archive(path: &Path, entries: &[(&str, Option<&str>)]) -> Result<()> {
+        let file = fs::File::create(path)
+            .with_context(|| format!("Failed to create test archive: {}", path.display()))?;
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (name, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            match contents {
+                None => {
+                    header.set_size(0);
+                    header.set_entry_type(tar::EntryType::Directory);
+                    header.set_mode(0o755);
+                    header.set_cksum();
+                    builder.append_data(&mut header, name, std::io::empty())?;
+                }
+                Some(data) => {
+                    header.set_size(data.len() as u64);
+                    header.set_entry_type(tar::EntryType::Regular);
+                    header.set_mode(0o644);
+                    header.set_cksum();
+                    builder.append_data(&mut header, name, data.as_bytes())?;
+                }
+            }
+        }
+        builder.into_inner()?.finish()?;
+        Ok(())
+    }
+
+    /// Joint pin between the icg-ci packager and this updater: the two halves
+    /// must agree that release archives carry ROOT-LEVEL JSON manifests only.
+    /// The CI packager (declarative-config k8s/iad-ci/argo-workflows/
+    /// icg-ci-workflowtemplate.yml) is the producer, this module's
+    /// extract_and_validate_pack_archive is the consumer; neither may drift.
+    #[test]
+    fn pack_archive_layout_matches_the_ci_packaging_contract() -> Result<()> {
+        let work = tempdir()?;
+
+        // (a) Root-level layout, the shape the fixed packager emits via
+        // `( cd packs && tar -czf ... ./*.json )`: "./<name>.json" file
+        // entries, optionally preceded by a "./" directory entry. Accepted.
+        let root_archive = work.path().join("root-level.tar.gz");
+        write_pack_archive(
+            &root_archive,
+            &[
+                ("./", None),
+                ("./joint-layout.json", Some(JOINT_LAYOUT_PACK_JSON)),
+                (
+                    "./joint-layout-two.json",
+                    Some(&JOINT_LAYOUT_PACK_JSON.replace("joint-layout", "joint-layout-two")),
+                ),
+            ],
+        )?;
+        let staging = tempdir()?;
+        let staged = extract_and_validate_pack_archive(&root_archive, staging.path())?;
+        assert_eq!(staged, 2);
+        assert!(staging.path().join("joint-layout.json").is_file());
+        assert!(staging.path().join("joint-layout-two.json").is_file());
+
+        // (b) The layout every release published before the packager fix
+        // ships: a "packs/" directory entry plus packs/<name>.json files,
+        // exactly what `tar -C <checkout> -czf ... packs` produces. Rejected
+        // with the nested-entry error before any manifest is staged.
+        let nested_archive = work.path().join("nested.tar.gz");
+        write_pack_archive(
+            &nested_archive,
+            &[
+                ("packs/", None),
+                ("packs/joint-layout.json", Some(JOINT_LAYOUT_PACK_JSON)),
+            ],
+        )?;
+        let staging = tempdir()?;
+        let nested_error = extract_and_validate_pack_archive(&nested_archive, staging.path())
+            .expect_err("nested packs/ layout must be rejected");
+        assert!(
+            nested_error
+                .to_string()
+                .contains("is nested; manifests must be at the archive root"),
+            "unexpected error: {nested_error:#}"
+        );
+        assert!(
+            staging.path().read_dir()?.next().is_none(),
+            "nested archive must not stage anything before failing"
+        );
+
+        // (c) A root-level non-manifest ride-along is rejected too, which is
+        // why the packager globs *.json instead of archiving ".":
+        // packs/coverage-justifications.md must never ship.
+        let mixed_archive = work.path().join("non-json-ridealong.tar.gz");
+        write_pack_archive(
+            &mixed_archive,
+            &[
+                ("./", None),
+                ("./joint-layout.json", Some(JOINT_LAYOUT_PACK_JSON)),
+                ("./coverage-justifications.md", Some("approval notes")),
+            ],
+        )?;
+        let staging = tempdir()?;
+        let mixed_error = extract_and_validate_pack_archive(&mixed_archive, staging.path())
+            .expect_err("non-JSON ride-along must be rejected");
+        assert!(
+            mixed_error.to_string().contains("is not a JSON manifest"),
+            "unexpected error: {mixed_error:#}"
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn test_update_check_state_save_and_load() -> Result<()> {
         let dir = tempdir()?;
