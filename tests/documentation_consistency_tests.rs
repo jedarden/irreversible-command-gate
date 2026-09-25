@@ -18,8 +18,9 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Every document an operator or pack author is pointed at from the README,
 /// the docs index, or the onboarding path.
@@ -2394,5 +2395,486 @@ fn latency_figures_match_the_recorded_benchmark() {
                  record and every quoting surface in the same commit"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The README demo surface: docs/assets/demo.sh, the gif it regenerates, and
+// docs/assets/icg-evaluation.svg.
+//
+// README's hero asset makes falsifiable claims -- git status -> ALLOW,
+// force-push -> REWRITE, a secret read to stdout -> WARNING, and OpenBao
+// destroy / bare `git credential fill` / a `:latest` tag in file content ->
+// DENY -- with demo.sh declared as the reproducible source (README links it
+// directly beneath the gif) and demo.tape regenerating the gif from the
+// script. AGENTS.md rule 4's tested-docs guards covered quick-start's
+// coverage table and the operator docs, but nothing executed the demo
+// commands themselves, so a rule or pack edit could leave the front door
+// misrepresenting the engine while every gate stayed green. The tests below
+// run each demo line against the shipped packs and hold the documented
+// verdicts -- and the evaluation figure's safe-pattern claims -- to what
+// the packs actually do.
+// ---------------------------------------------------------------------------
+
+/// (demo.sh argument, verdict README's hero asset claims for it).
+///
+/// The `demo_file` argument carries its trailing newline, exactly as the
+/// script's quoted string does. An entry whose demo line disappears fails
+/// `demo_sh_commands_produce_the_documented_verdicts`, and a demo line with
+/// no entry here fails it too -- the script and this table can only move
+/// together.
+const DEMO_VERDICTS: [(&str, &str); 6] = [
+    ("git status", "ALLOW"),
+    ("git push --force origin main", "REWRITE"),
+    ("bao kv get -field=token secret/app/db", "WARNING"),
+    ("bao kv destroy secret/app/db", "DENIED"),
+    ("git credential fill", "DENIED"),
+    ("image: ronaldraygun/armor:latest\n", "DENIED"),
+];
+
+/// The shipped packs directory of the checkout under audit.
+///
+/// The demo claims are about what *ships*, not what happens to be installed
+/// in /etc/icg/packs on whatever host runs the suite -- that set can lag the
+/// release for weeks. Every `icg check` below loads exactly this directory
+/// via `--pack`.
+fn shipped_packs_dir() -> PathBuf {
+    let dir = audited_checkout().join("packs");
+    assert!(
+        dir.is_dir(),
+        "packs/ should exist in the audited checkout {}",
+        dir.display()
+    );
+    dir
+}
+
+/// Run `icg check --command <command>` with `extra` flags against the
+/// shipped packs, returning (stdout, stderr). A private denial-log sink
+/// keeps the deny-path invocations off any instrumented host log, the same
+/// convention check_output_contract_tests uses.
+fn check_demo_command(command: &str, extra: &[&str]) -> (String, String) {
+    let sink = tempfile::tempdir().expect("denial-log sink directory should create");
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["check", "--command", command])
+        .args(extra)
+        .arg("--pack")
+        .arg(
+            shipped_packs_dir()
+                .to_str()
+                .expect("packs path should be UTF-8"),
+        )
+        .env("ICG_DENIAL_LOG", sink.path().join("denials.jsonl"))
+        .output()
+        .expect("icg check should run");
+    drop(sink);
+    assert!(
+        output.status.success(),
+        "icg check should run cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// Run `icg check --file -` with `content` piped to stdin, the way the
+/// demo's file-content variant and a real Write/Edit supply it.
+fn check_demo_content(content: &str) -> (String, String) {
+    let sink = tempfile::tempdir().expect("denial-log sink directory should create");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "check",
+            "--file",
+            "-",
+            "--pack",
+            shipped_packs_dir()
+                .to_str()
+                .expect("packs path should be UTF-8"),
+        ])
+        .env("ICG_DENIAL_LOG", sink.path().join("denials.jsonl"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("icg check should run");
+    child
+        .stdin
+        .take()
+        .expect("stdin should be piped")
+        .write_all(content.as_bytes())
+        .expect("stdin content should be written");
+    let output = child.wait_with_output().expect("icg check should finish");
+    drop(sink);
+    assert!(
+        output.status.success(),
+        "icg check should run cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// The verdict an `icg check` transcript opens with, classified by the same
+/// line prefixes demo.sh's own painter uses (its `case "$line" in` arms).
+/// `icg check` always exits 0 -- parse the output, never the status.
+fn verdict_of(transcript: &str) -> &'static str {
+    let first = transcript.lines().next().unwrap_or_default();
+    for (prefix, verdict) in [
+        ("DENIED", "DENIED"),
+        ("REWRITE", "REWRITE"),
+        ("WARNING", "WARNING"),
+        ("ALLOW", "ALLOW"),
+    ] {
+        if first.starts_with(prefix) {
+            return verdict;
+        }
+    }
+    panic!(
+        "unrecognised verdict line {first:?} -- demo.sh's painter and this \
+         classifier must recognise the same prefixes"
+    );
+}
+
+/// Every `demo '<argument>'` / `demo_file '<argument>'` in demo.sh, as
+/// (kind, argument).
+///
+/// The script's arguments are single-quoted shell strings: nothing expands
+/// inside single quotes and the next `'` always closes the string, so
+/// extraction is a plain scan -- which is also what makes the `demo_file`
+/// argument extractable (its trailing newline is a real line break inside
+/// the quotes).
+fn demo_invocations(script: &str) -> Vec<(&'static str, String)> {
+    let mut calls = Vec::new();
+    for (kind, name) in [("command", "demo"), ("file", "demo_file")] {
+        let mut from = 0usize;
+        while let Some(rel) = script[from..].find(name) {
+            let at = from + rel;
+            from = at + name.len();
+            // A call is the function name at line start (indentation
+            // allowed) followed by the opening quote of its first argument;
+            // the definitions `demo() {` and prose mentions do not qualify.
+            let line_start = script[..at].rfind('\n').map(|n| n + 1).unwrap_or(0);
+            if !script[line_start..at].trim().is_empty() {
+                continue;
+            }
+            let Some(quoted) = script[at + name.len()..].strip_prefix(" '") else {
+                continue;
+            };
+            let start = at + name.len() + 2;
+            let end = start
+                + quoted
+                    .find('\'')
+                    .unwrap_or_else(|| panic!("the {name} argument should close its quote"));
+            calls.push((kind, script[start..end].to_owned()));
+            from = end + 1;
+        }
+    }
+    assert!(
+        !calls.is_empty(),
+        "demo.sh should still carry demo/demo_file invocations"
+    );
+    calls
+}
+
+/// Every command demo.sh runs must produce, from the shipped packs, the
+/// verdict README's hero asset claims for it -- and every documented claim
+/// must still be a command the script runs.
+#[test]
+fn demo_sh_commands_produce_the_documented_verdicts() {
+    let script = repo_relative("docs/assets/demo.sh");
+    let calls = demo_invocations(&script);
+
+    for (argument, verdict) in DEMO_VERDICTS {
+        assert!(
+            calls.iter().any(|(_, arg)| arg == argument),
+            "demo.sh no longer runs {argument:?}; README's hero asset claims \
+             it produces {verdict} -- restore the demo line or move the \
+             claim, and regenerate the gif"
+        );
+    }
+    assert_eq!(
+        calls.len(),
+        DEMO_VERDICTS.len(),
+        "demo.sh carries demo lines these tests hold no documented verdict \
+         for: {calls:?} -- add the command to DEMO_VERDICTS with the verdict \
+         the gif will claim, or remove the demo line"
+    );
+
+    for (kind, argument) in &calls {
+        let verdict = DEMO_VERDICTS
+            .iter()
+            .find(|(arg, _)| arg == argument)
+            .map(|(_, verdict)| *verdict)
+            .expect("every demo line is covered, checked above");
+        let (stdout, _) = match *kind {
+            "command" => check_demo_command(argument, &[]),
+            _ => check_demo_content(argument),
+        };
+        assert_eq!(
+            verdict_of(&stdout),
+            verdict,
+            "demo.sh's {argument:?} must produce {verdict} against the \
+             shipped packs -- README's front door now misrepresents the \
+             engine; fix the rule/pack or the claim, and regenerate the \
+             gif:\n{stdout}"
+        );
+        if verdict == "REWRITE" {
+            assert!(
+                stdout.contains("Suggested input: git push origin main"),
+                "the gif claims the force-push is \"rewritten to a plain \
+                 push\"; the rewrite must suggest exactly that:\n{stdout}"
+            );
+        }
+        if verdict == "DENIED" {
+            assert!(
+                stdout.contains("Reason:"),
+                "README's alt text says the denials come \"with the \
+                 alternative\"; a deny without a reason line is a block, not \
+                 a redirect:\n{stdout}"
+            );
+        }
+    }
+}
+
+/// README's alt text is the claim surface proper: the gif renders demo.sh's
+/// transcripts and the alt text enumerates which verdict each command
+/// produces. Pin the needles so a rewording cannot quietly drop a claim the
+/// tests above verify.
+#[test]
+fn readme_alt_text_states_every_demo_claim() {
+    let readme = repo_relative("README.md");
+    for needle in [
+        "git status is allowed",
+        "force-push is rewritten to a plain push",
+        "a secret read to stdout warns",
+        "an OpenBao destroy",
+        "a bare git credential fill",
+        ":latest image tag in file content are each denied",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README's demo-gif alt text should keep stating {needle:?}"
+        );
+    }
+    // And the pointer to the reproducible source stays a link.
+    assert!(
+        readme.contains("docs/assets/demo.sh"),
+        "README should keep naming demo.sh as the way to reproduce the gif"
+    );
+}
+
+/// Every `icg check --command "<cmd>"` example the README shows in a
+/// runnable position must be one of the demo commands these tests execute
+/// -- the front door's "Try it in a minute" block and the evaluation
+/// figure's repro link are claims too, and they are covered exactly when
+/// they name a command DEMO_VERDICTS pins.
+#[test]
+fn readme_check_examples_are_demo_commands_with_documented_verdicts() {
+    let readme = repo_relative("README.md");
+    let mut from = 0usize;
+    while let Some(rel) = readme[from..].find("icg check --command \"") {
+        let start = from + rel + "icg check --command \"".len();
+        let end = start
+            + readme[start..]
+                .find('"')
+                .unwrap_or_else(|| panic!("the example command should close its quote"));
+        let command = &readme[start..end];
+        assert!(
+            DEMO_VERDICTS.iter().any(|(arg, _)| *arg == command),
+            "README shows `icg check --command \"{command}\"` but no \
+             documented verdict covers it -- add it to DEMO_VERDICTS (and to \
+             demo.sh) so the claim is executed, not just printed"
+        );
+        from = end;
+    }
+}
+
+/// The safe-pattern count the demo surfaces state in words, parsed from
+/// "<word> safe patterns".
+fn stated_safe_pattern_count(text: &str) -> usize {
+    let words = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        "twelve",
+    ];
+    for (index, word) in words.iter().enumerate() {
+        if text.contains(&format!("{word} safe patterns")) {
+            return index + 1;
+        }
+    }
+    panic!(
+        "the demo surfaces should state the openbao pack's safe-pattern \
+         count as '<word> safe patterns'; none found"
+    );
+}
+
+/// The ids rendered as safe patterns in the evaluation figure, read off its
+/// `<text>safe-…</text>` elements.
+fn figure_rendered_safe_ids(svg: &str) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    let mut from = 0usize;
+    while let Some(rel) = svg[from..].find(">safe-") {
+        let start = from + rel + 1;
+        let end = start
+            + svg[start..]
+                .find('<')
+                .unwrap_or_else(|| panic!("the safe-pattern text element should close"));
+        ids.insert(svg[start..end].to_owned());
+        from = end;
+    }
+    assert!(
+        !ids.is_empty(),
+        "the evaluation figure should render its safe patterns one id at a \
+         time; the parser found none and has probably rotted"
+    );
+    ids
+}
+
+/// The evaluation figure's safe-pattern claims must hold against the
+/// loaded openbao pack: the stated count, the ids it walks one at a time,
+/// and the guarded-pattern narrative its verdict step renders.
+#[test]
+fn evaluation_figure_claims_match_the_openbao_pack() {
+    let pack: serde_json::Value = serde_json::from_str(&repo_relative("packs/openbao.json"))
+        .expect("openbao pack should be valid JSON");
+    let safe: BTreeSet<String> = pack["safe_patterns"]
+        .as_array()
+        .expect("openbao pack should carry safe_patterns")
+        .iter()
+        .map(|pattern| {
+            pattern["id"]
+                .as_str()
+                .expect("safe pattern should carry an id")
+                .to_owned()
+        })
+        .collect();
+
+    let svg = repo_relative("docs/assets/icg-evaluation.svg");
+    let flat = flattened(&svg);
+
+    // The stated count, on both surfaces that state it.
+    assert_eq!(
+        stated_safe_pattern_count(&flat),
+        safe.len(),
+        "icg-evaluation.svg states a safe-pattern count that disagrees with \
+         packs/openbao.json -- the figure and the pack must move together"
+    );
+    assert_eq!(
+        stated_safe_pattern_count(&flattened(&repo_relative("README.md"))),
+        safe.len(),
+        "README's evaluation alt text states a safe-pattern count that \
+         disagrees with packs/openbao.json"
+    );
+
+    // Every id the figure renders must ship, and every shipped safe pattern
+    // must be rendered: the figure walks the pack's list one id at a time,
+    // so a rename leaves it describing a rule that does not exist and an
+    // addition leaves the walkthrough incomplete.
+    let rendered = figure_rendered_safe_ids(&svg);
+    assert_eq!(
+        rendered, safe,
+        "icg-evaluation.svg's safe-pattern walkthrough disagrees with \
+         packs/openbao.json's safe_patterns"
+    );
+
+    // The verdict step: README's alt text says "the second one matches and
+    // its deny channel becomes the verdict". That names a pack ordering,
+    // not just a rule -- keep openbao-destructive-verb second and denying.
+    let guarded = pack["guarded_patterns"]
+        .as_array()
+        .expect("openbao pack should carry guarded_patterns");
+    let second = guarded
+        .get(1)
+        .expect("the openbao pack should keep at least two guarded patterns");
+    assert_eq!(
+        second["id"], "openbao-destructive-verb",
+        "README's alt text and the figure both say the *second* guarded \
+         pattern produces the deny -- keep openbao-destructive-verb second, \
+         or reword both surfaces together"
+    );
+    assert_eq!(
+        second["redirect"]["channel"], "deny",
+        "the verdict channel README's alt text claims for the matched rule"
+    );
+    assert!(
+        flat.contains("openbao-destructive-verb") && svg.contains(">MATCH<"),
+        "the figure should keep rendering the guarded match on \
+         openbao-destructive-verb"
+    );
+
+    // The pinned repro command must stay a demo command these tests
+    // execute, still carrying --debug.
+    const REPRO_MARKER: &str = "Reproduce this trace: icg check --command \"";
+    let Some((_, rest)) = flat.split_once(REPRO_MARKER) else {
+        panic!(
+            "icg-evaluation.svg should keep pinning its repro command as \
+             'Reproduce this trace: icg check --command \"…\" --debug'"
+        );
+    };
+    let command = rest
+        .split('"')
+        .next()
+        .expect("the repro command should close its quote");
+    assert!(
+        DEMO_VERDICTS.iter().any(|(arg, _)| *arg == command),
+        "the figure's repro command {command:?} is not one demo.sh runs -- \
+         the walkthrough is about a command the front door executes"
+    );
+    assert!(
+        rest[command.len()..].starts_with("\" --debug"),
+        "the figure's repro command must carry --debug; the trace is the \
+         thing being reproduced"
+    );
+}
+
+/// The figure's pinned repro command, run for real, must produce the trace
+/// the figure renders: every shipped safe pattern tried and none matching,
+/// the guarded match on openbao-destructive-verb, the deny attributed to
+/// pack=openbao / pattern=openbao-destructive-verb. (--debug writes the
+/// trace to stderr; the decision stays on stdout.)
+#[test]
+fn evaluation_figure_repro_command_produces_the_rendered_trace() {
+    let pack: serde_json::Value = serde_json::from_str(&repo_relative("packs/openbao.json"))
+        .expect("openbao pack should be valid JSON");
+    let safe: Vec<String> = pack["safe_patterns"]
+        .as_array()
+        .expect("openbao pack should carry safe_patterns")
+        .iter()
+        .map(|pattern| {
+            pattern["id"]
+                .as_str()
+                .expect("safe pattern should carry an id")
+                .to_owned()
+        })
+        .collect();
+
+    let (stdout, stderr) = check_demo_command("bao kv destroy secret/app/db", &["--debug"]);
+    for id in &safe {
+        assert!(
+            stderr.contains(&format!("{id}: NO MATCH")),
+            "the figure claims every safe pattern is tried first and none \
+             matches, but the --debug trace of its own repro command does \
+             not show that for {id}:\n{stderr}"
+        );
+    }
+    assert!(
+        stderr.contains("openbao-destructive-verb: MATCH"),
+        "the figure renders openbao-destructive-verb as the guarded match; \
+         the trace must agree:\n{stderr}"
+    );
+    assert_eq!(
+        verdict_of(&stdout),
+        "DENIED",
+        "the figure's repro command must produce the deny it renders:\n{stdout}"
+    );
+    for attribution in ["Pack: openbao", "Pattern: openbao-destructive-verb"] {
+        assert!(
+            stdout.contains(attribution),
+            "the figure attributes the verdict to [pack=openbao, \
+             pattern=openbao-destructive-verb]; the output must carry \
+             {attribution:?}:\n{stdout}"
+        );
     }
 }
