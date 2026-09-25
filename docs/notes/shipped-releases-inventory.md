@@ -22,26 +22,37 @@ predated them), and their rows were added from the same two sources
 (`git for-each-ref refs/tags/v0.1.63 refs/tags/v0.1.64`; `gh api
 repos/jedarden/irreversible-command-gate/releases/tags/v0.1.63` and
 `…/tags/v0.1.64`).
+Re-verified again 2026-09-25 through v0.1.66: tags v0.1.65 and v0.1.66
+were found in the checkout but absent here (the 2026-09-24 pass
+predated them), and their rows were added from the same two sources
+(`git for-each-ref refs/tags/v0.1.65 refs/tags/v0.1.66`; `gh api
+repos/jedarden/irreversible-command-gate/releases/tags/v0.1.65`; the
+same query for `…/tags/v0.1.66` returned 404 — v0.1.66 has no GitHub
+Release as of this pass, and no `v0.1.67` tag exists on the remote
+either, so the inventory stops at v0.1.66).
 
 ## The two facts, stated separately
 
 These are distinct claims and downstream edits must cite the right one:
 
-1. **Git tags exist.** The repo carries **65 tags, `v0.1.0` through
-   `v0.1.64`**, contiguous with no gaps. All are lightweight tags
+1. **Git tags exist.** The repo carries **67 tags, `v0.1.0` through
+   `v0.1.66`**, contiguous with no gaps. All are lightweight tags
    (`git for-each-ref` reports `objecttype: commit` for every one), so
    each tag's "date" is the commit's author/commit date, not a separate
    tag-creation date.
 2. **GitHub Releases exist.** `gh release list` on
-   `jedarden/irreversible-command-gate` returns **64 published Releases,
-   `v0.1.1` through `v0.1.64`**, none draft, none prerelease, all
-   targeting `main`. `v0.1.64` is marked **Latest** (published
-   2026-09-24T13:15:40Z).
+   `jedarden/irreversible-command-gate` returns **65 published Releases,
+   `v0.1.1` through `v0.1.65`**, none draft, none prerelease, all
+   targeting `main`. `v0.1.65` is marked **Latest** (published
+   2026-09-24T18:32:31Z).
 
 ### Set differences
 
-- **Tags without a matching GitHub Release: `v0.1.0` only.** It is the
-  sole tag that was never released.
+- **Tags without a matching GitHub Release: `v0.1.0` and `v0.1.66`.**
+  `v0.1.0` is the orphaned first tag, never released. `v0.1.66` was
+  tagged 2026-09-25T03:20:55Z and had no Release as of the 2026-09-25
+  collection — 13 h after the tag, against a historical tag→Release
+  gap of minutes.
 - **Releases without a matching git tag: none.** Every Release points at
   a real tag.
 
@@ -61,15 +72,17 @@ These are distinct claims and downstream edits must cite the right one:
   `main` on all, and every release carrying exactly the four assets
   `icg`, `icg-packs.tar.gz`, `pack-manifest.json`, `rule-pack.json`.
   Re-run again 2026-09-24 over all 64; the invariants held unchanged.
+  Re-run again 2026-09-25 over all 65; the invariants held unchanged.
 
 ## Inventory
 
-Combined table — since the two sets differ only by `v0.1.0`, one row per
-version enumerates both the tag and (where present) the Release. Tag
+Combined table — the two sets differ by `v0.1.0` and (as of the
+2026-09-25 pass) `v0.1.66`, so one row per version enumerates both the
+tag and (where present) the Release. Tag
 dates are normalized to UTC for sortability; `v0.1.0`–`v0.1.3` were
 captured by git with a `-04:00` offset and are converted here (e.g.
 `v0.1.1` tagged `2026-09-05T23:36:55-04:00` = `2026-09-06T03:36:55Z`).
-Every row from `v0.1.1` down has a published Release.
+Every row from `v0.1.1` down except `v0.1.66` has a published Release.
 
 | Tag | Commit | Tag date (UTC) | Release published (UTC) | Notes |
 |---|---|---|---|---|
@@ -137,17 +150,20 @@ Every row from `v0.1.1` down has a published Release.
 | v0.1.61 | `566256b` | 2026-09-13T06:49:08Z | 2026-09-13T06:56:38Z | |
 | v0.1.62 | `52e3a26` | 2026-09-19T20:19:57Z | 2026-09-19T21:01:59Z | |
 | v0.1.63 | `1820cec` | 2026-09-24T04:32:00Z | 2026-09-24T05:20:17Z | |
-| v0.1.64 | `560a5ac` | 2026-09-24T12:25:47Z | 2026-09-24T13:15:40Z | **Latest** |
+| v0.1.64 | `560a5ac` | 2026-09-24T12:25:47Z | 2026-09-24T13:15:40Z | |
+| v0.1.65 | `dcc8f11` | 2026-09-24T17:23:16Z | 2026-09-24T18:32:31Z | **Latest** |
+| v0.1.66 | `3ec31cc` | 2026-09-25T03:20:55Z | — | **No GitHub Release** |
 
 ## Artifact evidence
 
 Releases carry real assets, not just a tag echo. Spot-check on
-`v0.1.64`: `icg` (the binary), `icg-packs.tar.gz`, `pack-manifest.json`,
-`rule-pack.json` — the same four assets verified on `v0.1.63` and
-`v0.1.62` in the 2026-09-24 and 2026-09-20 passes, on `v0.1.61` in the
-2026-09-13 pass and on `v0.1.57` in the initial pass. Release title
+`v0.1.65`: `icg` (the binary), `icg-packs.tar.gz`, `pack-manifest.json`,
+`rule-pack.json` — the same four assets verified on `v0.1.64` and
+`v0.1.63` in the 2026-09-24 pass, on `v0.1.62` in the 2026-09-20 pass,
+on `v0.1.61` in the 2026-09-13 pass and on `v0.1.57` in the initial
+pass; `v0.1.66` has no release object to spot-check. Release title
 format is `irreversible-command-gate vN.N.N`; `target_commitish` is
-`main` on all 64.
+`main` on all 65.
 
 ## Observations for the plan reconciliation (factual, not analysis)
 
@@ -160,7 +176,14 @@ format is `irreversible-command-gate vN.N.N`; `target_commitish` is
   resumed the pattern on 2026-09-19 after a six-day gap (42 min tag→
   release, `52e3a26` the tagged commit), and `v0.1.63`/`v0.1.64`
   continued it on 2026-09-24 (48 and 50 min tag→release, `1820cec` and
-  `560a5ac` the tagged commits).
+  `560a5ac` the tagged commits). `v0.1.65` kept the pattern on
+  2026-09-24 (69 min tag→release), though its tagged commit `dcc8f11`
+  is a merge of the v0.1.65 release strand, not the version-bump
+  commit itself. `v0.1.66` broke the pattern: tagged 2026-09-25T03:20:55Z
+  on the docs commit `3ec31cc` with no Release as of the 2026-09-25
+  collection, and the tree's `chore: release v0.1.67` commit
+  (`ebaa941`) had no `v0.1.67` tag on either remote at collection time.
 - The correct replacement for plan.md's "no release has ever been cut"
-  (line ~457) is: **64 GitHub Releases exist (v0.1.1–v0.1.64); only the
-  very first tag, v0.1.0, lacks a Release.**
+  (line ~457) is: **65 GitHub Releases exist (v0.1.1–v0.1.65); `v0.1.0`
+  and, as of the 2026-09-25 pass, `v0.1.66` are tagged without a
+  Release.**

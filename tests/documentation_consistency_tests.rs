@@ -1928,8 +1928,10 @@ fn plan_release_claims_match_the_shipped_releases_inventory() {
         .collect();
     assert_eq!(
         unreleased,
-        ["v0.1.0"],
-        "the inventory should show exactly one tagged-but-never-released version"
+        ["v0.1.0", "v0.1.66"],
+        "the inventory's tagged-but-never-released set drifted; re-check \
+         GitHub for a release the collection pass missed (or a new tagged \
+         version) before moving this pin"
     );
 
     let (tag_count, tag_first, tag_last) = plan_tag_count_claim(&plan);
