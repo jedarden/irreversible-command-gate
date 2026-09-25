@@ -477,6 +477,80 @@ fn catalog_schema_pins_its_key_sets() {
     assert_eq!(always, sorted, "always must be sorted by (pack, id)");
 }
 
+/// Byte offset of `key` in `doc`, searched from `cursor` and moving the
+/// cursor past the match — the same moving-cursor walk
+/// `coverage_json_tests.rs` uses, because parsing into a `Value` re-sorts
+/// keys and would silently forgive a reordering.
+fn find_after(doc: &str, cursor: &mut usize, key: &str) {
+    let found = doc[*cursor..]
+        .find(key)
+        .unwrap_or_else(|| panic!("expected {key} after byte {}", *cursor));
+    *cursor += found + key.len();
+}
+
+/// The catalog document's top-level fields are emitted in `Catalog`'s
+/// declaration order — the same promise `coverage/v1` pins for its own
+/// document. The event-level wire order is already pinned, indirectly but
+/// exactly, by `catalog_digest_matches_the_documented_recipe`; the document
+/// level has no such accidental pin, and a reordering is a wire-format
+/// change a byte-diffing consumer would see as noise on every policy edit.
+#[test]
+fn catalog_document_fields_are_emitted_in_declaration_order() {
+    let output = icg(&["catalog", "--json", "--pack", "packs"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = String::from_utf8(output.stdout).expect("stdout is utf-8");
+
+    let mut cursor = 0;
+    for key in [
+        "\"format\"",
+        "\"catalog_digest\"",
+        "\"icg_version\"",
+        "\"never\"",
+        "\"always\"",
+    ] {
+        find_after(&doc, &mut cursor, key);
+    }
+}
+
+/// The document occupies stdout alone: byte 0 is `{`, the first emitted key
+/// is the format discriminator, and stderr stays silent on success — a
+/// consumer piping stdout into a streaming parser can dispatch on
+/// `icg-catalog/v1` from the first bytes and treat stderr as fault-only.
+/// (`--debug` traces are `icg check`'s stream contract, pinned in
+/// `check_output_contract_tests.rs`; the catalog does not accept the flag,
+/// so no trace can ever interleave with the document — the full parse below
+/// also proves the stream is exactly one object against trailing noise.)
+#[test]
+fn the_catalog_occupies_stdout_alone_with_stderr_fault_only() {
+    let output = icg(&["catalog", "--json", "--pack", "packs"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "a successful render keeps stderr fault-only: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        doc.starts_with('{'),
+        "byte 0 opens the object — no banner or prefix may precede it: {doc:?}"
+    );
+    let first_key = doc[1..].trim_start();
+    assert!(
+        first_key.starts_with("\"format\""),
+        "format is the first emitted key, got: {first_key:?}"
+    );
+    serde_json::from_str::<Value>(&doc)
+        .expect("the whole stdout stream is exactly one JSON document");
+}
+
 /// A rule that ships disabled is cataloged — a consumer must be able to see
 /// the whole policy surface, including the part not currently enforced —
 /// but carries `enabled: false` so a gap detector does not treat it as a
@@ -760,7 +834,15 @@ fn digest_moves_when_the_policy_changes() {
     moved("removing a guarded rule", removed);
 
     // The quieter edits — none change the event set's shape, but every one
-    // changes what the policy says.
+    // changes what the policy says. The id rename is the quietest of all:
+    // the rule is field-for-field identical, but (pack, id) is the identity
+    // a denial record carries, so a rename must move the digest or a
+    // consumer keeps matching denials against an event that no longer
+    // exists under the id it records.
+    let mut renamed = digest_fixture_pack();
+    renamed.guarded_patterns[0].id = "digestcmd-destroy-renamed".to_string();
+    moved("a rule id rename", renamed);
+
     let mut reworded = digest_fixture_pack();
     reworded.guarded_patterns[0].explanation = "reworded: digestcmd destroy loses data".to_string();
     moved("a reworded explanation", reworded);

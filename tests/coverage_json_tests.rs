@@ -498,6 +498,42 @@ fn coverage_json_is_byte_stable_across_runs() {
     assert_eq!(paths, sorted, "packs are ordered by resolved path");
 }
 
+/// The document occupies stdout alone: byte 0 is `{`, the first emitted key
+/// is the format discriminator, and stderr stays silent on success. A
+/// consumer piping stdout into a streaming parser can dispatch on
+/// `coverage/v1` from the first bytes without buffering, and treat stderr as
+/// fault-only. (`--debug` traces are `icg check`'s stream contract, pinned
+/// in `check_output_contract_tests.rs`; neither JSON command accepts the
+/// flag, so no trace can ever interleave with the document — the whole
+/// stream is one object, which the full parse below also proves against
+/// trailing noise.)
+#[test]
+fn the_document_occupies_stdout_alone_with_stderr_fault_only() {
+    let output = coverage_json_against(&[&packs_dir()]);
+    assert!(
+        output.status.success(),
+        "coverage --format json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "a successful render keeps stderr fault-only: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    assert!(
+        doc.starts_with('{'),
+        "byte 0 opens the object — no banner or prefix may precede it: {doc:?}"
+    );
+    let first_key = doc[1..].trim_start();
+    assert!(
+        first_key.starts_with("\"format\""),
+        "format is the first emitted key, got: {first_key:?}"
+    );
+    serde_json::from_str::<Value>(&doc)
+        .expect("the whole stdout stream is exactly one JSON document");
+}
+
 /// An empty directory is refused, not reported as zero coverage.
 #[test]
 fn an_empty_pack_directory_is_an_error_not_an_empty_report() {
