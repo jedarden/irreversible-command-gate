@@ -517,7 +517,7 @@ fn staged_remove_is_idempotent_and_preserves_unrelated_entries() {
         combined(&remove)
     );
     assert!(
-        !git_link.symlink_metadata().is_ok(),
+        git_link.symlink_metadata().is_err(),
         "our git wrapper should be gone"
     );
     assert!(
