@@ -399,16 +399,16 @@ fn quick_start_coverage_table_matches_every_shipped_pattern() {
     }
 }
 
-/// Pack counts are spelled out in doc prose ("Eleven rule packs"); extend
-/// this as the fleet grows. A count with no arm fails loudly instead of
-/// letting a doc drift silently past it.
+/// Counts spelled out in doc prose ("Eleven rule packs", "Twelve worked
+/// scenarios"); extend this as either fleet grows. A count with no arm fails
+/// loudly instead of letting a doc drift silently past it.
 fn count_word(count: usize) -> &'static str {
     match count {
         10 => "Ten",
         11 => "Eleven",
         12 => "Twelve",
         13 => "Thirteen",
-        _ => panic!("extend count_word() for {count} packs"),
+        _ => panic!("extend count_word() for a count of {count}"),
     }
 }
 
@@ -3036,4 +3036,451 @@ fn evaluation_figure_repro_command_produces_the_rendered_trace() {
              {attribution:?}:\n{stdout}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Citation rot: every path the docs cite must resolve.
+//
+// Every guard above holds a document's *claims* to reality; none resolved
+// the paths the docs cite. The 2026-08-25 audit's doc-vs-reality assertions
+// cover quick-start's coverage table, the operator pack/pattern citations
+// and the install-vs-release paths, and `scripts/check-doc-assets` sweeps
+// README.md's references alone (and never runs under rust-verify -- only
+// its fixture tests do). Nothing resolved the rest of the citation surface:
+// the ~46 relative links in docs/README.md's documentation map, the scripts
+// the prose tells a reader to run (`scripts/bench-check-latency`,
+// `vhs docs/assets/demo.tape`), the binary assets those references depend
+// on, or the map's count claims ("Twelve worked scenarios"). A moved page,
+// a renamed script or a deleted gif therefore shipped as a dead link with
+// every gate green. The sweeps below resolve each citation class against
+// the tree -- the way a markdown renderer would, from the citing file's own
+// directory -- and fail on a missing or zero-byte target, so citation rot
+// fails the build the way pack drift already does (bead
+// `irrevers-33f1c145`).
+// ---------------------------------------------------------------------------
+
+/// Files whose path citations are historical record, not live pointers.
+///
+/// `notes/ideas-ledger.md` names proposals that were mostly killed and
+/// `notes/archive/` preserves audits of trees that no longer exist -- the
+/// same two the command-existence scans skip. `notes/
+/// bead-store-health-superseded.md` is the incident record of a script
+/// whose *deletion* is the note's subject: it cites
+/// `scripts/bead-starvation-unified-repair.sh` precisely because the path
+/// no longer exists. Every other document under docs/ plus README.md and
+/// AGENTS.md is held to the live tree.
+fn historical_record(relative: &str) -> bool {
+    relative.contains("ideas-ledger")
+        || relative.contains("notes/archive/")
+        || relative.contains("bead-store-health-superseded")
+}
+
+/// (repo-relative path, text) for every document the citation sweeps hold
+/// to the tree.
+fn cited_surfaces() -> Vec<(String, String)> {
+    let root = audited_checkout();
+    let mut files: Vec<PathBuf> = markdown_files(&root.join("docs"))
+        .into_iter()
+        .chain([root.join("README.md"), root.join("AGENTS.md")])
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .filter_map(|path| {
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            if historical_record(&relative) {
+                return None;
+            }
+            let text = fs::read_to_string(&path).ok()?;
+            Some((relative, text))
+        })
+        .collect()
+}
+
+/// (line, target) for every local reference a document makes: inline links
+/// and images (`[text](target)`, `![alt](target)`) and `<img src="...">` --
+/// the two reference forms these docs use. Matched over the whole text, not
+/// per line, so a link whose label wraps still parses; line numbers come
+/// from the match offset. Reference-style definitions (`[a]: b`) and
+/// percent-encoded targets do not occur in these docs; if either form
+/// lands, the sweep-total guards below stop passing and the parser gets
+/// extended, rather than a citation silently escaping the sweep.
+fn local_references(text: &str) -> Vec<(usize, String)> {
+    let mut line_starts = vec![0usize];
+    for (at, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            line_starts.push(at + 1);
+        }
+    }
+    let line_of = |offset: usize| line_starts.partition_point(|&start| start <= offset);
+
+    let mut found = Vec::new();
+    // `[label](target "title")` -- matched anywhere, so a wrapped label
+    // still parses. The target ends at the first ')' or whitespace, which
+    // is also where a following title begins.
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find("](") {
+        let open = from + rel + 2;
+        from = open;
+        let Some(close) = text[open..].find(')') else {
+            continue;
+        };
+        let raw = &text[open..open + close];
+        let target = raw.split_whitespace().next().unwrap_or_default();
+        if !target.is_empty() && !target.starts_with('"') && !target.starts_with('\'') {
+            found.push((line_of(open), target.to_owned()));
+        }
+        from = open + close;
+    }
+    // `<img ... src="...">` -- the README embeds its three figures this way,
+    // which the bracket form above cannot see.
+    let lowered = text.to_ascii_lowercase();
+    let mut scan = 0usize;
+    while let Some(rel) = lowered[scan..].find("src=") {
+        let at = scan + rel + "src=".len();
+        scan = at;
+        let Some(quote) = text[at..].chars().next() else {
+            continue;
+        };
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let Some(close) = text[at + 1..].find(quote) else {
+            continue;
+        };
+        found.push((line_of(at), text[at + 1..at + 1 + close].to_owned()));
+        scan = at + 1 + close;
+    }
+    found
+}
+
+/// Off-repository targets are someone else's availability problem, and a
+/// `#fragment` alone points at the citing document itself.
+fn is_local_reference(target: &str) -> bool {
+    if target.starts_with('#') || target.starts_with("//") {
+        return false;
+    }
+    match target.find(':') {
+        None => true,
+        Some(at) => {
+            let scheme = &target[..at];
+            let scheme_shaped = scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+            !scheme_shaped
+        }
+    }
+}
+
+/// (line, token) for every `<prefix><path>` citation in `text` -- prose or
+/// fenced, both are things a reader may type. The token run stops at the
+/// first character that cannot appear in a repo path, trailing sentence
+/// punctuation and directory slashes are trimmed, and a run embedded in a
+/// longer path (`xscripts/`, `a/scripts/`) is not a citation of the prefix.
+fn path_tokens(text: &str, prefix: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut from = 0usize;
+        while let Some(rel) = line[from..].find(prefix) {
+            let at = from + rel;
+            from = at + prefix.len();
+            if at > 0
+                && (bytes[at - 1].is_ascii_alphanumeric()
+                    || matches!(bytes[at - 1], b'_' | b'/' | b'-'))
+            {
+                continue;
+            }
+            let run: usize = line[at + prefix.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'))
+                .map(char::len_utf8)
+                .sum();
+            let token = line[at..at + prefix.len() + run]
+                .trim_end_matches(['.', ',', ';', ':', '!', '/'])
+                .to_owned();
+            if !token.is_empty() {
+                found.push((number + 1, token));
+            }
+        }
+    }
+    found
+}
+
+/// A target that exists must also carry what its extension declares -- the
+/// same signatures scripts/check-doc-assets checks. A zero-byte gif or a
+/// text file named .gif renders as a broken image, not as a working one.
+fn asset_matches_declared_type(path: &Path, bytes: &[u8]) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("gif") => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        Some("svg") => bytes[..bytes.len().min(1024)]
+            .to_ascii_lowercase()
+            .windows(b"<svg".len())
+            .any(|window| window == b"<svg"),
+        Some("sh") => bytes.starts_with(b"#!"),
+        _ => true,
+    }
+}
+
+/// Every relative reference in the live doc set must resolve to an existing,
+/// non-empty target, resolved from the citing file's own directory the way
+/// a markdown renderer resolves it.
+///
+/// docs/README.md's documentation map is the entry point the audit built the
+/// repo around -- if one of its ~46 links dies, a newcomer's first click is
+/// the thing that breaks, and nothing else in the tree would notice.
+#[test]
+fn docs_relative_references_resolve_to_existing_nonempty_targets() {
+    let root = audited_checkout();
+    let mut checked = 0usize;
+    let mut map_links = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+
+    for (relative, text) in cited_surfaces() {
+        let base = root
+            .join(&relative)
+            .parent()
+            .expect("a doc path always has a parent")
+            .to_path_buf();
+        for (line, target) in local_references(&text) {
+            if !is_local_reference(&target) {
+                continue;
+            }
+            // A bare fragment ("#section") is same-document and was skipped
+            // above; anything else keeps its path half.
+            let Some(path) = target.split('#').next().filter(|part| !part.is_empty()) else {
+                continue;
+            };
+            checked += 1;
+            if relative == "docs/README.md" {
+                map_links += 1;
+            }
+            let resolved = base.join(path);
+            if !resolved.exists() {
+                offenders.push(format!("{relative}:{line}: {target} -- missing"));
+            } else if resolved.is_file()
+                && fs::metadata(&resolved).map(|meta| meta.len()).unwrap_or(0) == 0
+            {
+                offenders.push(format!("{relative}:{line}: {target} -- zero bytes"));
+            }
+        }
+    }
+
+    assert!(
+        map_links >= 30,
+        "docs/README.md's documentation map should carry ~46 relative links, \
+         the parser found {map_links} -- the extraction has probably rotted"
+    );
+    assert!(
+        checked >= 150,
+        "the live docs should carry ~290 relative references, swept \
+         {checked} -- the parser has probably rotted into matching nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "{} doc citation(s) do not resolve:\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// Every `scripts/<path>` the live docs cite must exist in this tree and be
+/// non-empty.
+///
+/// The prose cites scripts in runnable positions -- "run
+/// `scripts/bench-check-latency`", "regenerate it with
+/// `vhs docs/assets/demo.tape`" -- so a renamed or deleted script leaves a
+/// documented procedure broken on every host at once. Nine distinct paths
+/// are cited today; the sweep must keep seeing them.
+#[test]
+fn cited_script_paths_exist_in_the_tree() {
+    let root = audited_checkout();
+    let mut cited: BTreeSet<String> = BTreeSet::new();
+    let mut offenders: Vec<String> = Vec::new();
+
+    for (relative, text) in cited_surfaces() {
+        for (line, token) in path_tokens(&text, "scripts/") {
+            cited.insert(token.clone());
+            let resolved = root.join(&token);
+            if !resolved.exists() {
+                offenders.push(format!("{relative}:{line}: {token} -- missing"));
+            } else if resolved.is_file()
+                && fs::metadata(&resolved).map(|meta| meta.len()).unwrap_or(0) == 0
+            {
+                offenders.push(format!("{relative}:{line}: {token} -- zero bytes"));
+            }
+        }
+    }
+
+    assert!(
+        cited.len() >= 6,
+        "the live docs should cite ~9 distinct scripts/ paths, found \
+         {cited:?} -- the token extractor has probably rotted"
+    );
+    assert!(
+        offenders.is_empty(),
+        "{} cited script path(s) do not resolve:\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// Every `docs/assets/<file>` the docs cite (and every bare `assets/<file>`
+/// a doc cites from inside docs/) must exist, be non-empty, and match the
+/// type its extension declares.
+///
+/// These are the binary surfaces the prose leans on -- the demo gif, the
+/// two figures, the demo script and its tape -- and they fail differently
+/// from text: a truncated upload or a failed regeneration leaves a file
+/// that exists but is not the thing its name promises, which is exactly how
+/// the previous demo gif went stale (irrevers-8c3bab0e).
+#[test]
+fn cited_asset_paths_exist_and_match_their_declared_type() {
+    let root = audited_checkout();
+    let mut cited: BTreeSet<String> = BTreeSet::new();
+    let mut offenders: Vec<String> = Vec::new();
+
+    for (relative, text) in cited_surfaces() {
+        // `docs/assets/...` is repo-relative from any citing file; a bare
+        // `assets/...` resolves from the citing file's own directory, as a
+        // renderer would resolve it.
+        let mut tokens = path_tokens(&text, "docs/assets/");
+        if relative.starts_with("docs/") {
+            tokens.extend(path_tokens(&text, "assets/"));
+        }
+        for (line, token) in tokens {
+            let resolved = if token.starts_with("docs/assets/") || !relative.starts_with("docs/") {
+                root.join(&token)
+            } else {
+                root.join(&relative).parent().unwrap().join(&token)
+            };
+            cited.insert(token.clone());
+            let where_ = format!("{relative}:{line}: {token}");
+            if !resolved.exists() {
+                offenders.push(format!("{where_} -- missing"));
+                continue;
+            }
+            // A directory citation (the docs index links `assets/` itself)
+            // only owes existence.
+            if !resolved.is_file() {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&resolved) else {
+                offenders.push(format!("{where_} -- unreadable"));
+                continue;
+            };
+            if bytes.is_empty() {
+                offenders.push(format!("{where_} -- zero bytes"));
+            } else if !asset_matches_declared_type(&resolved, &bytes) {
+                offenders.push(format!(
+                    "{where_} -- the extension declares a type the content is \
+                     not (a failed regeneration or a truncated write?)"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        cited.len() >= 4,
+        "the live docs should cite ~5 distinct docs/assets files (demo.gif, \
+         the two figures, demo.sh, demo.tape), found {cited:?} -- the token \
+         extractor has probably rotted"
+    );
+    assert!(
+        offenders.is_empty(),
+        "{} cited asset path(s) are missing, empty, or the wrong type:\n  {}",
+        offenders.len(),
+        offenders.join("\n  ")
+    );
+}
+
+/// The README's hero gif is regenerated by vhs from docs/assets/demo.tape,
+/// whose `Output` directive names the file the recording writes. Pin the
+/// triangle: the tape's Output must be exactly the gif the README embeds,
+/// that file must be a real GIF, and the tape must still name demo.sh as
+/// the source of the commands it plays. A renamed gif or a retargeted tape
+/// otherwise ships a dead hero image with every gate green -- the failure
+/// shape irrevers-8c3bab0e recorded for the previous generation.
+#[test]
+fn demo_tape_outputs_the_hero_image_the_readme_embeds() {
+    let tape = repo_relative("docs/assets/demo.tape");
+    let output = tape
+        .lines()
+        .find_map(|line| line.strip_prefix("Output "))
+        .expect("demo.tape should carry a vhs `Output` directive naming the gif it writes")
+        .trim();
+
+    let readme = repo_relative("README.md");
+    assert!(
+        readme.contains(&format!("src=\"{output}\"")),
+        "README should embed the gif the tape regenerates ({output:?}); the \
+         hero image and the recording's Output directive have drifted apart"
+    );
+
+    let gif = audited_checkout().join(output);
+    let bytes =
+        fs::read(&gif).unwrap_or_else(|error| panic!("should read {}: {error}", gif.display()));
+    assert!(
+        bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "{output} is the README's hero image and must be a real GIF; these \
+         bytes are not (a failed or partial vhs run?)"
+    );
+    assert!(
+        tape.contains("demo.sh"),
+        "demo.tape's header should keep naming demo.sh as the source of the \
+         commands the recording plays"
+    );
+}
+
+/// docs/README.md's map describes examples/README.md as "Twelve worked
+/// scenarios"; nothing held that count to the page. The `### Scenario N:`
+/// headings are the ground truth: they must number contiguously from 1,
+/// and the map's claim must quote their count in words.
+#[test]
+fn examples_scenario_count_matches_the_documented_claim() {
+    let examples = repo_relative("docs/examples/README.md");
+    let mut numbers: Vec<u32> = Vec::new();
+    for line in examples.lines() {
+        let Some(rest) = line.strip_prefix("### Scenario ") else {
+            continue;
+        };
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let number: u32 = digits
+            .parse()
+            .unwrap_or_else(|_| panic!("scenario heading {line:?} should carry a number"));
+        numbers.push(number);
+    }
+    assert!(
+        numbers.len() >= 10,
+        "examples/README.md should carry ~12 worked scenarios, found {} -- \
+         the heading extraction has probably rotted",
+        numbers.len()
+    );
+    numbers.sort_unstable();
+    numbers.dedup();
+    for (index, number) in numbers.iter().enumerate() {
+        assert_eq!(
+            *number,
+            index as u32 + 1,
+            "examples/README.md's scenario headings should number contiguously \
+             from 1; a gap means a scenario was added or removed without the \
+             count claims moving"
+        );
+    }
+
+    let map = repo_relative("docs/README.md");
+    let claim = format!("{} worked scenarios", count_word(numbers.len()));
+    assert!(
+        map.contains(&claim),
+        "docs/README.md's map should describe examples/README.md as \
+         {claim:?} -- the claim disagrees with the page's scenario headings"
+    );
 }
