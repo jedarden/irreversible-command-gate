@@ -4,7 +4,9 @@
   <desc id="d">An agent's tool call is intercepted by the harness PreToolUse hook and handed to
   icg, which dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded
   patterns, and returns one of four verdicts: allow, warning, rewrite, or deny. Only deny stops
-  the command.</desc>
+  the command. Evaluation is deterministic and does no network I/O, with one exception: before a
+  non-force git push, the engine runs a single live git ls-remote lookup, and any lookup error
+  fails open.</desc>
 
   <style>
     :root { color-scheme: light dark; }
@@ -69,7 +71,7 @@
   <!-- 3. engine -->
   <rect class="card" x="536" y="82" width="286" height="286" rx="10"/>
   <text class="t" x="556" y="112" font-size="15" font-weight="600">icg engine</text>
-  <text class="dim t" x="556" y="132" font-size="12">deterministic · no network I/O</text>
+  <text class="dim t" x="556" y="132" font-size="12">deterministic · no network I/O *</text>
   <line class="rule" x1="556" y1="146" x2="802" y2="146" stroke-width="1"/>
 
   <text class="dim m" x="556" y="172" font-size="11">1</text>
@@ -119,6 +121,11 @@
   <text class="dim t" x="876" y="382" font-size="11.5">Only DENY stops the</text>
   <text class="dim t" x="876" y="398" font-size="11.5">command. Every verdict</text>
   <text class="dim t" x="876" y="414" font-size="11.5">names the pack and rule.</text>
+
+  <!-- the exception, footnoted from the engine's "no network I/O" claim -->
+  <text class="dim t" x="24" y="404" font-size="11.5">* The one exception to "no network I/O": before a non-force</text>
+  <text class="dim t" x="24" y="422" font-size="11.5">git push, git-stale-remote-head-push runs a single live</text>
+  <text class="dim t" x="24" y="440" font-size="11.5">git ls-remote lookup; any lookup error fails open.</text>
 
   <!-- footer -->
   <line class="rule" x1="24" y1="470" x2="500" y2="470" stroke-width="1"/>

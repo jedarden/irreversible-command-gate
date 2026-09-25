@@ -23,7 +23,7 @@ supply it). Reproduce it with [`docs/assets/demo.sh`](docs/assets/demo.sh).</sub
 
 <p align="center">
   <img src="docs/assets/icg-flow.svg"
-       alt="An agent's tool call goes to the harness PreToolUse hook, which hands it to icg. icg dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded patterns, and returns allow, warning, rewrite, or deny. Rule packs live root-owned in /etc/icg/packs. Only deny stops the command."
+       alt="An agent's tool call goes to the harness PreToolUse hook, which hands it to icg. icg dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded patterns, and returns allow, warning, rewrite, or deny. Rule packs live root-owned in /etc/icg/packs. Only deny stops the command. Evaluation is deterministic and does no network I/O, with one exception: before a non-force git push, the engine runs a single live git ls-remote lookup, and any lookup error fails open."
        width="1000">
 </p>
 

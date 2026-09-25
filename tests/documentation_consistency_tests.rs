@@ -1633,6 +1633,115 @@ fn no_network_claims_name_the_stale_remote_head_exception() {
     }
 }
 
+/// The architecture figure must not contradict the no-network boundary note
+/// (bead `irrevers-a02dc12f`).
+///
+/// `docs/assets/icg-flow.svg` carried the guarantee absolutely --
+/// "deterministic · no network I/O", at the exact spot a reader sizes what
+/// an evaluation may touch -- while the shipped `git-stale-remote-head-push`
+/// rule runs a live `git ls-remote` before every non-force `git push`, the
+/// exception `no_network_claims_name_the_stale_remote_head_exception` above
+/// already holds the prose to. A figure is prose's most-quoted surface and
+/// no markdown needle reaches inside an SVG, so this guard applies the same
+/// rule to every figure the docs ship -- state the claim, name the exception
+/// -- and then pins the figure's acknowledgment to the exception's three
+/// documented parts: the single live lookup, its non-force-push gate, and
+/// its fail-open error handling. The figure's `<desc>` and README's `alt`
+/// for the same `<img>` are the alt text a non-visual reader gets, so both
+/// must carry the exception too, not just the rendered shapes.
+#[test]
+fn flow_diagram_states_the_network_exception_with_its_claim() {
+    let claim_needles = ["no network i/o", "no network io"];
+    let names_the_exception = |text: &str| {
+        let lowered = text.to_ascii_lowercase();
+        lowered.contains("stale-remote-head") || lowered.contains("ls-remote")
+    };
+
+    // Sweep every SVG the docs ship, so a second diagram stating the claim
+    // absolutely fails here rather than shipping.
+    let assets = audited_checkout().join("docs/assets");
+    let mut swept = 0usize;
+    let mut entries: Vec<PathBuf> = fs::read_dir(&assets)
+        .unwrap_or_else(|error| panic!("should list {}: {error}", assets.display()))
+        .map(|entry| entry.expect("asset entry should stat").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("svg") {
+            continue;
+        }
+        swept += 1;
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("should read {}: {error}", path.display()));
+        let lowered = flattened(&text).to_ascii_lowercase();
+        for needle in claim_needles {
+            assert!(
+                !lowered.contains(needle) || names_the_exception(&text),
+                "{} states the no-network guarantee ({needle}) without naming \
+                 its one exception -- the stale-remote-head lookup before a \
+                 non-force `git push`, documented in \
+                 docs/notes/no-network-boundary.md",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        swept > 0,
+        "the figure sweep should have found SVGs under docs/assets; the \
+         extension filter has probably rotted"
+    );
+
+    // The flow figure's acknowledgment must keep naming all three documented
+    // parts of the exception, not merely dodge the claim needles.
+    let flow = repo_relative("docs/assets/icg-flow.svg");
+    let flat = flattened(&flow);
+    for marker in ["ls-remote", "single", "non-force", "fails open"] {
+        assert!(
+            flat.contains(marker),
+            "icg-flow.svg's no-network footnote must keep naming {marker}: \
+             the single live lookup, its non-force-push gate, and its \
+             fail-open error handling are the exception as documented"
+        );
+    }
+
+    // The figure's own alt text -- its <desc> -- carries the exception too.
+    assert!(
+        names_the_exception(&svg_desc(&flow)),
+        "icg-flow.svg's <desc> is the alt text a screen reader gets; it must \
+         name the stale-remote-head exception like the rendered figure does"
+    );
+
+    // ...and so must README's alt attribute for the same <img>, which
+    // duplicates the desc outside the SVG file.
+    let readme = repo_relative("README.md");
+    let Some((_, after_src)) = readme.split_once("icg-flow.svg") else {
+        panic!("README.md should keep embedding docs/assets/icg-flow.svg");
+    };
+    let Some((_, alt)) = after_src.split_once("alt=\"") else {
+        panic!("README's icg-flow.svg <img> should carry alt text");
+    };
+    let alt = alt
+        .split('"')
+        .next()
+        .expect("alt text should close its quote");
+    assert!(
+        !alt.is_empty() && names_the_exception(alt),
+        "README's alt text for icg-flow.svg must keep naming the \
+         stale-remote-head exception, matching the figure it describes"
+    );
+}
+
+/// The contents of an SVG's `<desc>` element -- the alt text the file itself
+/// carries for non-visual readers.
+fn svg_desc(svg: &str) -> String {
+    let (_, rest) = svg
+        .split_once("<desc")
+        .expect("the figure should carry a <desc> element as its alt text");
+    let (_, body) = rest.split_once('>').expect("the <desc> should open");
+    let (body, _) = body.split_once("</desc>").expect("the <desc> should close");
+    body.to_owned()
+}
+
 // ---------------------------------------------------------------------------
 // plan.md release/status claims vs committed ground truth.
 //
