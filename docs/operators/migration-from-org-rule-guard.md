@@ -515,7 +515,8 @@ echo "$PAYLOAD" | /usr/local/bin/icg hook
 # Measure overhead
 time echo '{"name":"bash","input":{"command":"vault status"}}' | /usr/local/bin/icg hook
 
-# If >10ms, check rule pack complexity
+# If consistently well above the ~20 ms warm baseline, check rule pack
+# complexity (baseline record: docs/notes/check-latency-benchmark.md)
 cat /etc/icg/rule-pack.json | jq '.packs | length'
 
 # Consider disabling unused rule packs (if supported)

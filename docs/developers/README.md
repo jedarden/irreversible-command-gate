@@ -716,11 +716,14 @@ ln -sf "$BIN" /tmp/vault
 
 ### Performance Testing
 
-Measure evaluation latency:
+Measure check latency — there is no bench target; the benchmark is a script
+that times whole `icg check` processes:
 
 ```bash
-# Benchmark evaluation
-cargo bench --bench evaluation
+# Warm-cache latency: percentiles per case plus the environment record
+scripts/bench-check-latency
+# Method and the measured baseline record:
+#   docs/notes/check-latency-benchmark.md
 
 # Profile hot paths
 cargo flamegraph --bin icg -- check \

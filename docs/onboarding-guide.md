@@ -607,7 +607,9 @@ Found a gap in the documentation?
 
 **Q: Will icg slow down my workflow?**
 
-A: A non-push check adds single-digit milliseconds on a warm cache and never
+A: A non-push check adds ~15–20 ms on a warm cache (measured; reproduce with
+`scripts/bench-check-latency`, record in the
+[benchmark note](notes/check-latency-benchmark.md)) and never
 touches the network. The one exception is a non-force `git push`: before it
 is judged, the `git-stale-remote-head-push` rule runs a single `git ls-remote`
 lookup against the push's upstream, and any lookup error fails open and lets

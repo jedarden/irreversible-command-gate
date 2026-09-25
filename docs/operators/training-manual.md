@@ -644,12 +644,17 @@ icg status --denials --since 90d --pattern-summary
 ```
 
 There is no `icg benchmark`. To measure what the guard costs a tool call,
-time the real thing — a check is a few milliseconds on a warm cache, and
-the number you want is your own hardware's:
+time the real thing — a check costs ~15–20 ms on a warm cache on the
+reference environment, and the number you want is your own hardware's:
 
 ```bash
 time (for _ in $(seq 100); do icg check --command "git status" >/dev/null; done)
 ```
+
+For percentiles, an environment record, and the baseline this repo stands
+behind, run `scripts/bench-check-latency` from a checkout — method and
+measured record:
+[the check-latency benchmark note](../notes/check-latency-benchmark.md).
 
 ### Log Rotation
 
@@ -1064,8 +1069,10 @@ Measure it rather than trusting a number from this page:
 time (for _ in $(seq 100); do icg check --command "git status" >/dev/null; done)
 ```
 
-A check costs single-digit milliseconds on a warm page cache. If it is
-slower than that, the cause is almost always one of:
+A check costs ~15–20 ms on a warm page cache on the reference environment
+(benchmark record:
+[check-latency-benchmark.md](../notes/check-latency-benchmark.md)). If it is
+well above that, the cause is almost always one of:
 
 - **A pathological regex.** `icg redos-check <pack>` finds catastrophic
   backtracking; it is a gate in CI for exactly this reason.

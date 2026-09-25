@@ -64,8 +64,13 @@ wedged agent fleet is not.
 A graduated [fail-closed policy](docs/operators/fail-closed-mode.md) exists
 for once a release has proven itself.
 
-Median cost of a check on a warm cache: **~10 ms**. A non-force `git push`
-additionally waits on the stale-remote-head lookup's one network round trip.
+Median cost of a check on a warm cache: **~15–20 ms** on the reference
+environment, measured and reproducible —
+[`scripts/bench-check-latency`](scripts/bench-check-latency), record and
+method in the
+[check-latency benchmark note](docs/notes/check-latency-benchmark.md).
+A non-force `git push` additionally waits on the stale-remote-head lookup's
+one network round trip.
 
 ## Try it in a minute
 
