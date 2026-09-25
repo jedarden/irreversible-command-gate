@@ -17,6 +17,13 @@
 //! double-denies too. Rule 5 (credential values) is only partially absorbed (Bash channel
 //! only). Rules 1 (.github/workflows) and 2 (kind:Job/CronJob) are now absorbed by icg as
 //! well (see coexistence_scope_limited_to_rule_3_overlap_only).
+//!
+//! Retiring rule 4 from the legacy hook is gated on DEPLOYED parity, not on the pack
+//! shipping: docs/operators/rule-4-parity-gate.md defines the gate and
+//! scripts/rule-4-parity-gate.sh runs it against a host's live hooks. Until it passes on
+//! a host, that host's legacy hook keeps denying, and the assertions here keep describing
+//! coexistence rather than the post-retirement rump — the rump edits land in the same
+//! commit as the removal, or not at all.
 
 use icg::engine::{CheckResult, ContentSource, Engine, InputSource, PreToolUseInput, ToolInput};
 use icg::github_workflows::UNGUARDED_PATHS as WORKFLOWS_LOOKALIKE_PATHS;

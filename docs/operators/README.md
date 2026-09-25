@@ -12,6 +12,7 @@ deny, rewrite, warning, or allow decision before the call executes.
 - Observing would-be denials safely: [Practice mode](practice-mode.md)
 - Guarding a harness without a native hook: [PATH-wrapper fallback](path-wrapper-fallback.md)
 - Moving from the existing Python hook: [Migration guide](migration-from-org-rule-guard.md)
+- Retiring the legacy kubectl rule: [Rule 4 parity gate](rule-4-parity-gate.md)
 - Interpreting a denial: [Deny-message guide](deny-messages.md)
 
 ## Capability status in the current tree

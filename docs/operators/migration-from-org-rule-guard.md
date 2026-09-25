@@ -49,6 +49,17 @@ icg supersedes most of these rules and adds new coverage:
   during coexistence)
 - org-rule-guard.py still solely owns the Write/Edit credential rule
 
+Retiring the legacy kubectl rule from a host is gated, not automatic: the
+host's **deployed** stack must pass the parity gate first
+([rule-4-parity-gate.md](rule-4-parity-gate.md), run by
+`scripts/rule-4-parity-gate.sh`). Code parity in this repository is not
+enough — the registered hook front-end loads packs only from the host's
+deployed pack directory, so on a host whose deployment predates the
+kubectl pack (codinghome as of 2026-09-25: trust pointer v0.1.61, ten
+deployed packs, the kubectl pack not among them) the gate fails and
+org-rule-guard.py rule 4 stays in force as the only mechanical enforcement
+of the deny surface.
+
 **Phase 3: Deprecation** (Future)
 - org-rule-guard.py reduced to the Write/Edit credential rule until icg
   covers that channel

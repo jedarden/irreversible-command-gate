@@ -100,6 +100,30 @@ decisions, and cohort convergence before resuming operations. If the previous
 artifact is unavailable, use the approved backup and deployment mechanism, not
 an ad-hoc file edit.
 
+## Restoring a retired legacy rule (org-rule-guard rule 4)
+
+The release-rollback path above reverts icg's rule pack; it cannot restore
+a rule that has been retired from the legacy Python hook. The two rollbacks
+are therefore coupled: while `org-rule-guard.py` rule 4 (the blanket
+kubectl-mutation block) is retired, a kubectl-pack rollback — or any pack
+regression that narrows kubectl coverage — leaves mutating kubectl commands
+with no mechanical enforcement on the host until the pack is restored.
+
+[ADR-001](../adr/001-kubectl-mutation-pack.md) authorizes the retirement
+only after the parity gate in
+[docs/operators/rule-4-parity-gate.md](../operators/rule-4-parity-gate.md)
+passes against the host's deployed stack, and the retirement procedure
+there begins by backing the hook up. If a kubectl-pack rollback happens
+while the legacy rule is retired:
+
+1. Restore the pre-retirement `org-rule-guard.py` from the backup recorded
+   in the retirement evidence (same practice as the `.bak-*` files already
+   in `~/.claude/hooks/`).
+2. Verify the restored rule denies a delete-class probe and allows a
+   read-only probe.
+3. Re-run `scripts/rule-4-parity-gate.sh` once the pack is restored; only a
+   passing gate authorizes retiring the legacy rule again.
+
 ## Contain and investigate the triggering release
 
 Quarantine the triggering tag/reference so it cannot be promoted again. Keep
