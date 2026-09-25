@@ -2389,7 +2389,11 @@ fn plan_bead_status_claims_match_the_bead_checkpoint() {
 // revised the claim to the measured ~15–20 ms -- and missed the repo's own
 // front-page showcase: docs/assets/demo.sh kept printing "~10 ms per check"
 // into docs/assets/icg-demo.gif, so the GIF contradicted the README headline
-// until 2026-09-25 (bead `irrevers-25075873`). The guards below parse the
+// until 2026-09-25 (bead `irrevers-25075873`). The next miss was a surface
+// the markdown sweep cannot see at all: README embeds docs/assets/icg-flow.svg
+// as an <img>, and its footer kept "~10 ms per check" past both fixes (bead
+// `irrevers-f10cfae4`) -- an SVG is text, so the guard simply has to read it.
+// The guards below parse the
 // measured range out of the note's Result section and hold every quoting
 // surface to it, so the note's closing rule -- re-measure, then "update any
 // doc quoting the old range in the same commit" -- is enforced by a failing
@@ -2487,10 +2491,14 @@ fn benchmark_recorded_range() -> String {
 fn latency_figures_match_the_recorded_benchmark() {
     let range = benchmark_recorded_range();
 
-    // The two surfaces the claim lives on -- the README headline and the
-    // demo banner the GIF renders -- must keep quoting the record, not
-    // merely avoid a stale figure.
-    for doc in ["README.md", "docs/assets/demo.sh"] {
+    // The surfaces the claim lives on -- the README headline, the demo
+    // banner the GIF renders, and the architecture figure's footer -- must
+    // keep quoting the record, not merely avoid a stale figure.
+    for doc in [
+        "README.md",
+        "docs/assets/demo.sh",
+        "docs/assets/icg-flow.svg",
+    ] {
         let text = repo_relative(doc);
         assert!(
             text.contains(&range),
@@ -2526,6 +2534,33 @@ fn latency_figures_match_the_recorded_benchmark() {
         if relative.contains("ideas-ledger") || relative.contains("notes/archive/") {
             continue;
         }
+        if let Ok(text) = fs::read_to_string(&path) {
+            surfaces.push((relative, text));
+        }
+    }
+
+    // The figures are surfaces too: README embeds icg-flow.svg as an <img>,
+    // not as markdown, so a stale figure inside it is invisible to the sweep
+    // above -- exactly how the footer slipped. SVGs are text; the same
+    // tilde-figure scan applies to them.
+    let assets = root.join("docs/assets");
+    let mut svg_entries: Vec<PathBuf> = fs::read_dir(&assets)
+        .unwrap_or_else(|error| panic!("should list {}: {error}", assets.display()))
+        .map(|entry| entry.expect("asset entry should stat").path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("svg"))
+        .collect();
+    svg_entries.sort();
+    assert!(
+        !svg_entries.is_empty(),
+        "the figure sweep should have found SVGs under docs/assets; the \
+         extension filter has probably rotted"
+    );
+    for path in svg_entries {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
         if let Ok(text) = fs::read_to_string(&path) {
             surfaces.push((relative, text));
         }

@@ -130,5 +130,5 @@
   <!-- footer -->
   <line class="rule" x1="24" y1="470" x2="500" y2="470" stroke-width="1"/>
   <text class="dim t" x="24" y="496" font-size="12">A backstop for an honest, fallible agent — not a boundary</text>
-  <text class="dim t" x="24" y="514" font-size="12">against a hostile one. ~10 ms per check.</text>
+  <text class="dim t" x="24" y="514" font-size="12">against a hostile one. Warm-cache check: ~15–20 ms median, gated under 50 ms.</text>
 </svg>
