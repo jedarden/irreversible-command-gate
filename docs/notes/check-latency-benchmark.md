@@ -116,15 +116,35 @@ different machine class, stays operator-invoked: the number to compare
 against is this note's measured record **from a comparable machine and
 load** — a busy 2-vCPU runner will not reproduce a 16-core desktop's tail.
 
-Still deliberately **not** wired into `cargo test` or the shared-runner
-CI: this suite runs a dev-profile binary (the wrong thing to time), CI
-runners' timings are foreign to this record, and the fleet auto-reopens
-beads on red gates — an absolute-time assertion in either is a flake
-generator. The timing-sensitive work stays in this script. A smoke test
-(`tests/check_latency_benchmark_tests.rs`) pins the script's mechanics —
+Still deliberately **not** wired into `cargo test`: this suite runs a
+dev-profile binary (the wrong thing to time), and the fleet auto-reopens
+beads on red gates — an absolute-time assertion in the unit suite is a
+flake generator. The timing-sensitive work stays in this script. A smoke
+test (`tests/check_latency_benchmark_tests.rs`) pins the script's mechanics —
 JSON shape, verdict verification, and that the `--assert-under` gate fails
 closed — plus the DoD wiring itself, so neither the tool nor its gate can
 silently rot.
+
+**CI wiring (2026-09-25, bead `irrevers-4e6b05b0`).** The paragraph above
+used to exempt the shared-runner CI as well, on the reasoning that CI
+runners' timings are foreign to this record. That half is now revised, in
+the order it prescribed: every push to main runs this bench in icg-ci's
+build-and-release stage, on the release profile and the shipped pack set
+(`--pack <checkout>/packs --cwd /tmp`), **advisory** — the run reports its
+p50s into the workflow log and fails nothing, because no iad-ci runner p50
+range is on record yet. The stage takes a `bench-budget-ms` parameter
+(default `0`): setting it to a millisecond value passes it to
+`--assert-under` and makes a breach — or a bench that cannot run at all —
+fail the build. The flip is deliberately left for a follow-up with the
+advisory runs' numbers in hand: pick the budget from what the runner
+actually measures (the DoD's 50 ms is the candidate if the runner clears
+it as comfortably as the reference box does), then lean on the same
+flake-resistance argument that lets 50 ms stand here — a *median* only
+moves under a sustained multi-fold slowdown, whatever the machine. Until
+then, an advisory bench that fails (the executor image ships no python3,
+so the stage installs it per-run; a broken release build) prints a loud
+warning in the run log and leaves the run green — going unmeasured is the
+current normal, not an alarm.
 
 When the record here is stale (new packs, new engine, new reference
 hardware), re-run the canonical command, update this note with the new table

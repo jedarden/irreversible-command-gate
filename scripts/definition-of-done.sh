@@ -159,8 +159,10 @@ run scripts/check-doc-assets
 # shipped pack set is pinned (--pack + --cwd /tmp, the note's canonical
 # run) so the gate measures what README claims, not whatever /etc/icg/packs
 # happens to hold on the box running the gate. Deliberately absent from
-# cargo test and the shared-runner CI — the same absolute-time-assertion
-# reasoning, recorded in the note. Skipped, loudly, when the release build
+# cargo test — the same absolute-time-assertion reasoning, recorded in the
+# note; icg-ci runs the same bench on every push, advisory until the
+# runner's own p50 range sets the CI budget (the note's CI-wiring
+# paragraph). Skipped, loudly, when the release build
 # itself fails: benchmarking the previous tree's stale binary would gate
 # nothing.
 run cargo build --release

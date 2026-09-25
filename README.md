@@ -72,7 +72,10 @@ method in the
 That note's budget is enforced, not aspirational: the repo's
 [definition of done](scripts/definition-of-done.sh) builds the release
 binary and fails if a warm-cache p50 reaches **50 ms** on the shipped pack
-set — a rot gate at roughly 3× the measured median, not a tail SLA.
+set — a rot gate at roughly 3× the measured median, not a tail SLA. And the
+figure is re-measured, not just re-quoted: CI (icg-ci) runs the same bench
+on every push to main — advisory today, gated at the DoD budget once the
+CI runner's own p50 range is on record.
 A non-force `git push` additionally waits on the stale-remote-head lookup's
 one network round trip.
 
