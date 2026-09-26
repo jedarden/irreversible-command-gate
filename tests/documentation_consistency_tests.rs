@@ -3247,6 +3247,454 @@ fn evaluation_figure_repro_command_produces_the_rendered_trace() {
     }
 }
 
+/// One pattern line of a `--debug` trace block: the pattern id and the
+/// status the engine printed for it ("MATCH", "NO MATCH", "SKIPPED
+/// (disabled)", "SKIPPED (verified override)").
+struct TracePatternRow {
+    id: String,
+    status: String,
+}
+
+impl TracePatternRow {
+    fn matched(&self) -> bool {
+        self.status == "MATCH"
+    }
+}
+
+/// One `Pack dispatched:` block of the trace: the input it was handed and
+/// its safe/guarded pattern rows in trace order.
+struct TracePackBlock {
+    input: String,
+    safe: Vec<TracePatternRow>,
+    guarded: Vec<TracePatternRow>,
+}
+
+/// The parsed `--debug` trace: one block per dispatched pack and the
+/// final-verdict line. The renderer walks a sorted set of packs, so block
+/// order carries no meaning; every structural claim below is per pack.
+struct DebugTrace {
+    blocks: BTreeMap<String, TracePackBlock>,
+    final_verdict: String,
+}
+
+/// The status half of one indented pattern line --
+/// `  <id>: NO MATCH (check: command regex "…")` -- or `None` for the
+/// section's `(none)` placeholder and anything else that is not a row.
+fn trace_pattern_row(trimmed: &str) -> Option<TracePatternRow> {
+    let (id, rest) = trimmed.split_once(": ")?;
+    let status = rest
+        .split(" (check:")
+        .next()
+        .unwrap_or(rest)
+        .trim()
+        .to_owned();
+    Some(TracePatternRow {
+        id: id.to_owned(),
+        status,
+    })
+}
+
+fn parse_debug_trace(trace: &str) -> DebugTrace {
+    #[derive(PartialEq)]
+    enum Section {
+        Off,
+        Safe,
+        Guarded,
+    }
+
+    let mut blocks: BTreeMap<String, TracePackBlock> = BTreeMap::new();
+    let mut final_verdict = String::new();
+    let mut current: Option<(String, TracePackBlock)> = None;
+    let mut section = Section::Off;
+
+    let mut flush = |current: &mut Option<(String, TracePackBlock)>| {
+        if let Some((id, block)) = current.take() {
+            blocks.insert(id, block);
+        }
+    };
+
+    for line in trace.lines() {
+        if let Some(rest) = line.strip_prefix("Pack dispatched: ") {
+            flush(&mut current);
+            section = Section::Off;
+            if rest == "none" {
+                continue;
+            }
+            let (id, input) = rest
+                .split_once(" (input: ")
+                .unwrap_or_else(|| panic!("malformed dispatch line {line:?}"));
+            current = Some((
+                id.to_owned(),
+                TracePackBlock {
+                    input: input.trim_end_matches(')').to_owned(),
+                    safe: Vec::new(),
+                    guarded: Vec::new(),
+                },
+            ));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Final verdict: ") {
+            flush(&mut current);
+            final_verdict = rest.to_owned();
+            continue;
+        }
+        let Some((_, block)) = current.as_mut() else {
+            continue;
+        };
+        match line.trim() {
+            "Safe patterns checked:" => {
+                section = Section::Safe;
+                continue;
+            }
+            "Guarded patterns checked:" => {
+                section = Section::Guarded;
+                continue;
+            }
+            _ => {}
+        }
+        let Some(row) = trace_pattern_row(line.trim()) else {
+            continue;
+        };
+        match section {
+            Section::Safe => block.safe.push(row),
+            Section::Guarded => block.guarded.push(row),
+            Section::Off => {}
+        }
+    }
+    flush(&mut current);
+
+    assert!(
+        !blocks.is_empty(),
+        "the --debug trace yielded no dispatched pack blocks -- the parser \
+         has probably rotted:\n{trace}"
+    );
+    assert!(
+        !final_verdict.is_empty(),
+        "the --debug trace carries no 'Final verdict:' line -- the parser \
+         has probably rotted:\n{trace}"
+    );
+    DebugTrace {
+        blocks,
+        final_verdict,
+    }
+}
+
+/// `tool_keywords` of every pack shipped under packs/, keyed by pack id --
+/// the dispatch surface the figure's "dispatched to rule packs by tool
+/// keyword" claim is about.
+fn shipped_pack_keywords() -> BTreeMap<String, Vec<String>> {
+    let dir = shipped_packs_dir();
+    let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap_or_else(|error| panic!("should list {}: {error}", dir.display()))
+        .map(|entry| entry.expect("packs/ entry should read").path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    entries.sort();
+
+    let mut map = BTreeMap::new();
+    for path in entries {
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("should read {}: {error}", path.display()));
+        let pack: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|error| panic!("{path:?}: {error}"));
+        let id = pack["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{path:?}: every shipped pack should carry an id"))
+            .to_owned();
+        let keywords = pack["tool_keywords"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        map.insert(id, keywords);
+    }
+    assert!(
+        !map.is_empty(),
+        "packs/ should ship at least one pack -- the keyword surface the \
+         figure's dispatch claim rests on"
+    );
+    map
+}
+
+/// The pack the figure's `<desc>` names as the sole claimant: "…dispatched
+/// to rule packs by tool keyword; only the openbao pack claims it."
+fn desc_stated_claimant(desc: &str) -> String {
+    let flat = flattened(desc);
+    let (_, rest) = flat.split_once("only the ").expect(
+        "the figure's <desc> should keep stating that only one pack claims \
+         the command",
+    );
+    let (claimant, _) = rest
+        .split_once(" pack claims it")
+        .expect("the <desc>'s claiming-pack sentence should keep its shape");
+    claimant.to_owned()
+}
+
+/// (id, rendered outcome) for every pattern row the evaluation figure
+/// renders whose id starts with `prefix` -- `safe-` for the safe walk,
+/// `openbao-` for the guarded walk. A row is a `<text>` element whose whole
+/// content is the id, immediately followed by the `<text>` carrying its
+/// outcome ("no match", "MATCH", "not reached"); document order is the
+/// visual walk order.
+fn figure_pattern_rows(svg: &str, prefix: &str) -> Vec<(String, String)> {
+    let needle = format!(">{prefix}");
+    let mut rows = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = svg[from..].find(&needle) {
+        let id_start = from + rel + 1;
+        let id_len = svg[id_start..]
+            .find('<')
+            .unwrap_or_else(|| panic!("the {prefix} row's id text element should close"));
+        let id = svg[id_start..id_start + id_len].to_owned();
+        let cursor = id_start + id_len;
+        let open = cursor
+            + svg[cursor..].find("<text").unwrap_or_else(|| {
+                panic!("the {prefix} row {id} should be followed by its outcome text element")
+            });
+        let content_start = open
+            + svg[open..]
+                .find('>')
+                .unwrap_or_else(|| panic!("the outcome text element should open"))
+            + 1;
+        let close = svg[content_start..]
+            .find('<')
+            .unwrap_or_else(|| panic!("the outcome text element should close"));
+        let end = content_start + close;
+        rows.push((id, svg[content_start..end].trim().to_owned()));
+        from = end;
+    }
+    rows
+}
+
+/// The (pack, pattern) attribution the figure's verdict step renders:
+/// `permissionDecision: "deny"  ·  [pack=openbao,
+/// pattern=openbao-destructive-verb]`.
+fn figure_verdict_attribution(svg: &str) -> (String, String) {
+    let (_, rest) = svg.split_once("[pack=").expect(
+        "the figure's verdict step should keep rendering a [pack=…] \
+         attribution",
+    );
+    let (pack, rest) = rest
+        .split_once(", pattern=")
+        .expect("the attribution should carry the pattern half");
+    let pattern = rest
+        .split(']')
+        .next()
+        .expect("the attribution should close its bracket");
+    (pack.to_owned(), pattern.to_owned())
+}
+
+/// The figure narrates a *structure*, not just a verdict: dispatched to
+/// rule packs by tool keyword with one claiming pack; that pack's safe
+/// patterns tried first, every one missing; the guarded walk missing first
+/// and matching second on the rule whose deny channel becomes the verdict.
+/// The pins above hold the individual claims (the verdict, every safe id
+/// NO MATCH, the stdout attribution) and `guarded_patterns[1]` in the pack
+/// JSON -- none of them holds the walk itself to the real trace, so a pack
+/// edit that reorders guarded patterns or changes the safe-pattern count
+/// could falsify the animation and its `<desc>` while every per-claim pin
+/// stayed green (swapping pack positions 0 and 1, for one, leaves the
+/// winner at index 1). This test reads each value the figure states and
+/// holds it to the `--debug` trace of the figure's own repro command.
+#[test]
+fn evaluation_figure_narrated_structure_matches_the_debug_trace() {
+    let svg = repo_relative("docs/assets/icg-evaluation.svg");
+    let flat = flattened(&svg);
+
+    // The values the figure states.
+    let claimant = desc_stated_claimant(&svg_desc(&svg));
+    let stated_count = stated_safe_pattern_count(&flat);
+    let safe_walk = figure_pattern_rows(&svg, "safe-");
+    let guarded_walk = figure_pattern_rows(&svg, "openbao-");
+    let (verdict_pack, verdict_pattern) = figure_verdict_attribution(&svg);
+
+    assert_eq!(
+        claimant, verdict_pack,
+        "the figure's <desc> and its verdict step disagree about which pack \
+         decides the command"
+    );
+    let mut winners = guarded_walk
+        .iter()
+        .filter(|(_, outcome)| outcome == "MATCH")
+        .map(|(id, _)| id.as_str());
+    let winner = winners
+        .next()
+        .expect("the figure should render exactly one guarded MATCH row");
+    assert!(
+        winners.next().is_none(),
+        "the figure renders more than one guarded MATCH row -- \
+         first-match-wins means a single walkthrough can only have one"
+    );
+    assert_eq!(
+        winner, verdict_pattern,
+        "the figure's matched guarded row and its verdict attribution name \
+         different rules"
+    );
+
+    // The repro command the figure pins (the test above holds it to be a
+    // demo command carrying --debug; this one runs it).
+    const REPRO_MARKER: &str = "Reproduce this trace: icg check --command \"";
+    let Some((_, rest)) = flat.split_once(REPRO_MARKER) else {
+        panic!(
+            "icg-evaluation.svg should keep pinning its repro command as \
+             'Reproduce this trace: icg check --command \"…\" --debug'"
+        );
+    };
+    let command = rest
+        .split('"')
+        .next()
+        .expect("the repro command should close its quote");
+
+    // The real trace.
+    let (stdout, stderr) = check_demo_command(command, &["--debug"]);
+    let trace = parse_debug_trace(&stderr);
+    let claimed = trace.blocks.get(&claimant).unwrap_or_else(|| {
+        panic!(
+            "the trace never dispatches {claimant}, the pack the figure \
+                 names as the only claimant:\n{stderr}"
+        )
+    });
+    assert_eq!(
+        claimed.input, command,
+        "the claiming pack should be dispatched with the figure's own repro \
+         command, not a segmentation of it:\n{stderr}"
+    );
+
+    // 1. The claiming pack. Unconditional packs (no tool_keywords) are
+    //    dispatched for every command and claim nothing; every keyword pack
+    //    the trace dispatches for this command is a second claimant, and
+    //    the figure says there is exactly one.
+    let shipped = shipped_pack_keywords();
+    for id in trace.blocks.keys() {
+        let keywords = shipped.get(id).unwrap_or_else(|| {
+            panic!(
+                "the trace dispatches {id}, which no pack under packs/ \
+                 ships:\n{stderr}"
+            )
+        });
+        assert!(
+            keywords.is_empty() || id == &claimant,
+            "the trace dispatches {id} by tool keyword for the figure's \
+             repro command, but the figure says only {claimant} claims it -- \
+             a second claimant falsifies the walkthrough:\n{stderr}"
+        );
+    }
+    let claimant_keywords = &shipped[&claimant];
+    assert!(
+        !claimant_keywords.is_empty(),
+        "the figure names {claimant} as claiming the command by tool \
+         keyword, but the shipped pack declares no tool_keywords"
+    );
+    let first_token = command.split_whitespace().next().unwrap_or_default();
+    assert!(
+        claimant_keywords
+            .iter()
+            .any(|keyword| first_token.starts_with(keyword.as_str())),
+        "the figure's claimant {claimant} reaches the command by tool \
+         keyword, but none of {claimant_keywords:?} matches the command's \
+         first word {first_token:?}:\n{stderr}"
+    );
+
+    // 2. The safe-pattern walk: the trace must check exactly the rows the
+    //    figure renders, in the rendered order, in the stated count, and
+    //    none of them may match -- the desc says they are "tried first and
+    //    none match".
+    assert_eq!(
+        claimed.safe.len(),
+        stated_count,
+        "the trace checks {} safe pattern(s) for {claimant}, but the figure \
+         states {} -- the count moved without the walkthrough:\n{stderr}",
+        claimed.safe.len(),
+        stated_count
+    );
+    let rendered_safe_ids: Vec<&str> = safe_walk.iter().map(|(id, _)| id.as_str()).collect();
+    let traced_safe_ids: Vec<&str> = claimed.safe.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(
+        rendered_safe_ids, traced_safe_ids,
+        "the figure's safe-pattern walkthrough must match the trace's check \
+         order exactly -- a reorder, rename or omission invalidates the \
+         animation:\n{stderr}"
+    );
+    for row in &claimed.safe {
+        assert!(
+            !row.matched(),
+            "the figure claims every safe pattern misses for its repro \
+             command, but {} came back {}:\n{stderr}",
+            row.id,
+            row.status
+        );
+    }
+
+    // 3. The guarded walk: the figure's rows must agree with the trace
+    //    position by position -- the miss the figure renders first really
+    //    is what the trace checks first and really misses, and a pattern
+    //    the figure renders as never reached must not have matched ahead of
+    //    the winner.
+    for (position, (id, outcome)) in guarded_walk.iter().enumerate() {
+        let traced = claimed.guarded.get(position).unwrap_or_else(|| {
+            panic!(
+                "the figure walks a guarded pattern the trace's {claimant} \
+                 block never reaches (position {position}, {id}):\n{stderr}"
+            )
+        });
+        assert_eq!(
+            id, &traced.id,
+            "the figure's guarded walkthrough disagrees with the trace at \
+             position {position} -- a reorder or rename invalidates the \
+             animation:\n{stderr}"
+        );
+        match outcome.as_str() {
+            "no match" => assert!(
+                !traced.matched(),
+                "the figure renders {id} missing, but the trace shows \
+                 {}:\n{stderr}",
+                traced.status
+            ),
+            "MATCH" => {}
+            "not reached" => assert!(
+                !traced.matched(),
+                "the figure renders {id} as never reached, but the trace \
+                 matched it -- first-match-wins moved ahead of the \
+                 walkthrough:\n{stderr}"
+            ),
+            other => panic!(
+                "the figure renders outcome {other:?} for {id} -- extend \
+                 this test to hold that outcome to the trace"
+            ),
+        }
+    }
+    let winner_position = guarded_walk
+        .iter()
+        .position(|(id, _)| id == winner)
+        .expect("the winner row is part of the walked rows");
+    assert_eq!(
+        claimed.guarded.iter().position(TracePatternRow::matched),
+        Some(winner_position),
+        "first-match-wins: the figure's winner ({winner}) must be the first \
+         guarded pattern the trace matches -- something earlier in the pack \
+         now fires first:\n{stderr}"
+    );
+
+    // 4. The verdict: the trace's own summary line must be the deny the
+    //    figure attributes to [pack=…, pattern=…].
+    assert_eq!(
+        trace.final_verdict,
+        format!("DENY ({verdict_pack}/{verdict_pattern})"),
+        "the trace's final verdict must be the deny the figure's verdict \
+         step attributes -- the walkthrough ends in that verdict:\n{stderr}"
+    );
+    assert_eq!(
+        verdict_of(&stdout),
+        "DENIED",
+        "the figure's verdict step renders a deny; stdout must agree with \
+         the trace it narrates:\n{stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Citation rot: every path the docs cite must resolve.
 //
