@@ -60,7 +60,7 @@ Verified by reading the source directly (`~/.claude/hooks/org-rule-guard.py`,
 
 ## Coverage gap analysis
 
-Cross-referencing the hook's five rules against CLAUDE.md's "Hard
+Cross-referencing the hook's six rules against CLAUDE.md's "Hard
 prohibitions" section (eleven items):
 
 | CLAUDE.md prohibition | Mechanically enforced? |
@@ -99,8 +99,8 @@ reversed that on 2026-09-19 — the exclusion's zero-I/O reason only ever
 ruled out ArgoCD-aware narrowing, which stays not attempted — and the
 rule-4 bullet below records the absorption.) Coexistence is an interim
 state for whichever rules *do* get
-scheduled, not a permanent policy for all five. The plan already
-absorbs pieces of the five rules above rather than avoiding them:
+scheduled, not a permanent policy for all six. The plan already
+absorbs pieces of five of the six rules above rather than avoiding them:
 
 - **Rule 3 (`:latest` image tags)** — Phase 1's `image-tag` pack extends the
   existing `:latest` check with the bare-SHA half of the same policy

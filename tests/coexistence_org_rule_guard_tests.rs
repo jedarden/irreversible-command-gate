@@ -142,7 +142,9 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
     // - Rule 2 (kind:Job/CronJob) → now absorbed by icg (both systems deny)
     // - Rule 3 (:latest in .yaml) → BOTH systems, this test's original focus
     // - Rule 4 (mutating kubectl) → BOTH systems since the kubectl pack (ADR-001)
-    // - Rule 5 (credential values) → org-rule-guard.py Write/Edit only, Bash absorbed by icg
+    // - Rule 5 (credential values) → Write/Edit: org-rule-guard.py only. Bash:
+    //   BOTH systems — the hook's check_bash has run the same credential scan
+    //   since a 2026-08-26 stopgap, alongside icg's secrets pack.
     //
     // A divergent verdict on rule 5's Write/Edit channel is EXPECTED and NOT a
     // coexistence failure. This test probes the absorbed rules for their
@@ -203,9 +205,11 @@ fn coexistence_scope_limited_to_rule_3_overlap_only() {
     );
 
     // Rule 5: credential values (PARTIAL absorption)
-    // Write/Edit path: org-rule-guard.py still handles it
-    // Bash path: absorbed by icg's credential-packs
-    // Partial divergence is EXPECTED and NOT a coexistence test failure
+    // Write/Edit path: org-rule-guard.py still handles it alone — expected
+    //   divergence (hook denies, icg allows), NOT a coexistence failure
+    // Bash path: BOTH deny — the hook's check_bash has run the same
+    //   credential scan since the 2026-08-26 stopgap, alongside icg's
+    //   credential packs, so this channel is a consistent double-deny
 }
 
 #[test]

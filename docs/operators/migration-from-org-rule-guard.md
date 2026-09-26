@@ -8,12 +8,21 @@ This guide helps operators migrate from the existing `org-rule-guard.py` hook to
 
 ### org-rule-guard.py Coverage
 
-The existing hook enforces 5 rules:
+The existing hook enforces six numbered rules:
 1. No `.github/workflows/*` writes
 2. No `kind: Job`/`kind: CronJob` in YAML writes
 3. No `:latest` image tags in YAML writes
 4. No mutating `kubectl` verbs in Bash calls
-5. No committed credential values (Write/Edit only, not Bash)
+5. No committed credential values — Write/Edit since inception, and Bash
+   too since a 2026-08-26 stopgap (`check_bash` runs the credential scan
+   on every command)
+6. No `git commit -a`/`--all` and no bare `git commit -m` without a
+   trailing pathspec (2026-08-14 stopgap)
+
+It also carries one unnumbered, host-specific Bash stopgap (2026-09-12)
+denying a `CARGO_TARGET_DIR=`/`--target-dir` value that resolves onto
+`/home`. That one is codinghome disk hygiene, not org policy, and stays
+with the hook — it is out of icg's scope.
 
 ### icg Coverage
 
@@ -25,8 +34,9 @@ icg supersedes most of these rules and adds new coverage:
 | No `kind: Job`/`CronJob` | Built-in `job-cronjob-yaml` guard (shipped) | **Covered by both** — redundant double-deny |
 | No `:latest` image tags | `image-tag` pack (includes bare-SHA) | **MIGRATED** |
 | No mutating `kubectl` | `kubectl` pack (blanket; [ADR-001](../adr/001-kubectl-mutation-pack.md)) | **Covered by both** — redundant double-deny |
-| No credential values (Write/Edit) | Remains with org-rule-guard.py | Coexistence |
-| (New) Credential values in Bash | `secrets` pack | **NEW** |
+| No credential values (Write/Edit) | Remains with org-rule-guard.py | Coexistence — hook-only |
+| Credential values in Bash (hook stopgap, 2026-08-26) | `secrets` pack | **Covered by both** — redundant double-deny |
+| No bare `git commit` without a pathspec (stopgap, 2026-08-14) | `git` pack (`git-commit-without-pathspec`) | **Covered by both** — redundant double-deny |
 | (New) OpenBao destructive ops | `openbao` pack | **NEW** |
 | (New) Git force-push | `git` pack | **NEW** |
 | (New) Beads protection | `beads` pack | **NEW** |
@@ -37,7 +47,8 @@ icg supersedes most of these rules and adds new coverage:
 - Both hooks active
 - Double denials are expected and harmless
 - icg handles new rules (openbao, git, beads, secrets in Bash)
-- org-rule-guard.py handles its original 5 rules
+- org-rule-guard.py handles its six rules — the original five plus the
+  2026-08-14 commit-pathspec stopgap
 
 **Phase 2: Gradual Transition** (In progress)
 - `:latest` rule migrated to icg (image-tag pack)
@@ -103,7 +114,10 @@ cat ~/.claude/settings.json | jq '.hooks.PreToolUse'
 
 - [ ] Understood that mutating `kubectl` commands are denied by both icg
       (`kubectl` pack, blanket rather than ArgoCD-aware) and
-      org-rule-guard.py during coexistence
+      org-rule-guard.py during coexistence, and that both guards keep the
+      same carve-outs allowed: read-only verbs, `rollout status`/`history`,
+      and `kubectl create` of an Argo Workflow submitted to the
+      `argo-workflows` namespace
 - [ ] Understood that `.github/workflows` writes are denied by both icg
       (built-in guard) and org-rule-guard.py during coexistence
 - [ ] Understood that double denials are expected during coexistence

@@ -169,6 +169,11 @@ passed / 0 failed / 1 ignored across 62 test binaries, guard suites
 present), which retires the source package's "verification-failed"
 caveat on that one bead. The tail is still open, so the protection
 stands; the closing evidence may be cited as progress, not completion.
+*Delta (2026-09-25), kubectl piece only:* the "kubectl-only rump" quote
+above is superseded — ADR-001 (2026-09-19) absorbed rule 4 as the
+`kubectl` pack, so the hook's post-retirement rump is the Write/Edit
+credential-value rule (see the D6 delta). The D4 instruction itself —
+do not rewrite the narrative to "coexistence ended" — still stands.
 
 **D5 — Overview absorption claim, plan.md:19-26** ("both have since been
 absorbed … (2026-09)"). Preserve verbatim for now. The engine guards ARE
@@ -181,6 +186,15 @@ chain. Touch only after that chain closes.
 (deliberately not a pack), :831 (`Explicitly not attempted`). Standing
 design decision with a permanent zero-I/O-determinism rationale. No bead
 will ever close it; no correction will ever make it stale.
+*Delta (2026-09-25):* that prediction is falsified —
+[ADR-001](../adr/001-kubectl-mutation-pack.md) (accepted 2026-09-19)
+absorbed the blanket block as `packs/kubectl.json`
+(`irrevers-3fc0fbce`, closed), and the plan.md anchors above were
+rewritten to quote-and-retract form, so the D6 protection is retired.
+What the correction did *not* touch and still holds: the zero-I/O reason
+itself, which only ever ruled out ArgoCD-aware *narrowing* — that stays
+not attempted per the ADR. Read the entry above as the 2026-09-13
+snapshot it is.
 
 ### B. Historical record — append, never rewrite
 
