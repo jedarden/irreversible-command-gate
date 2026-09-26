@@ -1,5 +1,21 @@
 # Quick Reference: Argo Workflow Guard Integration
 
+## Where the Workflow Templates Live
+
+The WorkflowTemplates that run this repo's CI (`icg-ci`, the push-triggered
+CI gate; `icg-guarded-builder`, the image bootstrap) have **one source of
+truth**: `jedarden/declarative-config`, at `k8s/iad-ci/argo-workflows/`
+(`icg-ci-workflowtemplate.yml`, `icg-guarded-builder-workflowtemplate.yml`).
+ArgoCD (application `argo-workflows-ns-iad-ci`, cluster `iad-ci`) syncs them
+into the cluster; editing the live objects with `kubectl` fights `selfHeal`
+and is reverted. To change a template, edit the manifest in
+declarative-config, commit, and push.
+
+This repository carries **no** template copy. Earlier copies under
+`containers/argo-guarded-builder/` — two WorkflowTemplate files that were
+deployed nowhere — were deleted: they read as authoritative, and editing
+them changed nothing (irrevers-fc96ecad).
+
 ## For Operators: Deploying icg Guarded Workflows
 
 ### 5-Minute Setup
@@ -15,27 +31,24 @@ docker build \
   .
 docker push ronaldraygun/argo-guarded-builder:${VERSION}
 
-# 2. Deploy the workflow template to iad-ci
-kubectl --kubeconfig=/home/coding/.kube/iad-ci.kubeconfig \
-  apply -f icg-guarded-ci-workflowtemplate.yml -n argo-workflows
+# 2. The workflow template: no deploy step here. It lives in
+#    jedarden/declarative-config (k8s/iad-ci/argo-workflows/) and ArgoCD
+#    syncs it to iad-ci. To change it, edit the manifest there, commit,
+#    and push -- never apply template YAML from this repo; it ships none.
 
-# 3. Test with a sample workflow
+# 3. Test with a sample workflow (icg-guarded-builder builds this repo's
+#    guarded image from its default parameters; icg-ci is the
+#    push-triggered CI template)
 kubectl --kubeconfig=/home/coding/.kube/iad-ci.kubeconfig \
   create -f - <<EOF
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  generateName: test-icg-guarded-
+  generateName: test-icg-guarded-builder-
   namespace: argo-workflows
 spec:
   workflowTemplateRef:
-    name: icg-guarded-ci
-  arguments:
-    parameters:
-      - name: repo
-        value: https://github.com/jedarden/irreversible-command-gate.git
-      - name: revision
-        value: main
+    name: icg-guarded-builder
 EOF
 ```
 
@@ -49,9 +62,10 @@ kubectl --kubeconfig=/home/coding/.kube/iad-ci.kubeconfig \
   get workflowtemplates -n argo-workflows \
   -o json | jq '.items[] | select(.spec.templates[].container.image | contains("debian:bookworm")) | .metadata.name'
 
-# Update each workflow (manual edit or use kubectl patch)
-kubectl --kubeconfig=/home/coding/.kube/iad-ci.kubeconfig \
-  edit workflowtemplate <template-name> -n argo-workflows
+# Update each one in its declarative-config manifest
+# (jedarden/declarative-config, k8s/iad-ci/argo-workflows/), commit, push,
+# and let ArgoCD sync application argo-workflows-ns-iad-ci. Do not edit or
+# patch the live objects -- selfHeal reverts them.
 ```
 
 Replace:
@@ -211,8 +225,9 @@ docker build \
   .
 docker push ronaldraygun/argo-guarded-builder:${VERSION}
 
-# 3. Update workflow templates to use new version
-# (find and replace image tags)
+# 3. Update workflow templates to use the new version
+#    (edit the image tag in jedarden/declarative-config,
+#    k8s/iad-ci/argo-workflows/, and let ArgoCD sync)
 
 # 4. Test with low-risk workflow first
 kubectl --kubeconfig=/home/coding/.kube/iad-ci.kubeconfig \
@@ -226,7 +241,7 @@ kubectl --kubeconfig=/home/coding/.kube/iad-ci.kubeconfig \
 ## File Locations
 
 - **Builder Image**: `/home/coding/irreversible-command-gate/containers/argo-guarded-builder/`
-- **Workflow Template**: `containers/argo-guarded-builder/icg-guarded-ci-workflowtemplate.yml`
+- **Workflow Templates (single source of truth)**: `k8s/iad-ci/argo-workflows/` in `jedarden/declarative-config` — this repo ships none
 - **Deployment Guide**: `/home/coding/irreversible-command-gate/docs/monitoring-deployment-guide.md`
 - **Training Manual**: `/home/coding/irreversible-command-gate/docs/operators/training-manual.md`
 

@@ -10,6 +10,17 @@
 //! nobody refreshes guards nothing). These tests pin the matrix to
 //! [`icg::adapter::CODEX_RUNTIME_PIN`] so the next narrowing or pin bump
 //! fails a build instead of shipping unnoticed (irrevers-048ce4f8).
+//!
+//! These tests read the DEPLOYED template. The copies this file used to gate
+//! under containers/argo-guarded-builder/ were undeployed fossils (template
+//! name `icg-ci-guarded`; iad-ci runs `icg-ci`, synced by ArgoCD from
+//! jedarden/declarative-config), so the gate kept passing while the
+//! deployed matrix lacked the pin -- the exact drift it was written to
+//! catch (irrevers-ff4aad93). The fossils are deleted; the matrix is now
+//! read from the declared upstream, skipping loudly where no
+//! declarative-config checkout is reachable (the icg-ci build pod clones
+//! only this repo) -- irrevers-fc96ecad. The build-pod-shaped network gate
+//! on the deployed manifest remains irrevers-ff4aad93's job.
 
 use std::fs;
 use std::path::PathBuf;
@@ -42,6 +53,38 @@ fn read_repo_file(relative: &str) -> String {
             path.display()
         )
     })
+}
+
+/// The live `icg-ci` WorkflowTemplate, relative to the declarative-config
+/// checkout that is its single source of truth. This repo carries no
+/// template copy: the ones under containers/argo-guarded-builder/ were
+/// fossils (names `icg-ci-guarded` / `icg-guarded-ci`, deployed nowhere
+/// while iad-ci runs `icg-ci`), deleted by irrevers-fc96ecad.
+const LIVE_ICG_CI_TEMPLATE: &str = "k8s/iad-ci/argo-workflows/icg-ci-workflowtemplate.yml";
+
+/// Read the live template from the declarative-config checkout, or `None`
+/// when no checkout is reachable.
+///
+/// Discovery: `ICG_DECLARATIVE_CONFIG` (explicit override), else the
+/// documented fleet layout -- declarative-config checked out beside this
+/// one (`/home/coding/declarative-config` on codinghome). The icg-ci build
+/// pod clones only this repo and no test may touch the network, so a run
+/// without the sibling checkout has nothing honest to assert on: the
+/// callers skip loudly rather than gate on a copy.
+fn live_icg_ci_template() -> Option<String> {
+    let root = match std::env::var("ICG_DECLARATIVE_CONFIG") {
+        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => audited_checkout().parent()?.join("declarative-config"),
+    };
+    fs::read_to_string(root.join(LIVE_ICG_CI_TEMPLATE)).ok()
+}
+
+fn skip_message() -> String {
+    format!(
+        "SKIP: no declarative-config checkout found (set ICG_DECLARATIVE_CONFIG \
+         or have jedarden/declarative-config checked out beside this repo); \
+         cannot assert on the live {LIVE_ICG_CI_TEMPLATE} from here"
+    )
 }
 
 /// The `withItems` codex versions of the `codex-hook-compatibility` step in
@@ -124,16 +167,20 @@ fn numeric(version: &str) -> (u64, u64, u64) {
 /// while the matrix kept gating 0.144-0.146 only.
 #[test]
 fn the_codex_compatibility_matrix_covers_the_runtime_pin() {
-    let template =
-        read_repo_file("containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml");
+    let Some(template) = live_icg_ci_template() else {
+        println!("{}", skip_message());
+        return;
+    };
     let versions = codex_matrix_versions(&template);
 
     assert!(
         versions.contains(&icg::adapter::CODEX_RUNTIME_PIN.to_string()),
-        "icg-ci's codex-hook-compatibility matrix {versions:?} must include \
-         CODEX_RUNTIME_PIN ({}) -- the Codex release whose runtime semantics \
-         the adapter encodes. Update the pin's entry (and re-verify its \
-         rejections) whenever the adapter contract moves.",
+        "the deployed icg-ci template's codex-hook-compatibility matrix \
+         {versions:?} must include CODEX_RUNTIME_PIN ({}) -- the Codex \
+         release whose runtime semantics the adapter encodes. Fix it in \
+         jedarden/declarative-config ({LIVE_ICG_CI_TEMPLATE}); update the \
+         pin's entry (and re-verify its rejections) whenever the adapter \
+         contract moves.",
         icg::adapter::CODEX_RUNTIME_PIN
     );
 }
@@ -142,8 +189,10 @@ fn the_codex_compatibility_matrix_covers_the_runtime_pin() {
 /// in ascending order so the next refresh appends instead of scattering.
 #[test]
 fn matrix_entries_are_well_formed_and_ascending() {
-    let template =
-        read_repo_file("containers/argo-guarded-builder/icg-ci-guarded-workflowtemplate.yml");
+    let Some(template) = live_icg_ci_template() else {
+        println!("{}", skip_message());
+        return;
+    };
     let versions = codex_matrix_versions(&template);
 
     for version in &versions {

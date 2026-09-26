@@ -85,7 +85,10 @@ spec:
 
 ## Workflow Template Example
 
-See `icg-guarded-ci-workflowtemplate.yml` for a complete example of using this image in Argo Workflows.
+This repo ships no workflow template copy. The templates that use this
+image (`icg-ci`, `icg-guarded-builder`) live in `jedarden/declarative-config`
+at `k8s/iad-ci/argo-workflows/` and are synced to iad-ci by ArgoCD — edit
+them there, not here.
 
 ## Monitoring
 
