@@ -2593,6 +2593,182 @@ fn latency_figures_match_the_recorded_benchmark() {
 }
 
 // ---------------------------------------------------------------------------
+// The committed raw record.
+//
+// The figure-pinning guard above holds every quoting surface to the range
+// parsed out of the note -- but the note's Measured record section is
+// prose, so a deleted, orphaned, or never-refreshed raw record would leave
+// that guard parsing a stale paragraph forever. The figure's real anchor is
+// the script's own --json report, committed under docs/notes/evidence/ and
+// cited by the note. These guards keep that chain intact: the note must
+// cite the record and the record must exist (a deleted or orphaned record
+// fails here, not silently), the record must carry the environment it was
+// measured in (a number without one is not reproducible, which is the whole
+// reason the record exists), and it must have been produced by the binary
+// this tree would release -- otherwise the published figure drifts from
+// what the current engine actually measures, the exact rot this section
+// exists to make loud. The release-cutting runbook's re-measure step is the
+// procedure these guards enforce.
+// ---------------------------------------------------------------------------
+
+/// The raw record path, resolved from the note's Measured record section.
+///
+/// The citation is asserted rather than assumed: if the note stops citing
+/// the raw record, that is an orphaned record -- the file may still exist,
+/// but nothing holds the published figure to it any more.
+fn latency_record_path() -> PathBuf {
+    const RECORD: &str = "evidence/check-latency-record.json";
+    let note = repo_relative("docs/notes/check-latency-benchmark.md");
+    let record_section = &note[note
+        .find("## Measured record")
+        .expect("check-latency-benchmark.md should keep its '## Measured record' section; it is the measurement of record")..];
+    assert!(
+        record_section.contains(RECORD),
+        "the Measured record section must cite the committed raw record \
+         ({RECORD}); its record is prose and the README figure's anchor is \
+         the raw --json report"
+    );
+    audited_checkout()
+        .join("docs/notes")
+        .join(RECORD)
+}
+
+/// The note's cited raw record must exist, parse, and name its environment.
+#[test]
+fn benchmark_note_cites_a_committed_raw_record() {
+    let path = latency_record_path();
+    let raw = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "{} should exist: {error} -- the benchmark note cites it as the \
+             raw record, so a deleted or never-committed record is a dead \
+             reference on the claim's only anchor",
+            path.display()
+        )
+    });
+    let record: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|error| {
+        panic!(
+            "{} should parse as the bench script's --json report: {error}",
+            path.display()
+        )
+    });
+
+    // The environment is what makes the number reproducible rather than
+    // merely quoted; every load-bearing field must be present.
+    let env = record
+        .get("environment")
+        .expect("the raw record should carry its environment");
+    for field in [
+        "timestamp_utc",
+        "hostname",
+        "cpu_model",
+        "cpu_count",
+        "kernel",
+        "memtotal",
+        "loadavg",
+        "binary",
+        "version",
+        "profile",
+    ] {
+        assert!(
+            env.get(field).is_some_and(|value| !value.is_null()),
+            "the raw record's environment.{field} must be recorded -- a \
+             record that does not name its environment is not reproducible"
+        );
+    }
+    assert_eq!(
+        env.get("profile").and_then(serde_json::Value::as_str),
+        Some("release"),
+        "the raw record must come from the release profile -- the profile \
+         the claim is about; a dev-profile binary measures something else"
+    );
+    let packs = env["packs"]["count"]
+        .as_u64()
+        .expect("the raw record should carry the binary's own pack discovery");
+    assert!(
+        packs >= 1,
+        "the raw record's check must have loaded at least the shipped packs"
+    );
+
+    // Both cases, a sample count a published median can stand on, and
+    // positive medians.
+    let results = record
+        .get("results")
+        .and_then(serde_json::Value::as_object)
+        .expect("the raw record should carry its results");
+    for case in ["allow", "deny"] {
+        let stats = results.get(case).unwrap_or_else(|| {
+            panic!("the raw record should measure the {case} case")
+        });
+        let iterations = stats
+            .get("iterations")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("the {case} case should record its sample count"));
+        assert!(
+            iterations >= 40,
+            "the {case} case's sample count ({iterations}) is too small for \
+             a published median -- the DoD gate itself runs 40; refresh the \
+             record with a real run, not a smoke test"
+        );
+        let p50 = stats
+            .get("p50_ms")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_else(|| panic!("the {case} case should carry p50_ms"));
+        assert!(
+            p50 > 0.0,
+            "the {case} case's p50 should be a positive measurement"
+        );
+    }
+}
+
+/// The raw record must have been produced by the binary this tree would
+/// release.
+///
+/// The record measured icg 0.1.66 while the tree shipped 0.1.71 -- five
+/// releases of silent drift between the published figure and any record a
+/// reader could reproduce. This guard turns that drift into a build
+/// failure at exactly the moment it would happen: a version bump without a
+/// re-measure. The fix is the release-cutting runbook's re-measure step,
+/// in the bump's commit.
+#[test]
+fn committed_latency_record_is_current_with_the_release_version() {
+    let path = latency_record_path();
+    let raw = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "{} should exist: {error} (existence and shape are \
+             benchmark_note_cites_a_committed_raw_record's subject; this \
+             guard only compares versions)",
+            path.display()
+        )
+    });
+    let record: serde_json::Value = serde_json::from_str(&raw).expect("raw record should parse");
+    let recorded = record["environment"]["version"]
+        .as_str()
+        .expect("the raw record should name the binary version it measured");
+
+    let cargo = repo_relative("Cargo.toml");
+    let version = cargo
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.split('"').next())
+        .expect("Cargo.toml should declare a version");
+
+    assert_eq!(
+        recorded,
+        format!("icg {version}"),
+        "the committed latency record was measured on {recorded}, but this \
+         tree would release v{version} -- the published figure's record \
+         must be produced by the released binary. Re-run the bench and \
+         refresh the record in the bump's commit \
+         (docs/runbooks/release-cutting.md, the re-measure step): \
+         cargo build --release, then scripts/bench-check-latency --pack \
+         \"$PWD/packs\" --cwd /tmp --json > \
+         docs/notes/evidence/check-latency-record.json, and update the \
+         Measured record section of docs/notes/check-latency-benchmark.md \
+         (move the README figure too if the measured range changed)."
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The README demo surface: docs/assets/demo.sh, the gif it regenerates, and
 // docs/assets/icg-evaluation.svg.
 //

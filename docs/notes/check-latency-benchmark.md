@@ -51,15 +51,50 @@ pass them absolute.
 
 ## Measured record
 
-Measured **2026-09-24**, icg **0.1.66** (release build, rustc 1.97.1),
-commit `75519a9` tree, on `codinghome`:
+**Current record — 2026-09-26, icg 0.1.71** (release build, rustc 1.97.1;
+source identical at the commit carrying this record), on `codinghome`.
+Exact command — the shipped-pack-set form above, the claim's subject,
+isolated from any installed `/etc/icg` set:
+
+```bash
+cargo build --release
+scripts/bench-check-latency --pack "$PWD/packs" --cwd /tmp --json \
+  > docs/notes/evidence/check-latency-record.json
+```
+
+The raw record is committed at
+[`docs/notes/evidence/check-latency-record.json`](evidence/check-latency-record.json)
+— the script's own `--json` report, so the environment (host, CPU, memory,
+kernel, load, binary path and version, the pack set the binary itself
+reports loading) is captured verbatim rather than paraphrased. Sample
+count: **10 warmup + 100 timed runs per case**.
+
+| Case (warm page cache) | p50 | p90 |
+| --- | --- | --- |
+| allow — `git status` | 15.5 ms | 20.1 ms |
+| deny — `bao kv destroy secret/app/db` | 18.7 ms | 43.8 ms |
 
 | | |
 |---|---|
-| Host | Hetzner EX44-class, 13th Gen Intel Core i5-13500 |
-| Kernel | Linux 6.18.46, 64 GB RAM |
-| Load during measurement | ~9–12 (shared fleet box; medians are robust, tails are not) |
-| Packs | the 11 shipped `packs/*.json` — 29 guarded + 21 safe patterns, 30 KB |
+| Host | Hetzner EX44-class, 13th Gen Intel Core i5-13500, 20 cores, 64 GB RAM |
+| Kernel | Linux 6.18.46 |
+| Load during measurement | ~10–12.5 (shared fleet box; medians are robust, tails are not — the deny p90 above is exactly such a tail) |
+| Packs | the 11 shipped `packs/*.json` — 29 guarded + 21 safe patterns |
+
+Both medians land inside the quoted **~15–20 ms** band, so the README
+figure stands. What changed with this refresh is not the number but the
+record's age: the previous record was measured on icg 0.1.66, five
+releases before the binary a reader would actually run. Re-measuring is a
+release step now, not an ad-hoc repair — see the release-cutting runbook's
+re-measure step, and the version tie
+(`committed_latency_record_is_current_with_the_release_version`,
+`tests/documentation_consistency_tests.rs`) that fails the build when the
+committed record names any binary other than the one this tree would
+release.
+
+**Superseded record — kept for the scaling analysis.** Measured
+2026-09-24, icg **0.1.66** (release build, rustc 1.97.1), commit `75519a9`
+tree, same box at load ~9–12:
 
 | Scenario (all warm page cache) | p50 | p90 |
 | --- | --- | --- |
@@ -78,7 +113,7 @@ shipped-set p50 moved between ~15 and ~20 ms with background load.
 
 Warm-cache median on the reference environment is **~15–20 ms**, roughly
 1.5–2× the documented figure, and it scales with the shipped pattern count:
-the per-scenario rows above rise from 1 pattern to 50 at a few hundred
+the superseded record's scenario rows rise from 1 pattern to 50 at a few hundred
 microseconds per pattern, because pattern regexes are compiled at evaluation
 time rather than precompiled or cached — `Engine::pattern_matches_command`
 calls `Regex::new` per pattern check (`src/engine.rs`), and every check is a
@@ -149,4 +184,15 @@ current normal, not an alarm.
 When the record here is stale (new packs, new engine, new reference
 hardware), re-run the canonical command, update this note with the new table
 and environment, and update any doc quoting the old range in the same
-commit.
+commit. That is no longer left to whoever notices the staleness: the
+release-cutting runbook's re-measure step runs this bench on every release
+candidate and refreshes the committed raw record
+(`docs/notes/evidence/check-latency-record.json`), this section, and — if
+the range moved — the README figure, in the bump's commit. The tie is
+enforced, not hoped for: the raw record must name the binary version this
+tree would release
+(`committed_latency_record_is_current_with_the_release_version`), and must
+exist, parse, and carry its environment
+(`benchmark_note_cites_a_committed_raw_record`) — a deleted or orphaned
+record, or one produced by a binary other than the current one, fails
+`cargo test`.

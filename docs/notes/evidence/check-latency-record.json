@@ -1,0 +1,67 @@
+{
+  "method": {
+    "sample": "one whole icg check process, wall clock (perf_counter_ns)",
+    "warm_cache": "page cache only, via per-case warmup runs; the engine keeps no cross-process cache",
+    "denial_log": "temporary ICG_DENIAL_LOG per run, deleted afterwards",
+    "network": "none: neither default case is a push"
+  },
+  "environment": {
+    "timestamp_utc": "2026-09-26T10:27:24Z",
+    "hostname": "codinghome",
+    "kernel": "6.18.46",
+    "cpu_model": "model name : 13th Gen Intel(R) Core(TM) i5-13500",
+    "cpu_count": 20,
+    "memtotal": "MemTotal:       65621296 kB",
+    "loadavg": "12.50 12.12 10.65 6/5674 3025148",
+    "binary": "/build/irreversible-command-gate/release/icg",
+    "binary_source": "cargo release build",
+    "version": "icg 0.1.71",
+    "profile": "release",
+    "cwd": "/tmp",
+    "packs": {
+      "count": 11,
+      "paths": [
+        "/home/coding/irreversible-command-gate/packs/argocd-topology.json",
+        "/home/coding/irreversible-command-gate/packs/beads.json",
+        "/home/coding/irreversible-command-gate/packs/docker.json",
+        "/home/coding/irreversible-command-gate/packs/git.json",
+        "/home/coding/irreversible-command-gate/packs/image-tag.json",
+        "/home/coding/irreversible-command-gate/packs/kubectl.json",
+        "/home/coding/irreversible-command-gate/packs/misc.json",
+        "/home/coding/irreversible-command-gate/packs/openbao.json",
+        "/home/coding/irreversible-command-gate/packs/secrets.json",
+        "/home/coding/irreversible-command-gate/packs/storage-class.json",
+        "/home/coding/irreversible-command-gate/packs/tmux.json"
+      ],
+      "error": null
+    }
+  },
+  "results": {
+    "allow": {
+      "command": "git status",
+      "expect": "ALLOW",
+      "warmup": 10,
+      "iterations": 100,
+      "min_ms": 11.646169,
+      "p50_ms": 15.5185335,
+      "mean_ms": 16.28763482,
+      "p90_ms": 20.132265,
+      "p99_ms": 22.655191,
+      "max_ms": 29.570462,
+      "stdev_ms": 3.0177454097055834
+    },
+    "deny": {
+      "command": "bao kv destroy secret/app/db",
+      "expect": "DENIED by icg",
+      "warmup": 10,
+      "iterations": 100,
+      "min_ms": 11.678624,
+      "p50_ms": 18.679724,
+      "mean_ms": 23.531409829999998,
+      "p90_ms": 43.841319,
+      "p99_ms": 79.312912,
+      "max_ms": 102.068104,
+      "stdev_ms": 15.667115251522823
+    }
+  }
+}

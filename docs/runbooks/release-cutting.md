@@ -65,7 +65,27 @@ the release.
 2. Bump `version` in `Cargo.toml`. Update every doc that cites the release
    tag or the `icg --version` banner; `install_docs_cite_the_current_release_version`
    fails the build if you miss one.
-3. Run the gates locally before pushing — these are the same commands
+3. Re-measure the latency record on the release candidate. README's
+   warm-cache median is held to a committed record
+   (`docs/notes/evidence/check-latency-record.json`), and that record must
+   be produced by the binary being released —
+   `committed_latency_record_is_current_with_the_release_version` fails
+   `cargo test` while the committed record names any other version:
+
+   ```bash
+   cargo build --release
+   scripts/bench-check-latency --pack "$PWD/packs" --cwd /tmp --json \
+     > docs/notes/evidence/check-latency-record.json
+   ```
+
+   Then, in the same commit as the version bump: replace the record JSON
+   with this run's output, refresh the Measured record section of
+   `docs/notes/check-latency-benchmark.md` (date, environment, sample
+   count, medians), and move the README figure if the measured range no
+   longer matches the quoted one — the consistency guards parse the range
+   out of the note, so the README, the demo banner, and the architecture
+   figure move with it or the build stays red.
+4. Run the gates locally before pushing — these are the same commands
    `build-and-release` runs, and a failure here is a failure there:
 
    ```bash
@@ -81,8 +101,8 @@ the release.
    cargo run --quiet -- redos-check /tmp/current-merged.json --timeout-ms 100
    ```
 
-4. Commit and push to Forgejo `main`. CI does the rest.
-5. Verify the published release (step 4 of the manual procedure below), then
+5. Commit and push to Forgejo `main`. CI does the rest.
+6. Verify the published release (step 4 of the manual procedure below), then
    replace the template's generic notes with real ones:
 
    ```bash
@@ -92,7 +112,7 @@ the release.
 
    The template cannot know what changed, so its notes are a placeholder.
    Editing them is part of cutting the release, not an optional extra.
-6. Advance the Layer 4 trust pointer, as in step 5 below.
+7. Advance the Layer 4 trust pointer, as in step 5 below.
 
 ## Procedure — manual fallback
 
