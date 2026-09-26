@@ -21,6 +21,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct Env {
@@ -34,14 +35,26 @@ struct Env {
 }
 
 fn unique_root(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "icg-systemd-lifecycle-{tag}-{}-{}",
+    // The counter, not the clock, is the uniqueness guarantee: two tests'
+    // fixtures created inside one nanosecond used to share a root, and each
+    // Drop then tore down its sibling's tree mid-check (the 2026-09-26
+    // systemd_consistency_tests flake — same naming shape here).
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "icg-systemd-lifecycle-{tag}-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
-    ))
+            .as_nanos(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+    ));
+    assert!(
+        !root.exists(),
+        "fixture root {} already exists — fixture naming is not unique",
+        root.display()
+    );
+    root
 }
 
 impl Env {

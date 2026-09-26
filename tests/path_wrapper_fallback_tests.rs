@@ -27,6 +27,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The checkout under test.
 ///
@@ -67,14 +68,26 @@ struct Stage {
 
 impl Stage {
     fn new(tag: &str) -> Self {
+        // The counter, not the clock, is the uniqueness guarantee: two
+        // tests' fixtures created inside one nanosecond used to share a
+        // root, and each Drop then tore down its sibling's tree mid-check
+        // (the 2026-09-26 systemd_consistency_tests flake — same naming
+        // shape here).
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "icg-path-wrapper-test-{tag}-{}-{}",
+            "icg-path-wrapper-test-{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
         ));
+        assert!(
+            !root.exists(),
+            "fixture root {} already exists — fixture naming is not unique",
+            root.display()
+        );
         fs::create_dir_all(root.join("bin")).expect("stage bin dir");
         Self { root }
     }

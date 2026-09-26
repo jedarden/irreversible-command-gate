@@ -18,6 +18,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn systemd_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("systemd")
@@ -117,14 +118,28 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
+        // Uniqueness must not rest on the clock: pid + nanos alone collides
+        // when two tests' fixtures are created inside the same nanosecond,
+        // which happened once under full parallel DoD load (2026-09-26) —
+        // both tests then shared one root, and each Drop tore down its
+        // sibling's tree mid-check. The counter is the actual guarantee; pid
+        // separates concurrent runs, nanos keeps names correlateable with
+        // the old failure logs.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "icg-systemd-check-{}-{}",
+            "icg-systemd-check-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
         ));
+        assert!(
+            !root.exists(),
+            "fixture root {} already exists — fixture naming is not unique",
+            root.display()
+        );
         fs::create_dir_all(root.join("scripts")).expect("scripts dir");
         fs::create_dir_all(root.join("systemd")).expect("systemd dir");
         fs::create_dir_all(root.join("host")).expect("host dir");
@@ -166,6 +181,43 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// The 2026-09-26 DoD flake: two tests' fixtures were created inside the
+/// same clock tick, landed on one shared root, and each Drop then tore down
+/// its sibling's tree mid-check — the dangling-symlink test's checker found
+/// the env test's unit and never its own symlink. The barrier puts every
+/// creation on the same instant on purpose: clock-only naming is exactly
+/// the shape that collided, so roots must stay distinct regardless of it.
+#[test]
+fn fixture_roots_stay_distinct_when_created_concurrently() {
+    const N: usize = 64;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
+    // A second barrier keeps every tree alive until all roots are recorded:
+    // concurrent *live* fixtures is the precondition that turned the old
+    // collision into cross-test interference.
+    let release = std::sync::Arc::new(std::sync::Barrier::new(N));
+    let handles: Vec<_> = (0..N)
+        .map(|_| {
+            let barrier = std::sync::Arc::clone(&barrier);
+            let release = std::sync::Arc::clone(&release);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let fixture = Fixture::new();
+                let root = fixture.root.clone();
+                release.wait();
+                root
+            })
+        })
+        .collect();
+    let mut roots: Vec<PathBuf> = handles
+        .into_iter()
+        .map(|h| h.join().expect("fixture thread should not panic"))
+        .collect();
+    let created = roots.len();
+    roots.sort();
+    roots.dedup();
+    assert_eq!(created, roots.len(), "fixture roots collided: {roots:?}");
 }
 
 #[test]
