@@ -63,6 +63,7 @@ Short, ordered procedures for a moment when something is on fire.
 | [notes/release-integrity-verification.md](notes/release-integrity-verification.md) · [notes/self-update-and-release-gating.md](notes/self-update-and-release-gating.md) | Trust pointers, signed releases, auto-rollback. |
 | [notes/beads-protection-scope.md](notes/beads-protection-scope.md) · [notes/auto-denial-regression-corpus.md](notes/auto-denial-regression-corpus.md) · [notes/force-push-updatedinput-example.md](notes/force-push-updatedinput-example.md) | Scoped design notes. |
 | [notes/command-substitution-lexing.md](notes/command-substitution-lexing.md) | How `$( )` must lex (nested-context stack), why the anchored regex was not relaxed, and the backtick deferral. |
+| [notes/pack-source-resolution.md](notes/pack-source-resolution.md) | Design intent (not shipped): one labeled pack source per operator invocation — explicit beats installed beats repository, never a union. |
 | [research/prior-art.md](research/prior-art.md) | What existed already and why none of it was forked. |
 
 ## Assets
