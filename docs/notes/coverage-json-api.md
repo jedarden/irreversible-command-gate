@@ -4,8 +4,10 @@
 the enforced policy. Agents deciding whether a command will be denied
 before they try it, bots rendering the policy, and doc generators read
 this document instead of scraping `coverage --list`'s text. This note
-fixes the contract; `tests/coverage_json_tests.rs` pins it, so a shape
-change fails a build until the format version moves with it.
+fixes the contract; `tests/coverage_json_tests.rs` pins it, and
+`tests/coverage_note_sync_tests.rs` pins these field tables against the
+emitted document, so a shape change — in code or in this note — fails a
+build until the format version moves with it.
 
 ## Invocation
 
