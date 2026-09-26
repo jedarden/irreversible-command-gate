@@ -43,11 +43,13 @@ const OPERATOR_FACING_DOCS: [&str; 10] = [
 
 /// The checkout this run audits.
 ///
-/// `env!("CARGO_MANIFEST_DIR")` is baked in at compile time, and this box's
-/// global cargo config (`~/.cargo/config.toml`) points `target-dir` at the
-/// shared `/build/target-workers`, so cargo reuses a test binary built by a
-/// *different* checkout of this repo whenever its fingerprint looks fresh.
-/// The baked path then names some other tree -- a deleted gate extraction or
+/// `env!("CARGO_MANIFEST_DIR")` is baked in at compile time, and the cargo
+/// wrapper pins one target directory per repo (`/build/<repo>`, the
+/// wrapper-enforced policy AGENTS.md states) that *every* checkout of this
+/// repo shares, so cargo reuses a test binary built by a *different*
+/// checkout whenever its fingerprint looks fresh -- no `CARGO_TARGET_DIR`
+/// export moves it, the wrapper overrides that too. The baked path then
+/// names some other tree -- a deleted gate extraction or
 /// a trial replay of an old commit -- and every doc/checkpoint read below
 /// silently audits *that* tree. Seen live 2026-09-17: a reused binary read a
 /// pre-reconciliation plan.md and failed its own guard. cargo runs test
@@ -1356,11 +1358,14 @@ fn docs_state_that_the_guard_does_not_check_caller_identity() {
 
 /// Build instructions must not hard-code where cargo puts its output.
 ///
-/// The hosts this repository is built on share one cargo target directory:
-/// the global `~/.cargo/config.toml` points `target-dir` at
-/// `/build/target-workers`, and `CARGO_TARGET_DIR` moves it per invocation.
-/// A doc that runs a freshly built binary from an assumed in-checkout
-/// `target/release` path is therefore wrong on those hosts (the path does
+/// The hosts this repository is built on pin one cargo target directory
+/// per repo: the cargo wrapper points every build of this repo at
+/// `/build/irreversible-command-gate`, overriding the global
+/// `~/.cargo/config.toml`'s legacy shared default and any per-invocation
+/// `CARGO_TARGET_DIR` (a `--target-dir` outside that directory is
+/// refused outright). A doc that runs a freshly built binary from an
+/// assumed in-checkout `target/release` path is therefore wrong on those
+/// hosts (the path does
 /// not exist -- `install.sh` grew its `cargo metadata` fallback after a
 /// "cannot stat" failure on exactly this), and a reader who "fixes" it by
 /// redirecting the build into the checkout or under `/home` recreates the
