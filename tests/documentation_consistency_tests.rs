@@ -2628,9 +2628,7 @@ fn latency_record_path() -> PathBuf {
          ({RECORD}); its record is prose and the README figure's anchor is \
          the raw --json report"
     );
-    audited_checkout()
-        .join("docs/notes")
-        .join(RECORD)
+    audited_checkout().join("docs/notes").join(RECORD)
 }
 
 /// The note's cited raw record must exist, parse, and name its environment.
@@ -2696,9 +2694,9 @@ fn benchmark_note_cites_a_committed_raw_record() {
         .and_then(serde_json::Value::as_object)
         .expect("the raw record should carry its results");
     for case in ["allow", "deny"] {
-        let stats = results.get(case).unwrap_or_else(|| {
-            panic!("the raw record should measure the {case} case")
-        });
+        let stats = results
+            .get(case)
+            .unwrap_or_else(|| panic!("the raw record should measure the {case} case"));
         let iterations = stats
             .get("iterations")
             .and_then(serde_json::Value::as_u64)
