@@ -17,6 +17,11 @@ Before changing a host or channel:
 
 - schedule a maintenance window and identify the operator, reviewer, candidate
   release tag, full candidate SHA, and target cohort;
+- run `scripts/verify-release-packs <candidate-release-tag>` against the
+  release as published and record its pass — the gate applies the updater's
+  own acceptance checks to the assets hosts are about to consume, which is
+  the check that was missing when a hand-published release reached Latest
+  with an archive `icg update` rejects (irrevers-bfbdf8f4);
 - confirm the current trusted reference and pack are healthy;
 - ensure the previous trusted release and its artifact are available for
   rollback;

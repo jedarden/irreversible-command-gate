@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# Post-publish integrity gate for an icg release's pack artifact.
+#
+# Why this exists: the updater (src/update.rs validate_root_directory_entry
+# and archive_pack_filename) rejects any icg-packs.tar.gz whose manifests are
+# not at the archive root, but until bead irrevers-bfbdf8f4 nothing checked a
+# PUBLISHED release asset against that contract before hosts pointed trust at
+# it. The nested packs/<name>.json layout shipped in every release up to
+# v0.1.68 because the icg-ci packager command was wrong (irrevers-64f7633e),
+# and shipped again as Latest in the hand-published v0.1.71 with the fixed
+# packager already live in the template -- fixing CI does not close a bypass
+# around CI. This script runs the updater's own acceptance checks against the
+# assets that were actually published, so a bad publish fails here, loudly,
+# instead of on every host's `icg update`.
+#
+# Checks, in the order the updater applies them:
+#   1. archive layout -- every directory entry must be the archive root
+#      itself ("." / "./"); every file entry must be a root-level *.json
+#      manifest. Symlinks and special files are rejected.
+#   2. size and count caps -- mirrors MAX_PACK_COUNT (256), MAX_PACK_BYTES
+#      (4 MiB per manifest), MAX_TOTAL_PACK_BYTES (32 MiB).
+#   3. pack-manifest --verify -- the release's attached pack-manifest.json
+#      (SHA-256 + size per pack, and no un-manifested JSON pack) must accept
+#      the extracted archive exactly.
+#   4. tag byte-identity -- every published member must be byte-identical to
+#      the tagged commit's packs/<name>.json, and nothing else may ship
+#      (packs/coverage-justifications.md is a CI-side approval artifact and
+#      must NOT be in the archive). This is the check that catches an asset
+#      built from anything other than the tag it was published under.
+#   5. the icg binary asset exists. Its content is validated by hand per the
+#      release-cutting runbook; reproducible-build verification is out of
+#      scope here.
+#
+# Wired into the release-cutting runbook (normal path step 6, manual fallback
+# step 4, and the "Releases that reached hosts without CI" section) and into
+# the rule-pack update runbook's preconditions, where a host deploy begins.
+# The gate semantics are pinned by tests/release_pack_verification_tests.rs,
+# which is what CI's cargo test runs -- this script never executes under
+# rust-verify (it needs gh and network), so the tests are the CI half of the
+# same gate.
+#
+# Usage:
+#   scripts/verify-release-packs [options] <tag>
+#   scripts/verify-release-packs [options] latest
+#   scripts/verify-release-packs --check-archive FILE [--manifest FILE]
+#
+# Options:
+#   --repo OWNER/NAME        GitHub repo holding the release
+#                            (default jedarden/irreversible-command-gate)
+#   --check-archive FILE     validate a local tarball instead of downloading
+#                            the release asset; skips the release-asset
+#                            checks (binary asset, pack-manifest.json
+#                            presence) and the tag byte-identity check
+#   --manifest FILE          with --check-archive: pack-manifest.json to
+#                            verify the archive against
+#   --pack-manifest-bin BIN  binary providing the `pack-manifest` subcommand
+#                            (default: `icg` on PATH, else `cargo run` in
+#                            this repo; tests pass the freshly built binary)
+#   --skip-manifest-verify   layout-only check (legacy releases predating
+#                            pack-manifest.json)
+#   --skip-tag-compare       skip the git byte-identity check
+#
+# Requires: bash, tar, find, gh (live mode), jq (live mode), git + the
+# release tag in the local checkout (unless --skip-tag-compare).
+#
+# Exit codes: 0 pass; 1 a check failed or the release is unusable; 2 usage
+# error.
+
+set -u
+
+REPO_DEFAULT=jedarden/irreversible-command-gate
+MAX_PACK_COUNT=256
+MAX_PACK_BYTES=4194304        # 4 MiB, src/update.rs MAX_PACK_BYTES
+MAX_TOTAL_PACK_BYTES=33554432 # 32 MiB, src/update.rs MAX_TOTAL_PACK_BYTES
+
+REPO=$REPO_DEFAULT
+TAG=
+CHECK_ARCHIVE=
+MANIFEST=
+PACK_MANIFEST_BIN=
+SKIP_MANIFEST=0
+SKIP_TAG=0
+
+usage() {
+  sed -n '2,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)
+      [ $# -ge 2 ] || usage
+      REPO=$2
+      shift 2
+      ;;
+    --check-archive)
+      [ $# -ge 2 ] || usage
+      CHECK_ARCHIVE=$2
+      shift 2
+      ;;
+    --manifest)
+      [ $# -ge 2 ] || usage
+      MANIFEST=$2
+      shift 2
+      ;;
+    --pack-manifest-bin)
+      [ $# -ge 2 ] || usage
+      PACK_MANIFEST_BIN=$2
+      shift 2
+      ;;
+    --skip-manifest-verify)
+      SKIP_MANIFEST=1
+      shift
+      ;;
+    --skip-tag-compare)
+      SKIP_TAG=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage
+      ;;
+    *)
+      if [ -n "$TAG" ]; then
+        echo "unexpected extra argument: $1" >&2
+        usage
+      fi
+      TAG=$1
+      shift
+      ;;
+  esac
+done
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd) || exit 1
+
+WORK=$(mktemp -d) || exit 1
+trap 'rm -rf "$WORK"' EXIT
+
+# pack-manifest runner: an explicit binary wins, then `icg` on PATH, then a
+# cargo run in this repo (the CI path).
+run_pack_manifest() {
+  if [ -n "$PACK_MANIFEST_BIN" ]; then
+    "$PACK_MANIFEST_BIN" pack-manifest "$@"
+  elif command -v icg >/dev/null 2>&1; then
+    icg pack-manifest "$@"
+  else
+    (cd "$REPO_ROOT" && cargo run --quiet -- pack-manifest "$@")
+  fi
+}
+
+# --- resolve the archive to validate -------------------------------------
+
+ARCHIVE=$CHECK_ARCHIVE
+if [ -z "$ARCHIVE" ]; then
+  [ -n "$TAG" ] || usage
+  command -v gh >/dev/null 2>&1 || fail "gh is required for release mode"
+  command -v jq >/dev/null 2>&1 || fail "jq is required for release mode"
+  if [ "$TAG" = "latest" ]; then
+    VIEW_ARGS=()
+  else
+    VIEW_ARGS=("$TAG")
+  fi
+  ASSETS_JSON=$(gh release view "${VIEW_ARGS[@]}" --repo "$REPO" \
+    --json tagName,assets) || fail "gh release view failed for ${TAG:-latest} in $REPO"
+  TAG_NAME=$(jq -r '.tagName' <<<"$ASSETS_JSON")
+  [ -n "$TAG_NAME" ] && [ "$TAG_NAME" != "null" ] || fail "no tag resolved for ${TAG:-latest}"
+
+  have_asset() {
+    jq -e --arg n "$1" 'any(.assets[]; .name == $n)' <<<"$ASSETS_JSON" >/dev/null
+  }
+  have_asset "icg-packs.tar.gz" ||
+    fail "release $TAG_NAME has no icg-packs.tar.gz asset; it is not deployable at all"
+  have_asset "icg" ||
+    fail "release $TAG_NAME has no icg binary asset"
+  if [ "$SKIP_MANIFEST" -eq 0 ]; then
+    have_asset "pack-manifest.json" ||
+      fail "release $TAG_NAME has no pack-manifest.json asset; the pack check cannot be cryptographic (pass --skip-manifest-verify only for legacy releases)"
+  fi
+
+  PATTERN_ARGS=(--pattern icg-packs.tar.gz)
+  if [ "$SKIP_MANIFEST" -eq 0 ]; then
+    PATTERN_ARGS+=(--pattern pack-manifest.json)
+  fi
+  gh release download "$TAG_NAME" --repo "$REPO" "${PATTERN_ARGS[@]}" \
+    --dir "$WORK" --clobber >/dev/null ||
+    fail "gh release download failed for $TAG_NAME"
+  ARCHIVE=$WORK/icg-packs.tar.gz
+  if [ "$SKIP_MANIFEST" -eq 0 ]; then
+    MANIFEST=$WORK/pack-manifest.json
+  fi
+else
+  [ -f "$ARCHIVE" ] || fail "archive not found: $ARCHIVE"
+  TAG_NAME=""
+  if [ -n "$MANIFEST" ]; then
+    [ -f "$MANIFEST" ] || fail "manifest not found: $MANIFEST"
+  fi
+fi
+
+# --- 1. archive layout (src/update.rs archive contract) -------------------
+
+LIST=$WORK/tar-list.txt
+tar -tzf "$ARCHIVE" >"$LIST" 2>"$WORK/tar-error.txt" ||
+  fail "archive is not a readable gzip tar archive: $(cat "$WORK/tar-error.txt")"
+
+NAMES=$WORK/member-names.txt
+: >"$NAMES"
+COUNT=0
+while IFS= read -r entry; do
+  [ -n "$entry" ] || continue
+  case "$entry" in
+    */)
+      # A directory entry. Only the archive root itself is allowed.
+      case "${entry%/}" in
+        "" | ".") ;;
+        *)
+          fail "Pack archive directory entry '$entry' is nested; manifests must be at the archive root (exactly what icg update's validate_root_directory_entry rejects)"
+          ;;
+      esac
+      continue
+      ;;
+  esac
+  # A file entry: strip one leading "./", then no path separator may remain.
+  name=${entry#./}
+  case "$name" in
+    */*)
+      fail "Pack archive entry '$entry' is not a root-level manifest (traversal and nested paths are forbidden)"
+      ;;
+  esac
+  case "$name" in
+    .json)
+      fail "Pack archive entry '$name' is not a JSON manifest"
+      ;;
+    *.json) ;;
+    *)
+      fail "Pack archive entry '$name' is not a JSON manifest"
+      ;;
+  esac
+  if grep -qxF "$name" "$NAMES"; then
+    fail "Pack archive contains duplicate file '$name'"
+  fi
+  printf '%s\n' "$name" >>"$NAMES"
+  COUNT=$((COUNT + 1))
+done <"$LIST"
+
+[ "$COUNT" -ge 1 ] || fail "Pack archive contains no JSON manifests"
+[ "$COUNT" -le "$MAX_PACK_COUNT" ] ||
+  fail "Pack archive contains more than $MAX_PACK_COUNT manifests"
+
+# --- extract, then size caps and file-type checks -------------------------
+
+EXTRACT=$WORK/packs
+mkdir -p "$EXTRACT"
+tar -xzf "$ARCHIVE" -C "$EXTRACT" 2>"$WORK/extract-error.txt" ||
+  fail "archive failed to extract: $(cat "$WORK/extract-error.txt")"
+
+# The updater rejects anything that is not a regular file.
+SPECIALS=$(find "$EXTRACT" -mindepth 1 \( ! -type d ! -type f \) -print -quit)
+[ -z "$SPECIALS" ] ||
+  fail "Pack archive entry '$(basename "$SPECIALS")' is not a regular file; links and special files are forbidden"
+
+TOTAL=0
+while IFS= read -r -d '' f; do
+  size=$(wc -c <"$f")
+  if [ "$size" -gt "$MAX_PACK_BYTES" ]; then
+    fail "Pack archive entry '$(basename "$f")' exceeds $MAX_PACK_BYTES bytes"
+  fi
+  TOTAL=$((TOTAL + size))
+done < <(find "$EXTRACT" -type f -print0)
+[ "$TOTAL" -le "$MAX_TOTAL_PACK_BYTES" ] ||
+  fail "Pack archive exceeds $MAX_TOTAL_PACK_BYTES bytes of manifest data"
+
+# --- 3. pack-manifest --verify --------------------------------------------
+
+if [ "$SKIP_MANIFEST" -eq 0 ] && [ -n "$MANIFEST" ]; then
+  if ! VERIFY_OUT=$(run_pack_manifest --pack-dir "$EXTRACT" --verify "$MANIFEST" 2>&1); then
+    fail "pack-manifest --verify rejected the archive:
+$VERIFY_OUT"
+  fi
+  echo "manifest verify: $VERIFY_OUT"
+fi
+
+# --- 4. tag byte-identity --------------------------------------------------
+
+if [ "$SKIP_TAG" -eq 0 ] && [ -z "$CHECK_ARCHIVE" ]; then
+  if ! git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/${TAG_NAME}^{commit}" >/dev/null 2>&1; then
+    echo "tag $TAG_NAME not found locally; fetching from origin" >&2
+    if ! git -C "$REPO_ROOT" fetch --quiet origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}" 2>"$WORK/fetch-error.txt"; then
+      fail "cannot fetch tag $TAG_NAME from origin ($(tail -1 "$WORK/fetch-error.txt")); run from a checkout that has the tag, or pass --skip-tag-compare"
+    fi
+  fi
+  TAGDIR=$WORK/tag
+  mkdir -p "$TAGDIR"
+  git -C "$REPO_ROOT" archive "refs/tags/${TAG_NAME}" packs 2>"$WORK/archive-error.txt" |
+    tar -x -C "$TAGDIR" ||
+    fail "git archive of $TAG_NAME packs failed: $(cat "$WORK/archive-error.txt")"
+
+  DRIFT=0
+  for f in "$TAGDIR"/packs/*.json; do
+    [ -e "$f" ] || continue
+    base=$(basename "$f")
+    if [ ! -e "$EXTRACT/$base" ]; then
+      echo "MISSING from published archive: $base" >&2
+      DRIFT=1
+    elif ! cmp -s "$EXTRACT/$base" "$f"; then
+      echo "DIFFERS from tag: $base" >&2
+      DRIFT=1
+    fi
+  done
+  while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    if [ ! -e "$TAGDIR/packs/$base" ]; then
+      echo "NOT IN TAG (extra member): $base" >&2
+      DRIFT=1
+    fi
+  done < <(find "$EXTRACT" -type f -print0)
+  [ "$DRIFT" -eq 0 ] ||
+    fail "published icg-packs.tar.gz is not byte-identical to ${TAG_NAME}'s packs/"
+fi
+
+echo "OK ${TAG_NAME:-$(basename "$ARCHIVE")}: $COUNT root-level JSON pack(s), $TOTAL bytes -- layout, size caps, manifest verify, and tag byte-identity all pass"

@@ -102,8 +102,21 @@ the release.
    ```
 
 5. Commit and push to Forgejo `main`. CI does the rest.
-6. Verify the published release (step 4 of the manual procedure below), then
-   replace the template's generic notes with real ones:
+6. Verify the published release (step 4 of the manual procedure below), run
+   the pack-asset integrity gate against the tag, then replace the
+   template's generic notes with real ones:
+
+   ```bash
+   scripts/verify-release-packs "$TAG"
+   ```
+
+   The gate re-downloads the published assets and applies the updater's own
+   acceptance contract — root-level layout, the size caps,
+   `pack-manifest --verify`, and byte-identity of every member against the
+   tag's `packs/` — the same checks `icg update` will apply on every host
+   that consumes the release. It must pass before the notes are edited or
+   the trust pointer moves; a failure here means the release is not
+   deployable no matter what CI reported. Then:
 
    ```bash
    gh release edit "$TAG" --repo jedarden/irreversible-command-gate \
@@ -176,12 +189,17 @@ RELEASE_NOTES_FILE="/path/to/release-notes.md"
    ```bash
    gh release view "$TAG" --repo "$REPO" \
      --json tagName,targetCommitish,isDraft,isPrerelease,url,assets
+   scripts/verify-release-packs "$TAG" --repo "$REPO"
    ```
 
    Confirm that the tag resolves to `$CANDIDATE`, the release is published
    with the intended prerelease status, and every attached asset came from
-   the verified CI run. If any value is wrong, do not move the tag. Follow
-   the rollback procedure for the trust pointer instead.
+   the verified CI run. The gate command applies the updater's acceptance
+   contract to the assets as published — layout, size caps,
+   `pack-manifest --verify`, and tag byte-identity — and must exit 0
+   before anything points trust at this release. If any value is wrong, do
+   not move the tag. Follow the rollback procedure for the trust pointer
+   instead.
 
 5. Advance the Layer 4 trust pointer through its configured mechanism to this
    release only after the verification above succeeds. The pointer must name
@@ -192,3 +210,36 @@ RELEASE_NOTES_FILE="/path/to/release-notes.md"
 The release URL, tag, target SHA, CI run or artifact URL, Layer 2 review
 record, and trust-pointer update are the release record. Keep them together
 so a later operator can establish exactly what was reviewed and published.
+
+## Releases that reached hosts without CI
+
+The manual fallback above is still a CI-adjacent path: it attaches artifacts
+from a verified `icg-ci` run. Publishing without any CI run behind the
+release — a hand-cut release, or an in-place repair of an existing release's
+assets — is how v0.1.71 became Latest with a nested `packs/` archive the
+updater rejects: the packager defect was already fixed in the template
+(irrevers-64f7633e, after v0.1.70 shipped the same defect), but v0.1.71 was
+published by hand while the `icg-ci` queue was mutex-starved, so neither the
+fixed packager nor its verify step executed (irrevers-bfbdf8f4). Fixing the
+pipeline cannot close a bypass around the pipeline, because nothing in the
+bypassed pipeline runs.
+
+Two rules hold for any release or asset that reaches GitHub without a
+completed `icg-ci` run behind it:
+
+1. **`scripts/verify-release-packs <tag>` must pass against the live
+   release before any host advances its trust pointer** — for Latest as
+   published, not just for the bytes you meant to upload. The gate is the
+   tripwire that makes a silent bypass loud: run it against Latest after
+   any publish that did not happen inside a visible CI run.
+2. **The release notes must say what happened.** A hand publish or asset
+   repair is a provenance fact, not something to paper over with generated
+   notes: name the bypass, what was rebuilt or re-uploaded, and which Layer
+   1 gates did not run. The v0.1.71 provenance note is the model.
+
+An in-place asset repair follows the irrevers-64f7633e method: rebuild the
+archive from the tag's own `packs/` with the fixed packager command, prove
+byte-identity per member plus `pack-manifest --verify` before uploading,
+`gh release upload --clobber`, then re-download and run the gate against
+the release to confirm what is published — not what was intended — passes.
+
