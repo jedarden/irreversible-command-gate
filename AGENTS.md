@@ -22,15 +22,23 @@ cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
 ```
 
 `cargo run --release --` rather than a hard-coded binary path: the hosts
-this repo is worked on share one cargo target directory (the global
-`~/.cargo/config.toml` points `target-dir` at `/build/target-workers`, and
-`CARGO_TARGET_DIR` moves it per invocation), so the binary does not land
-beside the checkout — and build output must never be directed into
-`/home`; a relative target dir resolved against `~/.cargo` filled that
-filesystem to 99% once. To install what you built, use
+this repo is worked on run a cargo wrapper that pins **one target
+directory per repo** at `/build/irreversible-command-gate` (derived from
+the origin URL; a `git archive` extraction is matched to the repo by its
+Cargo.toml identity). The wrapper overrides any other `CARGO_TARGET_DIR`
+and refuses a `--target-dir` outside that directory, so the binary does
+not land beside the checkout — and build output must never be directed
+into `/home`; a relative target dir resolved against `~/.cargo` filled
+that filesystem to 99% once. Never set a per-invocation `CARGO_TARGET_DIR`
+to dodge the wrapper; when two builds of this repo genuinely need to stay
+apart, give each a subdirectory of `/build/irreversible-command-gate/`,
+which the wrapper allows. To install what you built, use
 `./install.sh --from-checkout`, which resolves the real location via
-`cargo metadata`. `tests/documentation_consistency_tests.rs` fails any doc
-that regresses to a hard-coded build-output path.
+`cargo metadata`. `tests/cargo_target_doc_tests.rs` fails any doc that
+regresses to the superseded model (a shared target directory that
+`CARGO_TARGET_DIR` "moves per invocation", or per-run target dirs);
+`tests/documentation_consistency_tests.rs` fails any doc that regresses to
+a hard-coded build-output path.
 
 `icg check` always exits `0` for allow, warning, rewrite and deny alike —
 parse stdout, never the exit status. `--debug` writes the full evaluation

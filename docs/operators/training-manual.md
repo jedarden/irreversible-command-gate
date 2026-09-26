@@ -271,9 +271,9 @@ cd irreversible-command-gate
 # Build release binary
 cargo build --release
 
-# The binary is in cargo's target directory, which host policy (a global
-# cargo config or CARGO_TARGET_DIR) can move away from the checkout --
-# resolve it rather than assuming the repo, and never point build output
+# The binary is in the repo's pinned cargo target directory
+# (/build/<repo> on wrapper-managed hosts -- never beside the checkout).
+# Resolve it rather than assuming the repo, and never point build output
 # into /home:
 BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
   'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/icg"

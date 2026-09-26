@@ -52,14 +52,25 @@ git archive <before-commit> | tar -x -C /tmp/icg-before
 git archive <after-commit>  | tar -x -C /tmp/icg-after
 cp src/bin/corpus-replay.rs /tmp/icg-before/src/bin/
 cp src/bin/corpus-replay.rs /tmp/icg-after/src/bin/
-# Pin a per-tree target dir: a host's shared cargo target-dir policy would
-# otherwise send both builds to one directory, colliding the two binaries
-# this comparison exists to tell apart.
-(cd /tmp/icg-before && CARGO_TARGET_DIR="$PWD/target" cargo build --release --bin corpus-replay)
-(cd /tmp/icg-after  && CARGO_TARGET_DIR="$PWD/target" cargo build --release --bin corpus-replay)
+# The two builds need separate target dirs -- one target dir per binary,
+# or the after build clobbers the before binary this comparison exists to
+# tell apart. Host policy pins cargo to one target dir per repo
+# (/build/<repo>): the wrapper overrides any other CARGO_TARGET_DIR and
+# refuses anything outside it, but subdirs of the repo's own target
+# dir are allowed, so give each tree one of those. (A bare per-tree
+# CARGO_TARGET_DIR export -- the pre-wrapper form -- is silently
+# overridden, and the binary would land in the repo dir instead of the
+# extraction.)
+(cd /tmp/icg-before && cargo build --release --bin corpus-replay \
+  --target-dir /build/irreversible-command-gate/replay-before)
+(cd /tmp/icg-after  && cargo build --release --bin corpus-replay \
+  --target-dir /build/irreversible-command-gate/replay-after)
 
-/tmp/icg-before/target/release/corpus-replay packs /tmp/traffic-corpus.jsonl /tmp/results-before.jsonl
-/tmp/icg-after/target/release/corpus-replay  packs /tmp/traffic-corpus.jsonl /tmp/results-after.jsonl
+/build/irreversible-command-gate/replay-before/release/corpus-replay packs /tmp/traffic-corpus.jsonl /tmp/results-before.jsonl
+/build/irreversible-command-gate/replay-after/release/corpus-replay  packs /tmp/traffic-corpus.jsonl /tmp/results-after.jsonl
+
+# These two subdirs exist only for this comparison; remove them afterwards:
+rm -rf /build/irreversible-command-gate/replay-before /build/irreversible-command-gate/replay-after
 
 scripts/analyze-corpus-replay /tmp/results-before.jsonl /tmp/results-after.jsonl --detail-dir /tmp/details
 ```

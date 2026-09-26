@@ -177,11 +177,12 @@ cargo build --release --locked
 ```
 
 Install only the resulting binary, not the build tree. Cargo writes build
-output to its configured target directory, which a global cargo config or
-`CARGO_TARGET_DIR` can move away from the checkout — on hosts that share a
-target directory it is not under the repository at all, and it must never be
-pointed into `/home`. Resolve the real location from cargo itself (the same
-lookup `install.sh --from-checkout` performs):
+output to one pinned target directory per repo — `/build/<repo>` on
+wrapper-managed hosts, where the wrapper overrides any other
+`CARGO_TARGET_DIR` and refuses a `--target-dir` outside that directory —
+so it is not under the repository, and it must never be pointed into
+`/home`. Resolve the real location from cargo itself (the same lookup
+`install.sh --from-checkout` performs):
 
 ```bash
 BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \

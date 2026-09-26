@@ -3,9 +3,11 @@
 #
 # Why this script exists: a `git archive` extraction (the shape NEEDLE's
 # close gate and this repo's own verification checklist both use) lands at a
-# fresh path with archive mtimes, and cargo's global config directs every
-# CARGO_TARGET_DIR-less invocation at the fleet-shared /build/target-workers.
-# When a recent build of identical content is cached there, the fingerprint
+# fresh path with archive mtimes. The fleet cargo wrapper pins every
+# invocation to the repo's own /build/<repo> target dir (needle-d6b685b4) --
+# an extraction is matched to this repo by its Cargo.toml identity, so the
+# cache it lands in is repo-dedicated but SHARED ACROSS TREES. When a recent
+# build of identical content is cached there, the fingerprint
 # matches, `cargo build` no-ops, and `cargo test` runs test binaries whose
 # baked CARGO_MANIFEST_DIR still names the PREVIOUS -- since deleted --
 # extraction. Manifest-relative fixture reads then ENOENT and the suite fails
@@ -14,9 +16,12 @@
 # failing against a deleted extraction path), reproduced by deleting a
 # verification extraction and re-running the untouched tree.
 #
-# This script points the build at a repo-dedicated target dir and forces the
-# workspace crate's targets to rebuild from the current tree, so the binaries
-# that run always carry this tree's paths. Registry dependencies are
+# This script forces the workspace crate's targets to rebuild from the
+# current tree -- the mtime touch below is the lever that breaks the
+# fingerprint match, and it is what actually keeps the binaries that run
+# carrying this tree's paths. (The CARGO_TARGET_DIR export further down
+# only bites on hosts without the wrapper; where the wrapper runs it is
+# overridden to /build/<repo>.) Registry dependencies are
 # path-independent, so caching them across runs is safe and keeps the forced
 # rebuild at the ~20s the workspace crate costs, not a cold dep tree.
 #
@@ -59,7 +64,9 @@ esac
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT" || exit 41
 
-# Repo-dedicated cache, overridable for one-off isolation. Falls back inside
+# Build-output cache for hosts WITHOUT the fleet wrapper (where it runs, the
+# wrapper overrides this export to the repo's own /build/<repo>, per
+# needle-d6b685b4). Overridable for one-off isolation. Falls back inside
 # the tree when /build is not mounted, so the script degrades to a plain
 # (slower, per-run-cold) verification rather than failing.
 if [ -d /build ]; then
