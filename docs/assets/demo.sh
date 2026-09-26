@@ -20,6 +20,15 @@
 # README.md promises for it. If a pack or engine change moves a pinned
 # verdict, update that test and regenerate the GIF with the recipe below in
 # the same change, so the README keeps showing real output.
+#
+# Size of the committed asset: the GIF captured in 0ae6afb is 614658 bytes,
+# and every capture so far has landed between 450 KB and 620 KB. A recapture
+# legitimately moves the exact number -- update this note with it in the same
+# commit -- but treat a committed GIF far below that band, or one whose final
+# byte is not the GIF trailer ';', as a truncated capture:
+#   tail -c 1 docs/assets/icg-demo.gif | od -An -c   # expect ';'
+# scripts/check-doc-assets (in the DoD) already fails a missing, emptied or
+# wrong-magic one mechanically; truncation is what this note catches by eye.
 set -u
 
 W=94
