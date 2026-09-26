@@ -17,9 +17,12 @@
 # The verdicts printed here are pinned by tests/demo_verdict_regression_tests.rs:
 # it feeds every command and file body below to the real binary against the
 # repo's own packs/ and asserts the ALLOW / REWRITE / WARNING / DENIED prefix
-# README.md promises for it. If a pack or engine change moves a pinned
-# verdict, update that test and regenerate the GIF with the recipe below in
-# the same change, so the README keeps showing real output.
+# README.md promises for it, the pack and pattern id quick-start.md's coverage
+# table documents for the input, and the output's alternative channel (the
+# suggested plain push, the no-reveal metadata read, the deny redirect). If a
+# pack or engine change moves a pinned verdict, update that test and
+# regenerate the GIF with the recipe below in the same change, so the README
+# keeps showing real output.
 #
 # Size of the committed asset: the GIF captured in 0ae6afb is 614658 bytes,
 # and every capture so far has landed between 450 KB and 620 KB. A recapture

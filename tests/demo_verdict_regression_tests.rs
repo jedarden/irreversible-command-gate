@@ -12,22 +12,47 @@
 //! lockstep, so a new demo line cannot ship without a pinned verdict either.
 //! When a pinned verdict moves, update demo.sh, this matrix, and the GIF
 //! (recipe in demo.sh's header) together.
+//!
+//! The pins go past the prefix: each rule-backed input is held to the pack
+//! and pattern id quick-start.md's coverage table documents for it (the
+//! identifier `icg explain` accepts, so a reader can look up what the GIF
+//! shows), and each output's alternative channel is held to be present --
+//! README's caption promises a force-push "rewritten to a plain push" and
+//! denials "with the alternative", and quick-start's verdict table promises
+//! the deny reason carries that alternative. A bare refusal or an
+//! unattributable verdict would pass a prefix-only suite while breaking
+//! both promises (irrevers-c85d44dc).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use tempfile::tempdir;
 
-/// One demo.sh input and the verdict prefix README.md promises for it, in
-/// demo order -- the order the GIF scrolls, and the order the README's
-/// caption narrates.
+/// The rule quick-start.md's coverage table documents for one demo input:
+/// the pack that ships it and the pattern id `icg explain` accepts. The
+/// table's other direction -- every shipped pattern appears in the table --
+/// is documentation_consistency_tests' pin; this one holds the demo surface
+/// to the same identifier a reader can look up.
+struct DocumentedRule {
+    pack: &'static str,
+    pattern: &'static str,
+}
+
+/// One demo.sh input, the verdict prefix README.md promises for it, and the
+/// rule quick-start.md documents behind it, in demo order -- the order the
+/// GIF scrolls, and the order the README's caption narrates. `rule` is
+/// `None` only for the one safe input: quick-start documents that anything
+/// no pattern matches is allowed, so rule attribution there is a regression
+/// (the safe-pattern ordering moved), not a detail.
 enum DemoInput {
     Command {
         command: &'static str,
         verdict: &'static str,
+        rule: Option<DocumentedRule>,
     },
     Content {
         content: &'static str,
         verdict: &'static str,
+        rule: Option<DocumentedRule>,
     },
 }
 
@@ -35,26 +60,47 @@ const PINNED_DEMO_INPUTS: &[DemoInput] = &[
     DemoInput::Command {
         command: "git status",
         verdict: "ALLOW",
+        rule: None,
     },
     DemoInput::Command {
         command: "git push --force origin main",
         verdict: "REWRITE",
+        rule: Some(DocumentedRule {
+            pack: "git",
+            pattern: "git-force-push",
+        }),
     },
     DemoInput::Command {
         command: "bao kv get -field=token secret/app/db",
         verdict: "WARNING",
+        rule: Some(DocumentedRule {
+            pack: "openbao",
+            pattern: "openbao-kv-get-to-stdout",
+        }),
     },
     DemoInput::Command {
         command: "bao kv destroy secret/app/db",
         verdict: "DENIED",
+        rule: Some(DocumentedRule {
+            pack: "openbao",
+            pattern: "openbao-destructive-verb",
+        }),
     },
     DemoInput::Command {
         command: "git credential fill",
         verdict: "DENIED",
+        rule: Some(DocumentedRule {
+            pack: "git",
+            pattern: "git-credential-fill-bare-stdout",
+        }),
     },
     DemoInput::Content {
         content: "image: ronaldraygun/armor:latest\n",
         verdict: "DENIED",
+        rule: Some(DocumentedRule {
+            pack: "image-tag",
+            pattern: "image-tag-latest",
+        }),
     },
 ];
 
@@ -64,6 +110,20 @@ impl DemoInput {
         match self {
             DemoInput::Command { command, .. } => ("command".to_string(), (*command).to_string()),
             DemoInput::Content { content, .. } => ("content".to_string(), (*content).to_string()),
+        }
+    }
+
+    /// The verdict prefix this input is pinned to.
+    fn verdict(&self) -> &'static str {
+        match self {
+            DemoInput::Command { verdict, .. } | DemoInput::Content { verdict, .. } => verdict,
+        }
+    }
+
+    /// The rule quick-start.md documents behind this input, if any.
+    fn documented_rule(&self) -> Option<&DocumentedRule> {
+        match self {
+            DemoInput::Command { rule, .. } | DemoInput::Content { rule, .. } => rule.as_ref(),
         }
     }
 
@@ -254,5 +314,116 @@ fn every_demo_input_reproduces_the_verdict_readme_promises() {
             "{label} printed {first_line:?} -- README.md's demo claims this input {verdict}, \
              so the GIF no longer matches the repo's behaviour\nstdout: {stdout}\nstderr: {stderr}"
         );
+    }
+}
+
+#[test]
+fn every_rule_backed_demo_input_names_the_rule_quick_start_documents() {
+    let root = repo_root();
+    assert!(
+        root.join("packs").is_dir(),
+        "repo packs/ not found under {}",
+        root.display()
+    );
+
+    for input in PINNED_DEMO_INPUTS {
+        let output = run_check(&root, input);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let label = input.label();
+
+        assert!(
+            output.status.success(),
+            "{label} exited non-zero (icg check is advisory and must always exit 0)\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+
+        match input.documented_rule() {
+            Some(rule) => {
+                let pattern_line = format!("Pattern: {}", rule.pattern);
+                let pack_line = format!("Pack: {}", rule.pack);
+                assert!(
+                    stdout.contains(&pattern_line) && stdout.contains(&pack_line),
+                    "{label} did not attribute its verdict to {pack_line:?} / \
+                     {pattern_line:?} -- quick-start.md's coverage table documents this \
+                     demo input under that pack and pattern id (the identifier `icg \
+                     explain` accepts), so the GIF would show a verdict a reader cannot \
+                     look up\nstdout: {stdout}\nstderr: {stderr}"
+                );
+            }
+            None => assert!(
+                !stdout.contains("Pattern:"),
+                "{label} carried rule attribution -- quick-start.md documents that \
+                 anything no pattern matches is allowed, so the demo's one ALLOW firing \
+                 a rule means the safe-pattern ordering moved and the GIF now shows a \
+                 claimed-safe input as decided\nstdout: {stdout}\nstderr: {stderr}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn every_demo_alternative_channel_stays_actionable() {
+    // README's caption promises the GIF shows a force-push "rewritten to a
+    // plain push" and denials "with the alternative"; quick-start's verdict
+    // table promises the deny reason carries that alternative. The channel
+    // differs per verdict -- a rewrite suggests, a warning's message is the
+    // alternative, a denial redirects -- so each gets the pin its channel
+    // can actually break. Asserting presence, not prose: the pack suites own
+    // the wording, this suite owns that the front page never shows a bare
+    // refusal.
+    let root = repo_root();
+    assert!(
+        root.join("packs").is_dir(),
+        "repo packs/ not found under {}",
+        root.display()
+    );
+
+    for input in PINNED_DEMO_INPUTS {
+        let output = run_check(&root, input);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let label = input.label();
+
+        assert!(
+            output.status.success(),
+            "{label} exited non-zero (icg check is advisory and must always exit 0)\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+
+        match input.verdict() {
+            // Nothing promised beyond the prefix: an allow is the absence of
+            // a rule, and the no-attribution half is the test above's job.
+            "ALLOW" => {}
+            "REWRITE" => assert!(
+                stdout.contains("Suggested input: git push origin main"),
+                "{label} rewrote without suggesting the plain push README's caption \
+                 promises -- the GIF would show a rewrite the viewer cannot act on\n\
+                 stdout: {stdout}\nstderr: {stderr}"
+            ),
+            "WARNING" => assert!(
+                stdout.contains("bao kv metadata get"),
+                "{label} warned without naming the no-reveal alternative (a metadata \
+                 read) -- the GIF would show a warning the viewer cannot act on\n\
+                 stdout: {stdout}\nstderr: {stderr}"
+            ),
+            "DENIED" => {
+                let redirects = stdout
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("Redirect: "))
+                    .filter(|text| !text.trim().is_empty())
+                    .count();
+                assert!(
+                    redirects > 0,
+                    "{label} denied without a non-empty Redirect -- quick-start's verdict \
+                     table promises the reason carries the alternative, so the GIF would \
+                     show a bare refusal\nstdout: {stdout}\nstderr: {stderr}"
+                );
+            }
+            other => panic!(
+                "unhandled verdict {other:?} in the pinned matrix -- extend this test \
+                 with the alternative channel README promises for it"
+            ),
+        }
     }
 }
