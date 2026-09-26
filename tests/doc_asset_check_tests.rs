@@ -3,7 +3,9 @@
 //!
 //! The demo GIF went stale once (irrevers-8c3bab0e) and nothing in the
 //! verification path would have caught a missing, emptied, or wrong-typed
-//! README asset either: cargo test looks at code and prose, never at what
+//! README asset either -- nor a truncated one, whose magic is fine and
+//! whose body is gone (irrevers-dab6b05d): cargo test looks at code and
+//! prose, never at what
 //! the README *points at*, so a broken reference ships as a dead image with
 //! every gate green. `scripts/check-doc-assets` closes that and
 //! scripts/definition-of-done.sh runs it directly — but rust-verify (this
@@ -73,7 +75,9 @@ impl Fixture {
     }
 }
 
-const GIF89A: &[u8] = b"GIF89a\x01\x00\x01\x00\x00\xff,";
+/// A minimal well-formed GIF: magic, logical screen descriptor, an image
+/// separator, and the 0x3B trailer the gate requires as the final byte.
+const GIF89A: &[u8] = b"GIF89a\x01\x00\x01\x00\x00\xff,;";
 
 #[test]
 fn gate_script_is_executable() {
@@ -104,6 +108,27 @@ fn real_readme_passes_and_the_parser_still_finds_references() {
         count.is_some_and(|n| n >= 10),
         "the committed README should yield a double-digit local reference \
          count; got {count:?} — the parser has probably rotted:\n{out}"
+    );
+}
+
+#[test]
+fn gif_without_a_trailer_fails_as_truncated() {
+    // The shape the magic check was blind to (irrevers-dab6b05d): a
+    // capture killed mid-run leaves a well-magic'd head and no 0x3B
+    // trailer. Presence, size, and type all pass; only the final byte
+    // knows.
+    let f = Fixture::new("# t\n\n![demo](assets/demo.gif)\n");
+    f.asset("assets/demo.gif", b"GIF89a\x01\x00\x01\x00\x00\xff,");
+
+    let (code, out) = run_script(&[&f.readme_path()]);
+    assert_eq!(code, 1, "a trailer-less GIF must fail the gate:\n{out}");
+    assert!(
+        out.contains("truncated"),
+        "should name the failure truncation:\n{out}"
+    );
+    assert!(
+        out.contains("GIF trailer"),
+        "should say what the final byte should have been:\n{out}"
     );
 }
 

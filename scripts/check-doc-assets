@@ -9,7 +9,14 @@ a broken reference renders as a dead image on the mirror with every cargo
 test still green. This script parses README.md's local references (markdown
 links and images, and `<img src="...">`) and fails when a referenced file is
 absent, zero-byte, or does not match the type its extension declares (media
-magic bytes; a shebang for .sh).
+magic bytes; a shebang for .sh). A referenced GIF additionally must end in
+the GIF trailer byte: the failure the magic check was blind to is a capture
+killed mid-run, which leaves a well-magic'd head with no body (the stale
+GIF of irrevers-8c3bab0e was exactly that shape). Deeper integrity --
+full block-structure parse, animation duration and screen geometry against
+docs/assets/demo.tape -- lives in tests/demo_asset_integrity_tests.rs
+(irrevers-dab6b05d), which CI's cargo test runs; this script stays a cheap
+per-reference structural gate.
 
 Wired into scripts/definition-of-done.sh. The gate semantics are pinned by
 tests/doc_asset_check_tests.rs, which is what CI's cargo test runs -- this
@@ -30,6 +37,7 @@ reference was found); 2 usage error.
 """
 
 import bisect
+import io
 import re
 import sys
 import urllib.parse
@@ -124,6 +132,19 @@ def check_file(md_path):
                 f"{where}: wrong type -- the extension declares {declared} "
                 "and the content is not"
             )
+            continue
+        # The magic lives in the first bytes; truncation shows up at the
+        # end. A GIF stream that died mid-capture has a well-magic'd head
+        # and no 0x3B trailer, which is the one failure a 4096-byte read
+        # can never see.
+        if resolved.name.lower().endswith(".gif"):
+            with resolved.open("rb") as handle:
+                handle.seek(-1, io.SEEK_END)
+                if handle.read(1) != b";":
+                    problems.append(
+                        f"{where}: truncated -- the final byte is not the "
+                        "GIF trailer ';'"
+                    )
     return problems, found
 
 

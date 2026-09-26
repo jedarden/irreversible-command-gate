@@ -24,11 +24,15 @@
 # Size of the committed asset: the GIF captured in 0ae6afb is 614658 bytes,
 # and every capture so far has landed between 450 KB and 620 KB. A recapture
 # legitimately moves the exact number -- update this note with it in the same
-# commit -- but treat a committed GIF far below that band, or one whose final
-# byte is not the GIF trailer ';', as a truncated capture:
+# commit -- but treat one far below that band as a suspect capture. A quick
+# spot check while the capture is in hand:
 #   tail -c 1 docs/assets/icg-demo.gif | od -An -c   # expect ';'
-# scripts/check-doc-assets (in the DoD) already fails a missing, emptied or
-# wrong-magic one mechanically; truncation is what this note catches by eye.
+# Truncation no longer waits for a reviewer: scripts/check-doc-assets (in
+# the DoD) fails a missing, emptied, wrong-magic, or trailer-less GIF
+# mechanically, and tests/demo_asset_integrity_tests.rs parses the whole
+# block stream and pins the committed GIF's geometry and animation duration
+# to demo.tape -- a capture that died mid-run, or one that predates a tape
+# or demo change, cannot pass.
 set -u
 
 W=94
