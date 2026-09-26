@@ -16,6 +16,19 @@
 //! split, so a script piping a manifest through the tester sees exactly
 //! what a `--command` caller sees.
 //!
+//! The contract has a fault half too. When evaluation cannot happen at all
+//! -- a pack path that does not exist, a pack that does not parse, no packs
+//! installed, an unreadable `--file`, a missing input mode, an unparseable
+//! `--stdin` payload -- `icg check` exits `1` with the error on stderr and
+//! stdout left empty (quick-start.md documents the no-packs spelling
+//! verbatim). stdout non-empty therefore means a verdict was actually
+//! reached, so an adapter scraping stdout can never mistake broken
+//! infrastructure for an ALLOW. The engine's own fail-open-on-parse-failure
+//! posture is hook-facing: in check mode it is announced on stderr and
+//! never becomes a stdout decision. The one fault-adjacent path that does
+//! answer on stdout with exit 0 is the guard-disabled bypass, and
+//! emergency_response_tests.rs pins that it announces itself there.
+//!
 //! These tests run the real binary and lock both halves of the contract at
 //! the process boundary, where the exit status and the two streams actually
 //! exist.
@@ -483,4 +496,181 @@ fn file_dash_debug_writes_diagnostics_to_stderr_and_leaves_stdout_parseable() {
             "without --debug stderr must stay silent for piped content {content:?}; got: {plain_stderr:?}"
         );
     }
+}
+
+/// Run `icg check` with explicit arguments and extra environment, capturing
+/// both streams. The happy-path helpers above fix the invocation shape; the
+/// fault contract varies it (missing pack, missing mode flag, redirected
+/// pack directory), so it drives the argument list after the `check`
+/// subcommand instead.
+fn run_check_raw(args: &[&str], envs: &[(&str, &std::path::Path)]) -> Output {
+    // Same private denial-log sink as the happy-path helpers: a fault run
+    // never evaluates, so nothing is recorded, but keeping the environment
+    // identical means a fault test cannot pass because of where a denial
+    // record would have landed.
+    let sink = tempdir().expect("denial-log sink directory should be created");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_icg"));
+    command
+        .arg("check")
+        .args(args)
+        .env("ICG_DENIAL_LOG", sink.path().join("denials.jsonl"));
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("icg check should run");
+    drop(sink);
+    output
+}
+
+/// Run `icg check --stdin` with `payload` piped in, for the fault contract
+/// of PreToolUse mode: an unparseable payload must fail the same way the
+/// other input faults do, whatever the engine's internal posture was.
+fn run_check_stdin_mode(pack_path: &std::path::Path, payload: &str) -> Output {
+    let sink = tempdir().expect("denial-log sink directory should be created");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "check",
+            "--pack",
+            pack_path.to_str().expect("temporary path should be UTF-8"),
+            "--stdin",
+        ])
+        .env("ICG_DENIAL_LOG", sink.path().join("denials.jsonl"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("icg check should run");
+    child
+        .stdin
+        .take()
+        .expect("stdin should be piped")
+        .write_all(payload.as_bytes())
+        .expect("stdin payload should be written");
+    let output = child.wait_with_output().expect("icg check should finish");
+    drop(sink);
+    output
+}
+
+#[test]
+fn every_fault_exits_one_with_an_empty_stdout_and_the_error_on_stderr() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = write_pack(temp.path());
+    let pack_str = pack_path.to_str().expect("temporary path should be UTF-8");
+
+    let broken_pack = temp.path().join("broken-pack.json");
+    std::fs::write(&broken_pack, "{ not json").expect("broken pack should be written");
+    let broken_str = broken_pack
+        .to_str()
+        .expect("temporary path should be UTF-8");
+
+    let missing_pack = temp.path().join("does-not-exist.json");
+    let missing_str = missing_pack
+        .to_str()
+        .expect("temporary path should be UTF-8");
+
+    let missing_file = temp.path().join("no-such-target.yaml");
+    let missing_file_str = missing_file
+        .to_str()
+        .expect("temporary path should be UTF-8");
+
+    let empty_pack_dir = temp.path().join("no-packs-here");
+    std::fs::create_dir(&empty_pack_dir).expect("empty pack directory should be created");
+
+    // (arguments, extra environment, a fragment of the fault it must report)
+    let faults: Vec<(Vec<&str>, Vec<(&str, &std::path::Path)>, &str)> = vec![
+        (
+            vec!["--pack", broken_str, "--command", "git status"],
+            vec![],
+            "Error: failed to load rule pack",
+        ),
+        (
+            vec!["--pack", missing_str, "--command", "git status"],
+            vec![],
+            "Error: rule-pack path does not exist",
+        ),
+        (
+            // No explicit pack and an ICG_PACK_DIR with no packs in it: the
+            // documented no-policy spelling, quoted verbatim in
+            // docs/quick-start.md.
+            vec!["--command", "git status"],
+            vec![("ICG_PACK_DIR", empty_pack_dir.as_path())],
+            "Error: no rule packs found; pass --pack <path>",
+        ),
+        (
+            vec!["--pack", pack_str, "--file", missing_file_str],
+            vec![],
+            "Error: failed to read file",
+        ),
+        (
+            vec!["--pack", pack_str],
+            vec![],
+            "Error: one of --command, --stdin, or --file is required",
+        ),
+    ];
+
+    for (args, envs, expected_fragment) in faults {
+        let output = run_check_raw(&args, &envs);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "a fault that prevented evaluation must exit 1, not 0: the exit \
+             status is the only fault signal a stdout-parsing caller has left, \
+             and zero would read as the documented advisory success \
+             (args: {args:?})"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+        assert!(
+            stdout.is_empty(),
+            "a fault must keep stdout empty so no decision line can be \
+             fabricated from broken infrastructure (args: {args:?}, got: \
+             {stdout:?})"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+        assert!(
+            stderr.contains("Error:"),
+            "the fault must be reported on stderr as an error (args: {args:?}, \
+             got: {stderr:?})"
+        );
+        assert!(
+            stderr.contains(expected_fragment),
+            "the fault should name what broke (args: {args:?}, expected \
+             {expected_fragment:?}, got: {stderr:?})"
+        );
+    }
+}
+
+#[test]
+fn stdin_parse_failure_announces_fail_open_on_stderr_and_never_a_verdict_on_stdout() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = write_pack(temp.path());
+
+    // The engine fails open on unparseable hook input -- that posture is
+    // what keeps the hook front end permissive when a harness sends garbage.
+    // The check front end must surface that posture as the stderr notice it
+    // is, and still refuse to render a decision: nothing was evaluated, so
+    // stdout carries no ALLOW and the exit is the documented fault exit.
+    let output = run_check_stdin_mode(&pack_path, "not a PreToolUse payload");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "an unparseable --stdin payload must exit 1: the engine's fail-open \
+         posture belongs to the hook front end, and a zero exit here would \
+         tell adapters the payload was evaluated"
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        stdout.is_empty(),
+        "a failed stdin parse must not announce any verdict on stdout, got: \
+         {stdout:?}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("fail-open"),
+        "the engine's fail-open notice should stay on stderr, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("stdin did not contain a valid PreToolUse request"),
+        "the fault explanation should name the parse failure, got: {stderr:?}"
+    );
 }
