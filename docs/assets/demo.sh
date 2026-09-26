@@ -13,6 +13,13 @@
 #   PATH="$(dirname "$BIN"):$PATH" vhs docs/assets/demo.tape
 #
 # Requires vhs (github.com/charmbracelet/vhs) and ttyd.
+#
+# The verdicts printed here are pinned by tests/demo_verdict_regression_tests.rs:
+# it feeds every command and file body below to the real binary against the
+# repo's own packs/ and asserts the ALLOW / REWRITE / WARNING / DENIED prefix
+# README.md promises for it. If a pack or engine change moves a pinned
+# verdict, update that test and regenerate the GIF with the recipe below in
+# the same change, so the README keeps showing real output.
 set -u
 
 W=94
