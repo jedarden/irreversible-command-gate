@@ -551,6 +551,10 @@ fn run_check_stdin_mode(pack_path: &std::path::Path, payload: &str) -> Output {
     output
 }
 
+/// One fault-contract case: the `check` arguments, the extra environment to
+/// set (variable, path value), and a fragment of the fault it must report.
+type FaultCase<'a> = (Vec<&'a str>, Vec<(&'a str, &'a std::path::Path)>, &'a str);
+
 #[test]
 fn every_fault_exits_one_with_an_empty_stdout_and_the_error_on_stderr() {
     let temp = tempdir().expect("temporary directory should be created");
@@ -577,7 +581,7 @@ fn every_fault_exits_one_with_an_empty_stdout_and_the_error_on_stderr() {
     std::fs::create_dir(&empty_pack_dir).expect("empty pack directory should be created");
 
     // (arguments, extra environment, a fragment of the fault it must report)
-    let faults: Vec<(Vec<&str>, Vec<(&str, &std::path::Path)>, &str)> = vec![
+    let faults: Vec<FaultCase<'_>> = vec![
         (
             vec!["--pack", broken_str, "--command", "git status"],
             vec![],

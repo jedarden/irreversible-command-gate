@@ -727,11 +727,12 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
 }
 
 /// What the drift check knows about one pack on one side of the comparison.
+/// Only fields the Changed report renders are carried; safe-pattern counts
+/// would be dead state here (clippy dead-code) until the report grows them.
 #[derive(Debug, Clone)]
 struct PackFact {
     sha256: String,
     guarded_patterns: usize,
-    safe_patterns: usize,
     path: PathBuf,
 }
 
@@ -770,7 +771,6 @@ fn pack_facts(paths: &[PathBuf]) -> (BTreeMap<String, PackFact>, Vec<PackDriftFi
                     PackFact {
                         sha256: format!("{:x}", hasher.finalize()),
                         guarded_patterns: pack.guarded_patterns.len(),
-                        safe_patterns: pack.safe_patterns.len(),
                         path: path.clone(),
                     },
                 );

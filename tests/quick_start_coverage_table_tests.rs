@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 /// The severity words a row may annotate a rule with -- the exact spellings

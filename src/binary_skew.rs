@@ -41,14 +41,12 @@ impl ReleaseVersion {
             return None;
         }
         let mut parts = [0u64; 3];
-        let mut count = 0;
-        for component in reference.split('.') {
+        for (count, component) in reference.split('.').enumerate() {
             if component.is_empty() || !component.bytes().all(|b| b.is_ascii_digit()) || count == 3
             {
                 return None;
             }
             parts[count] = component.parse().ok()?;
-            count += 1;
         }
         Some(Self {
             major: parts[0],
