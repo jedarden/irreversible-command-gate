@@ -482,8 +482,12 @@ fn readme_what_ships_today_matches_the_shipped_packs() {
 }
 
 /// The other total-count sentences a new pack invalidates, beside the
-/// README's: quick-start's "What Gets Protected" opener and AGENTS.md's
-/// coverage transcript. Pinning them means pack number twelve cannot land
+/// README's: quick-start's "What Gets Protected" opener, AGENTS.md's
+/// coverage transcript, and the operator-facing transcripts that state the
+/// count inline -- the `coverage --list` verify one-liner repeated across
+/// the install guides, the `pack-manifest --verify` and health-report
+/// output, the examples walkthrough header, and quick-start's "should be
+/// listed" step. Pinning them means pack number twelve cannot land
 /// without every count claim moving with it.
 ///
 /// The count is derived twice: from the packs/ directory and from `icg
@@ -559,6 +563,60 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
         "AGENTS.md's coverage --list transcript should say the {count} packs \
          load"
     );
+
+    // The operator-facing transcripts state the count inline, too: the
+    // `coverage --list` verify one-liner repeated across the install
+    // guides, the `pack-manifest --verify` and health-report output, the
+    // examples walkthrough header, and quick-start's "should be listed"
+    // step. Digits where the transcript prints digits ("matches manifest
+    // (11 packs)"), the spelled-out form where the prose does ("all eleven
+    // packs"). Deliberately outside this table: rule-4-parity-gate.md's
+    // "ten packs" is pre-kubectl release history, and the examples README's
+    // "3 packs loaded" / "5 rule packs" scenario transcripts are fixture
+    // worlds held to the wire by tests/operator_scenarios.rs, not claims
+    // about packs/.
+    let digits = count.to_string();
+    let spelled = count_word(count).to_lowercase();
+    let one_liner = format!("coverage --list    # all {spelled} packs");
+    let transcript_claims: [(&str, Vec<String>); 4] = [
+        (
+            "docs/quick-start.md",
+            vec![
+                one_liner.clone(),
+                format!("All {spelled} packs should be listed"),
+            ],
+        ),
+        ("docs/onboarding-guide.md", vec![one_liner.clone()]),
+        (
+            "docs/examples/README.md",
+            vec![
+                one_liner.clone(),
+                format!("... {spelled} packs"),
+                format!("matches manifest ({digits} packs)"),
+                format!("Output ({spelled} packs):"),
+            ],
+        ),
+        (
+            "docs/operators/training-manual.md",
+            vec![
+                one_liner,
+                format!("matches manifest ({digits} packs)"),
+                format!("Rule packs: {digits} packs loaded"),
+                format!("... {spelled} packs"),
+            ],
+        ),
+    ];
+    for (path, needles) in &transcript_claims {
+        let doc = repo_relative(path);
+        for needle in needles {
+            assert!(
+                doc.contains(needle.as_str()),
+                "{path} states a pack count that disagrees with packs/*.json \
+                 ({count} ship): the transcript should contain {needle:?} -- \
+                 update the count in the same change as the pack"
+            );
+        }
+    }
 }
 
 /// The kubectl pack's shipped rule ids, and the retired exclusion claim.
