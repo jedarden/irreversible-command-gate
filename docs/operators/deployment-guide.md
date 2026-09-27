@@ -423,6 +423,82 @@ Tests stage the installed side with `ICG_INSTALLED_PACK_DIR`, which
 replaces the installed chain for operator commands only — the hook never
 reads it — so a test can exercise both tiers without touching `/etc/icg`.
 
+### The health-report operator contract
+
+`icg health` with no subcommand is the operator health report —
+health-report, the one-command installation check. It loads every
+resolved rule pack, checks the configured Claude Code hook file, and
+prints the operator inventory. Its subcommands (`status`, `reset`,
+`mark-start`, `mark-clean-exit`, `record-crash`) are the guard
+health-state operations with their own semantics; this section is about
+the report mode, which
+[`tests/health_report_contract_tests.rs`](../../tests/health_report_contract_tests.rs)
+holds to the wire.
+
+**What one report invocation does.** Pack loading always runs first:
+every pack the resolution below finds is loaded, and a pack that fails to
+load aborts the report before a single line is printed. Every report
+invocation without a subcommand — `icg health`, `--check-packs`,
+`--check-hooks`, `--verbose`, in any combination — prints the same
+complete inventory: the flags declare what the report verifies, they do
+not narrow what it prints. The one narrow form is a check flag combined
+with a subcommand: `icg health --check-packs status` prints only the pack
+verdict and does not run `status`, so avoid combining the two.
+
+**Human-readable output.** The report is line-oriented text on stdout,
+one `✓` line per checked area plus a `  - ` line per resolved pack file.
+Shown with the checkout's own packs resolved alone:
+
+```text
+$ ICG_PACK_DIR=packs icg health
+✓ All rule packs valid
+✓ Claude Code hook configured
+✓ icg binary: /usr/local/bin/icg v0.1.71
+✓ Rule packs: 11 packs loaded
+  - argocd-topology (1 patterns)
+  - beads (3 patterns)
+  - ...
+✓ Claude Code hook: Configured
+✓ State store: /var/lib/icg/state.db
+✓ Denial log: /var/log/icg/denials.log
+```
+
+The pack list names each resolved pack file with its pattern count: the
+same pack id can appear once per location it resolves from (installed
+trust directory and checkout `packs/`), and the count is of resolved
+files, not distinct ids. The state-store and denial-log lines name the
+default locations; they are not the resolved configuration of the
+running hook.
+
+**Machine-readable output.** None. The report is for a human at a
+terminal, and a structured-output flag is rejected as a usage error
+(`icg health --json` exits `2`). Automation reads the structured
+surfaces instead: `icg coverage --list --format json` (`coverage/v1`)
+for what is enforced, `icg catalog --json` (`icg-catalog/v1`) for the
+event policy, and `icg monitor` for the `/health/live`, `/health/ready`
+and Prometheus `/metrics` probes.
+
+**Pack source.** The report resolves packs the way the operator commands
+above do, minus the explicit tier — health-report has no `--pack` flag:
+`ICG_PACK_DIR` names the one location consulted when set, otherwise the
+union of the installed chain (or `ICG_INSTALLED_PACK_DIR`) and the
+working directory's `packs/` is loaded. Unlike `coverage --list`,
+`check --debug` and `status`, the report prints no `Pack source:` lines
+and no shadow warning: its ✓ attests the resolved union, not the
+deployed set alone. For the labeled view, use those commands or
+`icg pack-drift`.
+
+**Exit status.**
+
+- `0` — every check that ran passed.
+- `1` — a resolved pack failed to load (stderr names the path with `✗`
+  and stdout stays empty), no pack location resolved at all, or
+  `ICG_HOOK_CONFIG` is set and names a file that does not exist. The
+  hook check is a presence check on that one variable: unset, the hook
+  line prints unconditionally; set and missing, the report fails after
+  the pack line has printed.
+- `2` — usage error: an unknown flag or subcommand.
+
 ## Common deployment configurations
 
 ### Hook-only workstation

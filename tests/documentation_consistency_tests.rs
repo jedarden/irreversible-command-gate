@@ -578,7 +578,7 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
     let digits = count.to_string();
     let spelled = count_word(count).to_lowercase();
     let one_liner = format!("coverage --list    # all {spelled} packs");
-    let transcript_claims: [(&str, Vec<String>); 4] = [
+    let transcript_claims: [(&str, Vec<String>); 5] = [
         (
             "docs/quick-start.md",
             vec![
@@ -595,6 +595,13 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
                 format!("matches manifest ({digits} packs)"),
                 format!("Output ({spelled} packs):"),
             ],
+        ),
+        // deployment-guide's health-report contract transcript resolves
+        // the checkout's packs alone (ICG_PACK_DIR=packs), so its count is
+        // the shipped count, not a host's installed-union count.
+        (
+            "docs/operators/deployment-guide.md",
+            vec![format!("✓ Rule packs: {digits} packs loaded")],
         ),
         (
             "docs/operators/training-manual.md",

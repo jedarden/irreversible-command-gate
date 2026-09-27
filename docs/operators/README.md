@@ -39,6 +39,7 @@ icg hook
 icg status
 icg trust show|set|check
 icg update
+icg health [--check-packs|--check-hooks|--verbose]
 icg health status|reset|mark-start|mark-clean-exit|record-crash
 icg telemetry status|reset|configure
 icg policy status|reconcile|configure|demote|force-graduate|force-revert
@@ -54,6 +55,10 @@ icg new-pack <name>
 ```
 
 Run `icg <command> --help` on the installed binary for the exact options.
+The report mode of `icg health` — the one-command installation check — has
+a pinned contract: what it reports, its output, pack source and exit
+statuses are specified in the
+[health-report operator contract](deployment-guide.md#the-health-report-operator-contract).
 The diagnostic commands operate on explicit local rule-pack paths when no
 installed pack is available. Repository overrides remain release-bound: an
 approval without an exact trusted release reference records the review but does
