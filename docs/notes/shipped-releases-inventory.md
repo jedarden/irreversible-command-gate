@@ -30,29 +30,40 @@ repos/jedarden/irreversible-command-gate/releases/tags/v0.1.65`; the
 same query for `…/tags/v0.1.66` returned 404 — v0.1.66 has no GitHub
 Release as of this pass, and no `v0.1.67` tag exists on the remote
 either, so the inventory stops at v0.1.66).
+Re-verified again 2026-09-27 through v0.1.71: tags v0.1.67 through
+v0.1.71 were found in the checkout but absent here (the 2026-09-25 pass
+predated them), and their rows were added from the same two sources
+(`git for-each-ref refs/tags/v0.1.67` through
+`refs/tags/v0.1.71`; `gh api
+repos/jedarden/irreversible-command-gate/releases/tags/v0.1.67` through
+`…/tags/v0.1.71` — the same query for `…/tags/v0.1.69` returned 404, so
+v0.1.69 also has no GitHub Release as of this pass; `v0.1.66`'s 404
+state carried over unchanged).
 
 ## The two facts, stated separately
 
 These are distinct claims and downstream edits must cite the right one:
 
-1. **Git tags exist.** The repo carries **67 tags, `v0.1.0` through
-   `v0.1.66`**, contiguous with no gaps. All are lightweight tags
+1. **Git tags exist.** The repo carries **72 tags, `v0.1.0` through
+   `v0.1.71`**, contiguous with no gaps. All are lightweight tags
    (`git for-each-ref` reports `objecttype: commit` for every one), so
    each tag's "date" is the commit's author/commit date, not a separate
    tag-creation date.
 2. **GitHub Releases exist.** `gh release list` on
-   `jedarden/irreversible-command-gate` returns **65 published Releases,
-   `v0.1.1` through `v0.1.65`**, none draft, none prerelease, all
-   targeting `main`. `v0.1.65` is marked **Latest** (published
-   2026-09-24T18:32:31Z).
+   `jedarden/irreversible-command-gate` returns **69 published Releases,
+   `v0.1.1` through `v0.1.71`**, none draft, none prerelease, all
+   targeting `main`. `v0.1.71` is marked **Latest** (published
+   2026-09-26T01:02:37Z).
 
 ### Set differences
 
-- **Tags without a matching GitHub Release: `v0.1.0` and `v0.1.66`.**
-  `v0.1.0` is the orphaned first tag, never released. `v0.1.66` was
-  tagged 2026-09-25T03:20:55Z and had no Release as of the 2026-09-25
-  collection — 13 h after the tag, against a historical tag→Release
-  gap of minutes.
+- **Tags without a matching GitHub Release: `v0.1.0`, `v0.1.66`, and
+  `v0.1.69`.** `v0.1.0` is the orphaned first tag, never released.
+  `v0.1.66` was tagged 2026-09-25T03:20:55Z and has no Release as of
+  the 2026-09-27 collection — over two days, against a historical
+  tag→Release gap of minutes. `v0.1.69` was tagged
+  2026-09-25T17:23:59Z (merge commit `5c99d40`) and has no Release as
+  of the 2026-09-27 collection either.
 - **Releases without a matching git tag: none.** Every Release points at
   a real tag.
 
@@ -73,16 +84,22 @@ These are distinct claims and downstream edits must cite the right one:
   `icg`, `icg-packs.tar.gz`, `pack-manifest.json`, `rule-pack.json`.
   Re-run again 2026-09-24 over all 64; the invariants held unchanged.
   Re-run again 2026-09-25 over all 65; the invariants held unchanged.
+  Re-run again 2026-09-27 over all 69; the invariants held unchanged —
+  0 drafts, 0 prereleases, `target_commitish` = `main` on all, and
+  every release carrying exactly the four assets `icg`,
+  `icg-packs.tar.gz`, `pack-manifest.json`, `rule-pack.json`.
 
 ## Inventory
 
 Combined table — the two sets differ by `v0.1.0` and (as of the
-2026-09-25 pass) `v0.1.66`, so one row per version enumerates both the
+2026-09-27 pass) `v0.1.66` and `v0.1.69`, so one row per version
+enumerates both the
 tag and (where present) the Release. Tag
 dates are normalized to UTC for sortability; `v0.1.0`–`v0.1.3` were
 captured by git with a `-04:00` offset and are converted here (e.g.
 `v0.1.1` tagged `2026-09-05T23:36:55-04:00` = `2026-09-06T03:36:55Z`).
-Every row from `v0.1.1` down except `v0.1.66` has a published Release.
+Every row from `v0.1.1` down except `v0.1.66` and `v0.1.69` has a
+published Release.
 
 | Tag | Commit | Tag date (UTC) | Release published (UTC) | Notes |
 |---|---|---|---|---|
@@ -151,19 +168,27 @@ Every row from `v0.1.1` down except `v0.1.66` has a published Release.
 | v0.1.62 | `52e3a26` | 2026-09-19T20:19:57Z | 2026-09-19T21:01:59Z | |
 | v0.1.63 | `1820cec` | 2026-09-24T04:32:00Z | 2026-09-24T05:20:17Z | |
 | v0.1.64 | `560a5ac` | 2026-09-24T12:25:47Z | 2026-09-24T13:15:40Z | |
-| v0.1.65 | `dcc8f11` | 2026-09-24T17:23:16Z | 2026-09-24T18:32:31Z | **Latest** |
+| v0.1.65 | `dcc8f11` | 2026-09-24T17:23:16Z | 2026-09-24T18:32:31Z | |
 | v0.1.66 | `3ec31cc` | 2026-09-25T03:20:55Z | — | **No GitHub Release** |
+| v0.1.67 | `918f9d3` | 2026-09-25T11:33:52Z | 2026-09-25T13:02:56Z | |
+| v0.1.68 | `08e5502` | 2026-09-25T14:59:21Z | 2026-09-25T15:31:29Z | |
+| v0.1.69 | `5c99d40` | 2026-09-25T17:23:59Z | — | **No GitHub Release** |
+| v0.1.70 | `4363c42` | 2026-09-25T21:19:45Z | 2026-09-25T22:37:40Z | |
+| v0.1.71 | `f6b43e7` | 2026-09-25T23:30:42Z | 2026-09-26T01:02:37Z | **Latest** |
 
 ## Artifact evidence
 
 Releases carry real assets, not just a tag echo. Spot-check on
-`v0.1.65`: `icg` (the binary), `icg-packs.tar.gz`, `pack-manifest.json`,
-`rule-pack.json` — the same four assets verified on `v0.1.64` and
+`v0.1.71`: `icg` (the binary), `icg-packs.tar.gz`, `pack-manifest.json`,
+`rule-pack.json` — the same four assets the 2026-09-27 sweep confirmed
+on every one of the 69 releases (after per-release spot-checks on
+`v0.1.65` in the 2026-09-25 pass, on `v0.1.64` and
 `v0.1.63` in the 2026-09-24 pass, on `v0.1.62` in the 2026-09-20 pass,
 on `v0.1.61` in the 2026-09-13 pass and on `v0.1.57` in the initial
-pass; `v0.1.66` has no release object to spot-check. Release title
+pass); `v0.1.66` and `v0.1.69` have no release object to spot-check.
+Release title
 format is `irreversible-command-gate vN.N.N`; `target_commitish` is
-`main` on all 65.
+`main` on all 69.
 
 ## Observations for the plan reconciliation (factual, not analysis)
 
@@ -183,7 +208,22 @@ format is `irreversible-command-gate vN.N.N`; `target_commitish` is
   on the docs commit `3ec31cc` with no Release as of the 2026-09-25
   collection, and the tree's `chore: release v0.1.67` commit
   (`ebaa941`) had no `v0.1.67` tag on either remote at collection time.
+  `v0.1.67` has since been tagged — 2026-09-25T11:33:52Z, though on
+  the inventory-refresh docs commit `918f9d3` rather than the
+  `chore: release v0.1.67` bump commit (`ebaa941`) the tree already
+  carried — and restored the
+  pattern (89 min tag→release); `v0.1.68` continued it on 2026-09-25
+  (32 min, `08e5502` the tagged commit). `v0.1.69` broke it the same
+  way `v0.1.66` did: tagged 2026-09-25T17:23:59Z on merge commit
+  `5c99d40` with no Release as of the 2026-09-27 collection.
+  `v0.1.70` kept the pattern on 2026-09-25 (78 min tag→release,
+  `4363c42` the tagged commit), and `v0.1.71` on 2026-09-25/26 (92
+  min, its tagged commit `f6b43e7` being the `chore: release v0.1.71`
+  bump itself). The skips now cluster on docs/merge commits rather
+  than version-bump commits — the pipeline still releases every
+  `Cargo.toml` bump, but two non-bump tags (`v0.1.66`, `v0.1.69`) have
+  now gone unreleased.
 - The correct replacement for plan.md's "no release has ever been cut"
-  (line ~457) is: **65 GitHub Releases exist (v0.1.1–v0.1.65); `v0.1.0`
-  and, as of the 2026-09-25 pass, `v0.1.66` are tagged without a
-  Release.**
+  (line ~457) is: **69 GitHub Releases exist (v0.1.1–v0.1.71); `v0.1.0`
+  and, as of the 2026-09-27 pass, `v0.1.66` and `v0.1.69` are tagged
+  without a Release.**
