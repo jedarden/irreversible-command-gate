@@ -4146,3 +4146,78 @@ fn examples_scenario_count_matches_the_documented_claim() {
          {claim:?} -- the claim disagrees with the page's scenario headings"
     );
 }
+
+/// Every decision record under docs/adr/ must be indexed in the
+/// documentation map.
+///
+/// The map opens with "Everything under `docs/` in one place", but a
+/// decision record was not a thing it indexed: ADR-001 shipped 2026-09-19
+/// and the map grew no adr/ section for it, so the one document recording
+/// *why* the kubectl pack looks the way it does was reachable only by
+/// already knowing to look -- every other route to it (quick-start, the
+/// migration guide, the parity gate, both indexes) linked the record while
+/// the entry point linking to *them* did not. Enumerating docs/adr/ keeps
+/// the next accepted record from going unindexed the same way; link
+/// resolution itself is held by
+/// `docs_relative_references_resolve_to_existing_nonempty_targets`.
+#[test]
+fn documentation_map_indexes_every_adr_record() {
+    let adr_dir = audited_checkout().join("docs/adr");
+    let mut records: Vec<String> = fs::read_dir(&adr_dir)
+        .unwrap_or_else(|error| panic!("should list {}: {error}", adr_dir.display()))
+        .map(|entry| entry.expect("adr directory entry").path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .map(|path| {
+            path.file_name()
+                .expect("adr file name")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    records.sort();
+    assert!(
+        !records.is_empty(),
+        "docs/adr/ should hold the accepted decision records; if the \
+         directory moved, move this guard with it"
+    );
+
+    let map = repo_relative("docs/README.md");
+    for record in &records {
+        assert!(
+            map.contains(&format!("](adr/{record})")),
+            "docs/README.md's map does not index docs/adr/{record} -- the map \
+             opens by claiming to cover everything under docs/, so a decision \
+             record outside it is invisible exactly the way ADR-001 was for \
+             the week after it shipped"
+        );
+
+        // The map indexes *accepted* decisions; the record must still say so.
+        let text = repo_relative(&format!("docs/adr/{record}"));
+        let status = text
+            .lines()
+            .find(|line| line.starts_with("**Status:**"))
+            .unwrap_or_else(|| panic!("docs/adr/{record} should carry a **Status:** line"));
+        assert!(
+            status.contains("Accepted"),
+            "docs/adr/{record} is indexed as an accepted decision but its \
+             status line reads {status:?}; index it as what it is"
+        );
+    }
+
+    // The two index pages that route a reader to the kubectl decision must
+    // keep their links: the operator index's design-references list, and the
+    // developer guide where it explains why no kubectl wrapper symlink
+    // exists.
+    let operators = repo_relative("docs/operators/README.md");
+    assert!(
+        operators.contains("](../adr/001-kubectl-mutation-pack.md)"),
+        "docs/operators/README.md should keep linking the kubectl decision \
+         record from its design references"
+    );
+    let developers = repo_relative("docs/developers/README.md");
+    assert!(
+        developers.contains("](../adr/001-kubectl-mutation-pack.md)"),
+        "docs/developers/README.md should keep linking the kubectl decision \
+         where it explains why no kubectl wrapper symlink exists"
+    );
+}

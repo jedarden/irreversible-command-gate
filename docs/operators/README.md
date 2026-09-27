@@ -108,6 +108,7 @@ the required human review, and advance the exact trust pointer. See the
 
 - [Project README](../../README.md)
 - [Implementation plan](../plan/plan.md)
+- [ADR-001: the kubectl mutation pack](../adr/001-kubectl-mutation-pack.md)
 - [Fail-closed transition design](../design/fail-closed-transition.md)
 - [Multi-harness integration notes](../notes/multi-harness-integration.md)
 - [Existing enforcement coverage](../notes/existing-enforcement-infrastructure.md)

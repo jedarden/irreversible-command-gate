@@ -66,6 +66,15 @@ Short, ordered procedures for a moment when something is on fire.
 | [notes/pack-source-resolution.md](notes/pack-source-resolution.md) | Design intent (not shipped): one labeled pack source per operator invocation — explicit beats installed beats repository, never a union. |
 | [research/prior-art.md](research/prior-art.md) | What existed already and why none of it was forked. |
 
+## Architecture decision records
+
+[adr/](adr/) holds the accepted decisions behind the shipped surface, one
+numbered record per decision with its context and consequences.
+
+| File | Decision |
+| --- | --- |
+| [adr/001-kubectl-mutation-pack.md](adr/001-kubectl-mutation-pack.md) | The `kubectl` mutation block ships as a blanket pack, hook front-end only — why ArgoCD-aware narrowing stays unattempted and `icg install` never shadows `kubectl`. |
+
 ## Assets
 
 [assets/](assets/) holds three figures — the demo GIF (the CLI surface), the
