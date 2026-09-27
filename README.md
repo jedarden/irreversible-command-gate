@@ -182,9 +182,9 @@ scaffolds a pack and its regression test together.
 ## Project status
 
 The engine, the packs, both front-ends (hook and PATH wrapper), the
-release-integrity machinery, and 987 passing tests across `tests/` and
-`src/` are in the tree and working. The whole crate is 25,800 lines of
-Rust with 17 dependencies and no C toolchain requirement.
+release-integrity machinery, and a green full test suite across `tests/`
+and `src/` are in the tree and working. The whole crate is pure Rust with
+a small dependency tree and no C toolchain requirement.
 
 **`v0.1.4` is the current release** (2026-09-08). It is the first release
 cut by the version auto-bump in `icg-ci`: before it, a push that did not

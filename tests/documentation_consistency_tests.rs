@@ -481,6 +481,44 @@ fn readme_what_ships_today_matches_the_shipped_packs() {
     }
 }
 
+/// README's Project status section must stay free of point-in-time counts.
+///
+/// It pinned "987 passing tests", "25,800 lines of Rust" and "17
+/// dependencies" -- figures that move with almost every PR and had no
+/// consistency guard, so they went stale silently: by 2026-09-27 Cargo.toml
+/// declared 15 direct dependencies while the README still said 17 (bead
+/// `irrevers-de3e75f8`). AGENTS.md's sibling "987" was made
+/// count-independent the same week (commit 69e5d15, bead
+/// `irrevers-697cd47b`), and the README figures are gone from the prose
+/// now. This guard holds the section to that: a test, line or dependency
+/// count may only appear here behind a guard that derives it, never as a
+/// hand-pinned snapshot.
+#[test]
+fn readme_project_status_carries_no_point_in_time_counts() {
+    let doc = repo_relative("README.md");
+    let start = doc
+        .find("## Project status")
+        .expect("README should keep its 'Project status' section");
+    let section = doc[start..]
+        .split("\n## ")
+        .next()
+        .expect("the section heading is non-empty");
+
+    for (pattern, label) in [
+        (r"\b\d[\d,]*\s+(passing\s+)?tests\b", "test count"),
+        (r"\b\d[\d,]*\s+lines\b", "line count"),
+        (r"\b\d+\s+dependencies\b", "dependency count"),
+    ] {
+        let re = regex::Regex::new(pattern).expect("guard pattern should compile");
+        assert!(
+            !re.is_match(section),
+            "README's Project status section pins a point-in-time {label}; \
+             those figures move with almost every PR and drift silently -- \
+             keep the wording count-independent"
+        );
+    }
+}
+
 /// The other total-count sentences a new pack invalidates, beside the
 /// README's: quick-start's "What Gets Protected" opener, AGENTS.md's
 /// coverage transcript, and the operator-facing transcripts that state the
