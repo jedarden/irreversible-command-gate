@@ -542,6 +542,20 @@ BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
 sudo install -o root -g root -m 0755 "$BIN" /usr/local/bin/icg
 ```
 
+`icg status` reports when this procedure is due. Its **Binary Version**
+section names the running binary and the trusted release, and its
+**Binary Skew** field reads `in sync` while they match, `SKEWED — running
+binary vX.Y.Z is older than trusted release vA.B.C` once the trust pointer
+has advanced past the executable (run this procedure), `SKEWED — running
+binary vX.Y.Z is newer than trusted release vA.B.C` when the pointer lags
+the executable, or `unknown` when no pointer is configured or the trusted
+reference is not a release version. The skew never clears on its own:
+`sudo icg update` advances the packs and reads the pointer, and
+deliberately never writes to the binary. The release-side half of the same
+procedure — what the release's `icg` asset may be attached from, and what
+hosts do when the pointer advances — is in
+[`release-cutting.md`](../runbooks/release-cutting.md).
+
 ### Modular directory upgrade with the self-updater
 
 The updater does not discover or choose a latest release. It reads the exact

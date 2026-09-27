@@ -8,6 +8,11 @@
 /// description lives in `docs/notes/harness-adapter-contract.md`.
 pub mod adapter;
 pub mod alerting;
+/// The binary-versus-trusted-release skew report (`icg status`'s
+/// **Binary Version** section): the updater advances packs and reads the
+/// pointer but never writes the root-owned binary, so this comparison is
+/// what makes a host's executable drift visible.
+pub mod binary_skew;
 /// The versioned always/never event catalog (`icg catalog --json`,
 /// `icg-catalog/v1`); its normative description lives in
 /// `docs/notes/event-catalog-json-api.md`.

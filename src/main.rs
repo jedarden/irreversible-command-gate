@@ -2248,6 +2248,7 @@ fn main() -> Result<()> {
                     .context("Failed to determine trust pointer path")?
             };
             let store = TrustPointerStore::new(store_path.clone());
+            let pointer = store.load()?;
 
             println!("# icg Status\n");
 
@@ -2260,11 +2261,11 @@ fn main() -> Result<()> {
             // Trust Pointer section
             println!("## Trust Pointer");
             println!("  **Path:** {}", store_path.display());
-            match store.load()? {
+            match pointer.as_ref() {
                 Some(pointer) => {
                     println!("  **Reference:** `{}`", pointer.trusted_ref);
                     println!("  **Last Updated:** {}", pointer.updated_at);
-                    if let Some(justification) = pointer.justification {
+                    if let Some(justification) = &pointer.justification {
                         println!("  **Justification:** {}", justification);
                     }
                 }
@@ -2277,6 +2278,16 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            println!();
+
+            // Binary Version section. The updater advances the packs and
+            // reads the pointer; the root-owned binary moves only when an
+            // operator upgrades it, so this reports the skew between the
+            // running binary and the release the pointer above names.
+            println!("## Binary Version");
+            icg::binary_skew::print_status_section(
+                pointer.as_ref().map(|p| p.trusted_ref.as_str()),
+            );
             println!();
 
             // Rule Pack Version section

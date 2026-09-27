@@ -243,3 +243,28 @@ byte-identity per member plus `pack-manifest --verify` before uploading,
 `gh release upload --clobber`, then re-download and run the gate against
 the release to confirm what is published — not what was intended — passes.
 
+## The binary asset and the hosts that run it
+
+The release may carry an `icg` binary asset beside the pack archive. The
+provenance rules above apply to it with more force, because the binary
+asset is what operators install on hosts: it must come from the verified
+`icg-ci` run behind the release (or, in the manual fallback, be one of
+that run's artifacts) — never be built and uploaded by hand afterwards.
+Record its checksum in the release record; the operator procedure needs a
+recorded value to verify against, and a release whose guard binary no gate
+ever executed is exactly what the record exists to prevent.
+
+Cutting a release advances the pack artifact and the trust pointer; it
+does not touch any host's `/usr/local/bin/icg`. The binary is root-owned
+so the guarded agent cannot replace it, and `icg update` deliberately
+never writes to it, so each host stays on its old executable until an
+operator runs the deployment guide's "Upgrade the executable from source"
+procedure against the release the pointer names: build or take the
+release's binary asset, verify it against the recorded checksum, back up
+and replace `/usr/local/bin/icg` root-owned mode `0755`, then re-run
+`icg status` until the **Binary Version** section's **Binary Skew** field
+reads `in sync`. Until then `icg status` reports the skew — `SKEWED —
+running binary vX.Y.Z is older than trusted release vA.B.C` — which is
+the host-side signal, per host and fleet-wide, that this step is still
+outstanding.
+
