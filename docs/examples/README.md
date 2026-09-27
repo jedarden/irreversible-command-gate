@@ -32,9 +32,10 @@ This document provides realistic, step-by-step scenarios demonstrating how icg w
 #### Step 1: Download and Install
 
 ```bash
-# Release binary and packs (v0.1.71, linux x86_64)
+# Release binary, packs, and the manifest Step 2 verifies (v0.1.71, linux x86_64)
 BASE=https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.71
 curl -fsSLO "$BASE/icg" && curl -fsSLO "$BASE/icg-packs.tar.gz"
+curl -fsSLO "$BASE/pack-manifest.json"
 
 sudo install -o root -g root -m 0755 icg /usr/local/bin/icg
 sudo install -d -o root -g root -m 0755 /etc/icg
@@ -42,7 +43,7 @@ sudo tar -xzf icg-packs.tar.gz -C /etc/icg
 sudo chown -R root:root /etc/icg/packs
 
 # Verify
-icg --version          # icg 0.1.3
+icg --version          # icg <release version>
 icg coverage --list    # all eleven packs
 ```
 
@@ -109,19 +110,22 @@ echo '{"toolName":"Bash","toolInput":{"command":"vault kv destroy secret/test"}}
 
 # Expected output:
 # DENIED by icg
-# Reason: vault kv destroy is permanently destructive and cannot be undone
-# Pack: vault
+# Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are captured and written back before the rekey completes. If this is genuinely intended, a human runs it.
+# Pack: openbao
 # Pattern: openbao-destructive-verb
 # Severity: Critical
-# Explanation: vault kv destroy is permanently destructive and cannot be undone
-# Redirect: Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.
+# Explanation: Permanently destroys secret data, an auth mount, a policy, or the unseal shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that is not written back leaves the instance unable to unseal.
+# Redirect: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are captured and written back before the rekey completes. If this is genuinely intended, a human runs it.
 
-# Test a safe command (should be allowed)
+# Test a read the shipped packs watch: a secret read to stdout is not denied,
+# but it warns, because the value would land in the transcript.
 echo '{"toolName":"Bash","toolInput":{"command":"vault kv get secret/test"}}' | \
   icg check --stdin
 
 # Expected output:
-# ALLOW: no configured rule matched
+# WARNING: This read prints a secret value to stdout, where it enters the transcript. Prefer redirecting to a mode-600 destination (`bao kv get -field=<k> <path> > ~/.config/<app>/creds`), or consuming it inline for one command via an environment assignment. To check that a path exists without revealing the value, use `bao kv metadata get`.
+# Pack: openbao
+# Pattern: openbao-kv-get-to-stdout
 ```
 
 #### Step 5: Review Setup
@@ -222,16 +226,14 @@ gh issue create \
 #### Step 1: Read the Denial Message
 
 ```bash
-# The agent receives this denial:
+# The agent receives this denial (icg check --command "vault kv destroy secret/app/api-key"):
 DENIED by icg
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Rule Pack:    vault
-Pattern ID:   openbao-destructive-verb
-Severity:     Critical
-Explanation:  This operation would permanently destroy secret data and cannot be undone.
-Redirect:     Use 'vault kv patch' to reconcile or 'vault kv delete' for versioned metadata.
-Command:      vault kv destroy secret/app/api-key
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are captured and written back before the rekey completes. If this is genuinely intended, a human runs it.
+Pack: openbao
+Pattern: openbao-destructive-verb
+Severity: Critical
+Explanation: Permanently destroys secret data, an auth mount, a policy, or the unseal shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that is not written back leaves the instance unable to unseal.
+Redirect: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are captured and written back before the rekey completes. If this is genuinely intended, a human runs it.
 ```
 
 #### Step 2: Understand the Pattern
@@ -242,10 +244,13 @@ icg explain --pattern openbao-destructive-verb
 
 # Output:
 # Pattern: openbao-destructive-verb
+# Pack: openbao
+# Enabled: true
+# Tier: Tier1
 # Severity: Critical
-# Matches: vault kv destroy, vault kv destroy -versions=<n>
-# Why: Permanently destroys secret data versions
-# Alternative: vault kv patch (safe reconcile), vault kv delete (versioned metadata only)
+# Why: Permanently destroys secret data, an auth mount, a policy, or the unseal shares. KV v2 version history does not survive destroy/metadata-delete, and a rekey that is not written back leaves the instance unable to unseal.
+# Redirect channel: Deny
+# Alternative: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; 'kv destroy' and 'kv metadata delete' are not. Disabling a mount or policy breaks every ExternalSecret that depends on it, and 'operator rekey' invalidates the unseal shares unless the new ones are captured and written back before the rekey completes. If this is genuinely intended, a human runs it.
 ```
 
 #### Step 3: Follow the Redirect
@@ -619,15 +624,18 @@ cargo run --bin icg -- coverage-diff \
 #### Step 4: Manual Verification
 
 ```bash
-# Test edge cases
+# Test edge cases -- every --force spelling rewrites to a plain push;
+# none of them denies, and none of them passes through untouched.
 icg check --command "git push --force origin main"
 icg check --command "git push -f origin main"
 icg check --command "git push --force-with-lease origin main"
 
-# Verify:
-# --force: BLOCKED
-# -f: BLOCKED
-# --force-with-lease: ALLOWED (different pattern)
+# Each prints the same verdict (shown for --force-with-lease, the widest
+# spelling -- a lease push still rewrites remote history):
+# REWRITE: Removed --force/-f/--force-with-lease from git push; force-pushing can rewrite remote history and lose commits. Retrying as a normal push preserves the requested commits without rewriting the remote.
+# Suggested input: git push origin main
+# Pack: git
+# Pattern: git-force-push
 ```
 
 #### Step 5: Deploy to Test Environment
@@ -919,21 +927,29 @@ cat ~/.claude/hooks/org-rule-guard.py | grep "BLOCKED"
 # Check what icg covers
 icg coverage --list
 
-# Output:
-# ✓ vault (destructive operations)
-# ✓ git (force-push, stale-HEAD, commit-without-pathspec)
-# ✓ image-tag (:latest, bare SHA)
-# ✓ storage-class (ssd, ssd-large)
-# ✓ beads (.beads/ protection)
-# ✓ secrets (credential values in Bash)
-# ✓ misc (deprecated tools, needle cleanup)
-# ✓ tmux (bare NATO sessions)
+# Output (eleven packs):
+# ✓ pack argocd-topology (1 patterns)
+# ✓ pack beads (3 patterns)
+# ✓ pack docker (3 patterns)
+# ✓ pack git (4 patterns)
+# ✓ pack image-tag (2 patterns)
+# ✓ pack kubectl (3 patterns)
+# ✓ pack misc (2 patterns)
+# ✓ pack openbao (3 patterns)
+# ✓ pack secrets (6 patterns)
+# ✓ pack storage-class (1 patterns)
+# ✓ pack tmux (1 patterns)
 #
-# Also built in (not a pack): .github/workflows/ write denial
+# Overlapping with org-rule-guard.py (double denials during coexistence):
+# :latest and bare-SHA image tags, force-push, .beads/ protection,
+# storage classes, secrets in Bash, deprecated tools, bare NATO tmux
+# sessions, and -- via the kubectl pack (ADR-001) -- mutating kubectl verbs.
 #
-# ❌ NOT COVERED:
-#   - kind: Job/CronJob
-#   - mutating kubectl verbs
+# Also built in (not a pack): .github/workflows/ writes and
+# kind: Job / kind: CronJob manifests.
+#
+# NOT COVERED by icg (org-rule-guard.py keeps these):
+#   - credential values in Write/Edit content (the secrets pack scans Bash)
 ```
 
 #### Step 3: Plan Migration Strategy
@@ -1085,14 +1101,26 @@ echo '{"toolName":"apply_patch","toolInput":{"command":"*** Begin Patch\n*** Upd
   icg check --stdin --harness claude-code
 
 # Output:
-# DENIED: storageClassName: ssd is prohibited on Rackspace Spot
+# DENIED by icg
+# Reason: SSD and SSD-Large storage classes are prohibited on Rackspace Spot. Use sata or sata-large instead, and set storageClassName explicitly.
+# Pack: storage-class
+# Pattern: storage-class-ssd
+# Severity: High
+# Explanation: SSD storage classes are prohibited on Rackspace Spot
+# Redirect: SSD and SSD-Large storage classes are prohibited on Rackspace Spot. Use sata or sata-large instead, and set storageClassName explicitly.
 
 # Test Codex CLI-specific features (same format)
 echo '{"toolName":"apply_patch","toolInput":{"command":"*** Begin Patch\n*** Update File: deployment.yaml\n+image: app:latest\n*** End Patch"}}' | \
   icg check --stdin --harness codex-cli
 
 # Output:
-# DENIED: image tag :latest is not pinned to a specific version
+# DENIED by icg
+# Reason: The :latest image tag is banned — it silently changes what runs and makes rollback impossible. Pin this image to the semver value from containers/<name>/VERSION.
+# Pack: image-tag
+# Pattern: image-tag-latest
+# Severity: High
+# Explanation: Using :latest image tag prevents reproducible deployments
+# Redirect: The :latest image tag is banned — it silently changes what runs and makes rollback impossible. Pin this image to {derived_value}.
 ```
 
 #### Step 4: Monitor Both Harnesses
@@ -1252,13 +1280,22 @@ test owns it.
 The suite intentionally does not execute external setup or coordination commands
 such as `wget`, `scp`, `ssh`, `gh`, Vault itself, or email. Those steps remain
 operator actions; the fixture-backed tests exercise every corresponding `icg`
-command, hook decision, and expected allow/deny boundary. Run the complete
-examples coverage with:
+command, hook decision, and expected allow/deny boundary.
+
+Separately from the fixture flows, the inline transcripts above — the
+command-and-expected-output pairs in Scenario 1 (Step 4), Scenario 3 (Steps 1
+and 2, plus the allowed `vault kv patch` redirect target in Step 3), Scenario 7
+(Step 4), Scenario 10 (Step 2), and Scenario 11 (Step 3) — are held to the real
+binary against the repo's own `packs/` by
+[`examples_verdict_regression_tests.rs`](../../tests/examples_verdict_regression_tests.rs),
+which pins each documented verdict, pack and pattern id, and alternative
+channel, so a pack change that invalidates a printed transcript fails CI.
+Run the complete examples coverage with:
 
 ```text
 cargo test --test operator_scenarios --test developer_scenarios \
   --test developer_scenarios_cli_tests --test integration_scenarios \
-  --test examples_coverage
+  --test examples_coverage --test examples_verdict_regression_tests
 ```
 
 ---
@@ -1278,6 +1315,6 @@ For more information:
 
 ---
 
-**Example Scenarios Version**: 1.0
-**Last Updated**: 2026-08-21
+**Example Scenarios Version**: 1.1
+**Last Updated**: 2026-09-27
 **For**: icg v0.1.0+
