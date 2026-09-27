@@ -15,7 +15,7 @@ not writing Rust.
 
 ```bash
 cargo build --release                       # no system deps; rustls, not OpenSSL
-cargo run --release -- coverage --list      # confirm the 11 packs load
+cargo run --release -- coverage --list      # confirm the 11 packs load, each labeled with its source
 cargo run --release -- check --command "git push --force origin main"
 cargo test                                  # the whole suite, zero failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
@@ -59,6 +59,27 @@ happen and what is always allowed, keyed by the denial attribution
 so a consumer can detect policy drift. Prefer these over parsing
 `coverage --list`; tools outside this repository must consume the catalog
 rather than parse packs or keep a second copy of the list.
+
+## Which packs an operator command reads
+
+Operator commands (`check`, `explain`, `coverage`, `catalog`, `status`,
+`health-report`, `pack-drift`) resolve packs as: explicit `--pack` paths,
+else `ICG_PACK_DIR`, else the union of
+the **installed** chain (`/etc/icg/rule-pack.json`, then `/etc/icg/packs`)
+and the **working directory's** `packs/`. The hook reads only the
+installed chain (`ICG_RULE_PACK`, then `/etc/icg/packs`, then the legacy
+artifact) — never the working directory. A checkout therefore reports the
+union, and when `packs/` carries a pack the installed set lacks, the
+coverage it prints is not what the deployed hook enforces. That state is
+never silent: `coverage --list`, `check --debug` and `status` print a
+`Pack source:` line per consulted location and a `WARNING (pack source)`
+naming the packs only the checkout carries, and `icg pack-drift` compares
+the installed set against the release artifact (`exit 0` identical, `1`
+drift, `2` could not run). Tests stage the installed side with
+`ICG_INSTALLED_PACK_DIR` — an operator-command-only override the hook
+never reads. The precedence itself (installed vs checkout ordering) is a
+separate, open question — see
+[`docs/notes/pack-source-resolution.md`](docs/notes/pack-source-resolution.md).
 
 ## The rules that actually bind you here
 

@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write as FmtWrite;
 use std::fs;
@@ -26,6 +27,17 @@ use crate::trust_pointer::TrustPointerStore;
 const DEFAULT_RULE_PACK: &str = "/etc/icg/rule-pack.json";
 const DEFAULT_PACK_DIRECTORY: &str = "/etc/icg/packs";
 const DEFAULT_OVERRIDE_DIRECTORY: &str = "/etc/icg/overrides";
+
+/// Operator-command override for the installed tier of the default pack
+/// search.
+///
+/// When set, operator commands treat this directory as the installed trust
+/// location instead of the `/etc/icg` chain, which lets a test or a drill
+/// stage both sides of the resolution on an unprivileged host. The hook
+/// never reads it: hook-path resolution stays
+/// `ICG_RULE_PACK` → `/etc/icg/packs` → the legacy artifact, exactly as
+/// registered.
+const INSTALLED_PACK_DIR_OVERRIDE_ENV: &str = "ICG_INSTALLED_PACK_DIR";
 
 /// Default symlink directory for `icg install`.
 ///
@@ -106,6 +118,24 @@ pub struct CoverageArgs {
     /// generator can read what is enforced without scraping the text form.
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PackDriftArgs {
+    /// Installed pack file or directory to check.
+    ///
+    /// Defaults to the hook's own chain — ICG_RULE_PACK when set, then
+    /// /etc/icg/packs, then the legacy /etc/icg/rule-pack.json — so the
+    /// default check compares what the hook enforces.
+    #[arg(long)]
+    pub installed: Option<PathBuf>,
+
+    /// Release-artifact pack directory to compare against.
+    ///
+    /// Defaults to the working directory's packs/, which release CI
+    /// byte-binds into the published tag.
+    #[arg(long)]
+    pub reference: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -322,16 +352,25 @@ pub fn run_check(args: CheckArgs) -> Result<()> {
     }
 
     let mut engine = Engine::new();
-    let pack_paths = resolve_pack_paths(&args.packs)?;
-    let packs = load_packs(&mut engine, &pack_paths)?;
+    let sources = resolve_pack_sources(&args.packs)?;
+    let packs = load_packs(&mut engine, &sources.paths)?;
 
     if args.debug {
         eprintln!("Loaded {} rule pack(s)", packs.len());
         if let Some(harness) = &args.harness {
             eprintln!("Harness: {harness}");
         }
-        for path in &pack_paths {
+        for path in &sources.paths {
             eprintln!("  {}", path.display());
+        }
+        // Source labeling is a --debug diagnostic on the check front-end:
+        // the plain-check stream contract keeps stderr fault-only, so the
+        // shadow warning may not appear there uninvited.
+        for line in pack_source_lines(&sources) {
+            eprintln!("{line}");
+        }
+        if let Some(warning) = pack_source_warning(&sources) {
+            eprintln!("{warning}");
         }
     }
 
@@ -634,11 +673,14 @@ fn coverage_report(paths: &[PathBuf]) -> CoverageReport {
 pub fn run_coverage(args: CoverageArgs) -> Result<()> {
     // `coverage` is intentionally useful without a flag as well; --list is
     // retained as the documented spelling and future modes can be added later.
-    let paths = resolve_pack_paths(&args.packs)?;
+    let sources = resolve_pack_sources(&args.packs)?;
 
     match args.format.as_str() {
         "json" => {
-            let report = coverage_report(&paths);
+            // The coverage/v1 document keeps its exact key set; the source
+            // label rides on the per-pack `path` fields until a format
+            // bump. Text mode below carries the label instead.
+            let report = coverage_report(&sources.paths);
             if report.packs.is_empty() {
                 bail!("no readable rule packs were found")
             }
@@ -649,9 +691,19 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
         other => bail!("unsupported --format {other:?}; use \"text\" or \"json\""),
     }
 
+    // Name the source before the packs, so a reader can tell deployed
+    // coverage from checkout coverage before trusting any of it.
+    for line in pack_source_lines(&sources) {
+        println!("{line}");
+    }
+    if let Some(warning) = pack_source_warning(&sources) {
+        println!("{warning}");
+    }
+
+    let paths = &sources.paths;
     let mut found = false;
     for path in paths {
-        match crate::rule_pack::load_pack(&path) {
+        match crate::rule_pack::load_pack(path) {
             Ok(pack) => {
                 found = true;
                 println!(
@@ -672,6 +724,198 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
         bail!("no readable rule packs were found")
     }
     Ok(())
+}
+
+/// What the drift check knows about one pack on one side of the comparison.
+#[derive(Debug, Clone)]
+struct PackFact {
+    sha256: String,
+    guarded_patterns: usize,
+    safe_patterns: usize,
+    path: PathBuf,
+}
+
+/// A named difference between the two sides of the drift check.
+#[derive(Debug)]
+enum PackDriftFinding {
+    /// In the release artifact, absent from the installed set: deployed
+    /// enforcement lacks a pack the release ships.
+    MissingFromInstalled { id: String, reference_path: PathBuf },
+    /// Installed but not in the release artifact: deployed enforcement
+    /// carries a pack the release does not.
+    NotInReference { id: String, installed_path: PathBuf },
+    /// Same pack id, different bytes.
+    Changed {
+        id: String,
+        installed: PackFact,
+        reference: PackFact,
+    },
+    /// A pack file on one side does not parse.
+    Unreadable { path: PathBuf, error: String },
+}
+
+/// Index every resolved pack file of one side by parsed pack id.
+fn pack_facts(paths: &[PathBuf]) -> (BTreeMap<String, PackFact>, Vec<PackDriftFinding>) {
+    let mut facts = BTreeMap::new();
+    let mut unreadable = Vec::new();
+    for path in paths {
+        match crate::rule_pack::load_pack(path) {
+            Ok(pack) => {
+                use sha2::Digest as _;
+                let contents = fs::read(path).unwrap_or_default();
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(&contents);
+                facts.insert(
+                    pack.id.clone(),
+                    PackFact {
+                        sha256: format!("{:x}", hasher.finalize()),
+                        guarded_patterns: pack.guarded_patterns.len(),
+                        safe_patterns: pack.safe_patterns.len(),
+                        path: path.clone(),
+                    },
+                );
+            }
+            Err(error) => unreadable.push(PackDriftFinding::Unreadable {
+                path: path.clone(),
+                error: error.to_string(),
+            }),
+        }
+    }
+    (facts, unreadable)
+}
+
+/// Compare the installed trust-directory pack set against the release
+/// artifact and report every difference.
+///
+/// Exit codes: 0 the sets are byte-identical, 1 drift (or an install that
+/// cannot be verified at all), 2 the check could not run.
+pub fn run_pack_drift(args: PackDriftArgs) -> Result<()> {
+    const DRIFT_EXIT: i32 = 1;
+    const USAGE_EXIT: i32 = 2;
+
+    let installed_root = match args.installed {
+        Some(path) => Some(path),
+        None => match std::env::var_os(INSTALLED_PACK_DIR_OVERRIDE_ENV) {
+            Some(directory) => Some(PathBuf::from(directory)),
+            None => installed_hook_pack_path(),
+        },
+    };
+    let reference_root = args.reference.unwrap_or_else(|| PathBuf::from("packs"));
+
+    let exit_with = |code: i32, message: String| -> ! {
+        eprintln!("Error: {message}");
+        std::process::exit(code)
+    };
+
+    let installed_root = match installed_root {
+        Some(root) => root,
+        None => exit_with(
+            DRIFT_EXIT,
+            "NO INSTALLED PACKS: no installed rule-pack directory was found; \
+             there is nothing deployed to compare against"
+                .to_string(),
+        ),
+    };
+
+    let expand = |root: PathBuf, side: &str| -> BTreeSet<PathBuf> {
+        if !root.exists() {
+            exit_with(
+                USAGE_EXIT,
+                format!("{side} pack location does not exist: {}", root.display()),
+            );
+        }
+        let mut paths = BTreeSet::new();
+        if let Err(error) = expand_pack_candidate(&root, &mut paths) {
+            exit_with(USAGE_EXIT, error.to_string());
+        }
+        if paths.is_empty() {
+            exit_with(
+                USAGE_EXIT,
+                format!(
+                    "no .json packs found in the {side} location: {}",
+                    root.display()
+                ),
+            );
+        }
+        paths
+    };
+
+    let installed_paths = expand(installed_root.clone(), "installed");
+    let reference_paths = expand(reference_root.clone(), "reference");
+
+    let (installed, installed_unreadable) =
+        pack_facts(&installed_paths.into_iter().collect::<Vec<_>>());
+    let (reference, reference_unreadable) =
+        pack_facts(&reference_paths.into_iter().collect::<Vec<_>>());
+
+    println!("Installed: {}", installed_root.display());
+    println!("Reference: {}", reference_root.display());
+
+    let mut findings: Vec<PackDriftFinding> = installed_unreadable;
+    findings.extend(reference_unreadable);
+    for (id, fact) in &reference {
+        match installed.get(id) {
+            None => findings.push(PackDriftFinding::MissingFromInstalled {
+                id: id.clone(),
+                reference_path: fact.path.clone(),
+            }),
+            Some(installed_fact) => {
+                if installed_fact.sha256 != fact.sha256 {
+                    findings.push(PackDriftFinding::Changed {
+                        id: id.clone(),
+                        installed: installed_fact.clone(),
+                        reference: fact.clone(),
+                    });
+                }
+            }
+        }
+    }
+    for (id, fact) in &installed {
+        if !reference.contains_key(id) {
+            findings.push(PackDriftFinding::NotInReference {
+                id: id.clone(),
+                installed_path: fact.path.clone(),
+            });
+        }
+    }
+
+    if findings.is_empty() {
+        println!(
+            "OK: no drift — {} pack(s) byte-identical between the installed set and the release artifact",
+            installed.len()
+        );
+        return Ok(());
+    }
+
+    for finding in &findings {
+        match finding {
+            PackDriftFinding::MissingFromInstalled { id, reference_path } => {
+                println!("MISSING FROM INSTALLED: {id} ({})", reference_path.display())
+            }
+            PackDriftFinding::NotInReference { id, installed_path } => {
+                println!("NOT IN REFERENCE: {id} ({})", installed_path.display())
+            }
+            PackDriftFinding::Changed {
+                id,
+                installed,
+                reference,
+            } => println!(
+                "CHANGED: {id} — installed {} ({} guarded patterns) vs reference {} ({} guarded patterns)",
+                &installed.sha256[..12],
+                installed.guarded_patterns,
+                &reference.sha256[..12],
+                reference.guarded_patterns,
+            ),
+            PackDriftFinding::Unreadable { path, error } => {
+                println!("UNREADABLE: {} ({error})", path.display())
+            }
+        }
+    }
+    println!(
+        "DRIFT: {} difference(s) between the installed pack set and the release artifact",
+        findings.len()
+    );
+    std::process::exit(DRIFT_EXIT);
 }
 
 /// Render the versioned always/never event catalog (`icg-catalog/v1`) from
@@ -1527,41 +1771,230 @@ fn load_pack_values(paths: &[PathBuf]) -> Result<Vec<Pack>> {
 }
 
 fn resolve_pack_paths(explicit: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let candidates = if explicit.is_empty() {
-        if let Some(configured_directory) = std::env::var_os("ICG_PACK_DIR") {
-            vec![PathBuf::from(configured_directory)]
-        } else {
-            vec![
-                PathBuf::from(DEFAULT_RULE_PACK),
-                PathBuf::from(DEFAULT_PACK_DIRECTORY),
-                PathBuf::from("packs"),
-            ]
+    Ok(resolve_pack_sources(explicit)?.paths)
+}
+
+/// One location the pack search consulted, with the pack files it
+/// contributed.
+#[derive(Debug, Clone)]
+pub(crate) struct PackSourceTier {
+    /// The directory (or legacy single-file artifact) this tier names.
+    pub root: PathBuf,
+    /// The resolved pack files from this root, in path order. A file the
+    /// search had already resolved from an earlier tier is not repeated
+    /// here.
+    pub paths: Vec<PathBuf>,
+}
+
+/// The resolved pack set plus where each part of it came from.
+///
+/// `paths` is exactly the union set the search has always returned. The
+/// tier fields label its parts so a front-end can tell deployed coverage
+/// from checkout coverage instead of leaving the reader to infer it from
+/// paths — a checkout ahead of the deployed release used to report
+/// coverage the installed hook did not enforce, silently.
+#[derive(Debug, Clone)]
+pub(crate) struct PackSources {
+    /// Every resolved pack file: the union across tiers, path-ordered.
+    pub paths: Vec<PathBuf>,
+    /// The installed trust locations (the `/etc/icg` chain, or the
+    /// `ICG_INSTALLED_PACK_DIR` staging override). Empty when the caller
+    /// named explicit paths or set `ICG_PACK_DIR`, or when nothing is
+    /// installed.
+    pub installed: Vec<PackSourceTier>,
+    /// The working directory's `packs/`, when the default search found it.
+    pub repository: Option<PackSourceTier>,
+    /// True when every path came from the caller (`--pack` or
+    /// `ICG_PACK_DIR`): the default search never ran, so there is nothing
+    /// to label.
+    pub explicit: bool,
+}
+
+/// The hook's own pack-location chain: `ICG_RULE_PACK` when set, then the
+/// installed modular directory, then the legacy artifact. This is the
+/// ground truth of what a deployed hook enforces, so the drift check
+/// defaults to it and operator commands compare against it.
+pub fn installed_hook_pack_path() -> Option<PathBuf> {
+    std::env::var_os("ICG_RULE_PACK")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            let directory = PathBuf::from(DEFAULT_PACK_DIRECTORY);
+            directory.is_dir().then_some(directory)
+        })
+        .or_else(|| {
+            let artifact = PathBuf::from(DEFAULT_RULE_PACK);
+            artifact.is_file().then_some(artifact)
+        })
+}
+
+/// Expand one candidate location into the path set, applying the
+/// long-standing rules: a `.json` file is a pack, a directory contributes
+/// its sorted `.json` entries, and anything else contributes nothing.
+///
+/// The caller decides whether a missing candidate is an error (explicit
+/// paths) or a tier that was simply absent (the default search).
+fn expand_pack_candidate(candidate: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
+    if candidate.is_file() {
+        if candidate.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            paths.insert(candidate.to_path_buf());
         }
-    } else {
-        explicit.to_vec()
-    };
+    } else if candidate.is_dir() {
+        let mut directory_entries = fs::read_dir(candidate)
+            .with_context(|| format!("failed to read pack directory {}", candidate.display()))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+        directory_entries.sort();
+        paths.extend(directory_entries);
+    }
+    Ok(())
+}
+
+/// Resolve the pack set for an operator command, labeling where each part
+/// of it came from.
+///
+/// The resolution order — explicit `--pack` paths, then `ICG_PACK_DIR`,
+/// then the installed chain plus the working directory's `packs/` — is the
+/// one `resolve_pack_paths` has always applied; this only records which
+/// tier contributed what. The hook's own chain (`ICG_RULE_PACK` →
+/// `/etc/icg/packs` → the legacy artifact) is deliberately untouched.
+pub(crate) fn resolve_pack_sources(explicit: &[PathBuf]) -> Result<PackSources> {
     let mut paths = BTreeSet::new();
-    for candidate in candidates {
-        if candidate.is_file() {
-            if candidate.extension().and_then(|ext| ext.to_str()) == Some("json") {
-                paths.insert(candidate);
+    if !explicit.is_empty() {
+        for candidate in explicit {
+            if !candidate.exists() {
+                bail!("rule-pack path does not exist: {}", candidate.display())
             }
-        } else if candidate.is_dir() {
-            let mut directory_entries = fs::read_dir(&candidate)
-                .with_context(|| format!("failed to read pack directory {}", candidate.display()))?
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
-                .collect::<Vec<_>>();
-            directory_entries.sort();
-            paths.extend(directory_entries);
-        } else if !explicit.is_empty() {
-            bail!("rule-pack path does not exist: {}", candidate.display())
+            expand_pack_candidate(candidate, &mut paths)?;
+        }
+        return Ok(PackSources {
+            paths: ordered(paths)?,
+            installed: Vec::new(),
+            repository: None,
+            explicit: true,
+        });
+    }
+
+    if let Some(configured_directory) = std::env::var_os("ICG_PACK_DIR") {
+        expand_pack_candidate(&PathBuf::from(configured_directory), &mut paths)?;
+        return Ok(PackSources {
+            paths: ordered(paths)?,
+            installed: Vec::new(),
+            repository: None,
+            explicit: true,
+        });
+    }
+
+    let installed_roots: Vec<PathBuf> = match std::env::var_os(INSTALLED_PACK_DIR_OVERRIDE_ENV) {
+        Some(directory) => vec![PathBuf::from(directory)],
+        None => vec![
+            PathBuf::from(DEFAULT_RULE_PACK),
+            PathBuf::from(DEFAULT_PACK_DIRECTORY),
+        ],
+    };
+    let mut installed = Vec::new();
+    for root in installed_roots {
+        if let Some(tier) = expand_tier(root, &mut paths)? {
+            installed.push(tier);
         }
     }
+    let repository = expand_tier(PathBuf::from("packs"), &mut paths)?;
+
+    if paths.is_empty() {
+        bail!("no rule packs found; pass --pack <path>")
+    }
+    Ok(PackSources {
+        paths: ordered(paths)?,
+        installed,
+        repository,
+        explicit: false,
+    })
+}
+
+/// Expand one default-search tier, reporting what it contributed only if it
+/// contributed anything. A missing location is an absent tier, not an
+/// error: a bare checkout has no `/etc/icg` to consult. A location that
+/// exists but cannot be read still fails the command, as it always has.
+fn expand_tier(root: PathBuf, paths: &mut BTreeSet<PathBuf>) -> Result<Option<PackSourceTier>> {
+    let before = paths.len();
+    expand_pack_candidate(&root, paths)?;
+    if paths.len() == before {
+        return Ok(None);
+    }
+    Ok(Some(PackSourceTier {
+        paths: paths.iter().skip(before).cloned().collect(),
+        root,
+    }))
+}
+
+fn ordered(paths: BTreeSet<PathBuf>) -> Result<Vec<PathBuf>> {
     if paths.is_empty() {
         bail!("no rule packs found; pass --pack <path>")
     }
     Ok(paths.into_iter().collect())
+}
+
+/// Pack ids the working-directory tier carries that no installed tier does.
+#[derive(Debug)]
+pub(crate) struct RepositoryShadow {
+    pub extra_pack_ids: Vec<String>,
+}
+
+/// Detect the shadow: a working-directory `packs/` consulted alongside an
+/// installed set that lacks some of its packs. A report in that state
+/// describes coverage the installed hook does not enforce — the drift that
+/// hid codinghome's stuck v0.1.61 deployment, where the checkout reported a
+/// kubectl pack the trust directory did not carry.
+pub(crate) fn repository_shadow(sources: &PackSources) -> Option<RepositoryShadow> {
+    let repository = sources.repository.as_ref()?;
+    if sources.installed.is_empty() {
+        return None;
+    }
+    let tier_ids = |tier: &PackSourceTier| -> BTreeSet<String> {
+        tier.paths
+            .iter()
+            .filter_map(|path| crate::rule_pack::load_pack(path).ok().map(|pack| pack.id))
+            .collect()
+    };
+    let mut installed_ids = BTreeSet::new();
+    for tier in &sources.installed {
+        installed_ids.extend(tier_ids(tier));
+    }
+    let extra_pack_ids: Vec<String> = tier_ids(repository)
+        .difference(&installed_ids)
+        .cloned()
+        .collect();
+    (!extra_pack_ids.is_empty()).then_some(RepositoryShadow { extra_pack_ids })
+}
+
+/// One `Pack source:` line per consulted tier. Empty for explicit callers:
+/// they named their paths, so there is nothing to disambiguate.
+pub(crate) fn pack_source_lines(sources: &PackSources) -> Vec<String> {
+    if sources.explicit {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    for tier in &sources.installed {
+        lines.push(format!("Pack source: {} (installed)", tier.root.display()));
+    }
+    if let Some(repository) = &sources.repository {
+        lines.push(format!(
+            "Pack source: {} (working directory)",
+            repository.root.display()
+        ));
+    }
+    lines
+}
+
+/// The shadow warning, when the resolved set carries one.
+pub(crate) fn pack_source_warning(sources: &PackSources) -> Option<String> {
+    let shadow = repository_shadow(sources)?;
+    Some(format!(
+        "WARNING (pack source): the working-directory packs/ shadows the installed set with: {} \
+         — coverage reported here is not what the installed hook enforces",
+        shadow.extra_pack_ids.join(", ")
+    ))
 }
 
 /// Where an operator command looks for the denial log, in order.

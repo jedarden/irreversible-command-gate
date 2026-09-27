@@ -377,6 +377,52 @@ Finally run one real, non-destructive command through the configured harness
 and inspect its hook diagnostics. Never use a real Vault destroy, force-push,
 secret deletion, or other destructive operation as an installation test.
 
+### Which pack source an operator command reads
+
+The hook and the operator commands do not read packs from the same place,
+and the difference matters whenever `icg` is run from a source checkout.
+
+The hook resolves exactly one installed location, in order: `ICG_RULE_PACK`
+when set, then `/etc/icg/packs`, then the legacy `/etc/icg/rule-pack.json`.
+It never reads a repository checkout.
+
+The operator commands (`check`, `explain`, `coverage`, `catalog`, `status`,
+`health-report`, `pack-drift`) resolve more: explicit `--pack` paths, else
+`ICG_PACK_DIR`, else the union of the installed chain above **and** the
+working directory's `packs/`. A checkout ahead of the deployed release
+therefore reports the checkout's coverage too — which the installed hook
+does not enforce. That state is never silent:
+
+- `icg coverage --list`, `icg check --debug` and `icg status` print a
+  `Pack source:` line for each location consulted — `(installed)` for the
+  trust directory, `(working directory)` for the checkout's `packs/`.
+- When the working directory carries pack ids the installed set lacks,
+  they add `WARNING (pack source): the working-directory packs/ shadows
+  the installed set with: <ids> — coverage reported here is not what the
+  installed hook enforces`.
+- `icg pack-drift` compares the installed set against the release
+  artifact (the checkout's `packs/` by default, or `--reference <dir>`;
+  the installed side defaults to the hook chain, or `--installed <dir>`)
+  pack by pack, by content digest. Exit `0`: identical. Exit `1`: drift,
+  with every difference named — `MISSING FROM INSTALLED` (the artifact
+  ships a pack the trust directory lacks), `NOT IN REFERENCE` (the trust
+  directory carries a pack the artifact does not), `CHANGED` (same pack
+  id, different bytes), or `UNREADABLE` — or an install that cannot be
+  verified at all: no installed rule-pack location was found, and stderr
+  says `NO INSTALLED PACKS`. Exit `2`: the check could not
+  run — a named location is missing or holds no packs.
+
+If you verify from the release checkout, include the drift check:
+
+```bash
+cd /path/to/icg-source   # the checkout the release was reviewed from
+icg pack-drift           # exit 0 = the installed set matches packs/
+```
+
+Tests stage the installed side with `ICG_INSTALLED_PACK_DIR`, which
+replaces the installed chain for operator commands only — the hook never
+reads it — so a test can exercise both tiers without touching `/etc/icg`.
+
 ## Common deployment configurations
 
 ### Hook-only workstation
@@ -575,6 +621,7 @@ sudo icg trust set vX.Y.Z \
 sudo icg trust check vX.Y.Z
 sudo icg update
 sudo icg status
+icg pack-drift --reference /path/to/reviewed-release/packs
 ```
 
 If the updater cannot find the pointer, exact archive asset, or a valid archive
@@ -593,6 +640,8 @@ For each release, record:
 - old and new trusted release references;
 - rule-pack artifact checksum and source release;
 - the `regression-suite` result and `coverage-diff/v1` report;
+- the `pack-drift` result for the deployed trust directory against the
+  release artifact;
 - any new, removed, disabled, narrowed, or widened rules;
 - the canary cohort and observation result, if used; and
 - every repository override whose `release_ref`, expiry, or justification
@@ -822,6 +871,19 @@ following — check them in this order:
    guard fails open silently. `icg coverage --list` is the check.
 5. **`ICG_DISABLED=1` is set** in that environment. The bypass prints a
    warning to stderr, which is easy to miss in a wrapped invocation.
+
+### Coverage reports a pack the hook does not enforce
+
+`icg coverage --list` — or `icg status`, or `icg check --debug` — prints
+`WARNING (pack source): the working-directory packs/ shadows the installed
+set with: <ids>`. The command was run from a checkout whose `packs/`
+carries packs the deployed trust directory does not: operator commands
+union the installed chain with the working directory, while the hook reads
+only the installed chain, so the report describes coverage that is not in
+force. Compare the two sides with `icg pack-drift`, then either upgrade
+the deployed pack set (`sudo icg trust set` + `sudo icg update`) or run
+operator commands from a checkout matching the deployed release. Only the
+installed side decides what the hook enforces.
 
 ### A deployment must be rolled back
 

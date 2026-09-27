@@ -157,6 +157,12 @@ enum Commands {
         #[arg(long)]
         verify: Option<PathBuf>,
     },
+    /// Compare the deployed pack set against a release artifact
+    ///
+    /// Defaults: the hook's own pack chain (or --installed) against the
+    /// working directory's packs/ (or --reference). Exit 0 identical, 1
+    /// drift, 2 could not run.
+    PackDrift(documented_commands::PackDriftArgs),
     /// Show current status and blind-spot self-report
     Status(documented_commands::StatusArgs),
     /// Export one denial record for incident or false-positive review.
@@ -1082,17 +1088,9 @@ fn shadowed_tool_name(argv0: &OsStr) -> Option<String> {
 }
 
 fn wrapper_rule_pack_path() -> Option<PathBuf> {
-    std::env::var_os("ICG_RULE_PACK")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            let directory = PathBuf::from(DEFAULT_RULE_PACK_DIR);
-            directory.is_dir().then_some(directory)
-        })
-        .or_else(|| {
-            let artifact = PathBuf::from(DEFAULT_RULE_PACK_PATH);
-            artifact.is_file().then_some(artifact)
-        })
+    // One definition of the hook's chain, shared with the drift check and
+    // the pack-source labeling in `documented_commands`.
+    documented_commands::installed_hook_pack_path()
 }
 
 /// Resolve the pack location for a native hook invocation.
@@ -2225,6 +2223,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Commands::PackDrift(args) => documented_commands::run_pack_drift(args),
         Commands::Status(args) => {
             if args.denials
                 || args.health
@@ -2344,6 +2343,43 @@ fn main() -> Result<()> {
                     DEFAULT_RULE_PACK_DIR, DEFAULT_RULE_PACK_PATH
                 );
                 println!("  Install the approved modular pack directory before enabling the hook.");
+            }
+            println!();
+
+            // Operator Pack Source section. The Rule Pack Version section
+            // above names the installed directory the hook reads; this one
+            // names what the operator commands themselves loaded, because
+            // they also pick up the working directory's packs/ and report
+            // the union — coverage the installed hook may not enforce.
+            println!("## Operator Pack Source");
+            println!();
+            match documented_commands::resolve_pack_sources(&[]) {
+                Ok(sources) => {
+                    let lines = documented_commands::pack_source_lines(&sources);
+                    if lines.is_empty() {
+                        if sources.explicit {
+                            println!("  (explicit pack selection; nothing to label)");
+                        } else {
+                            println!("  (no pack location was found)");
+                        }
+                    } else {
+                        for line in lines {
+                            println!("  {line}");
+                        }
+                    }
+                    if let Some(warning) = documented_commands::pack_source_warning(&sources) {
+                        println!("  {warning}");
+                    }
+                    println!();
+                    println!(
+                        "  The hook enforces only the installed directory above. A working-directory"
+                    );
+                    println!(
+                        "  entry is the checkout's own packs/: it belongs to `icg pack-drift`"
+                    );
+                    println!("  comparisons, not to the deployed policy.");
+                }
+                Err(error) => println!("  (failed to resolve the operator pack source: {error:#})"),
             }
             println!();
 
