@@ -892,6 +892,53 @@ fn repeated_pack_paths_are_deduplicated() {
     );
 }
 
+/// "Because the arrays are sorted by (`pack`, `id`) ... identical policy
+/// renders byte-identical catalogs": a consumer assembling `--pack` values
+/// from layered config cannot control the order the layers emit them in, so
+/// the caller's argument order must not reach the document. The same pack
+/// set named in reversed order is byte-identical, digest included — the
+/// dedup test above proves only the same path twice, and the coverage/v1
+/// twin of this promise lives in
+/// `explicit_pack_values_are_sorted_not_taken_in_caller_order`.
+#[test]
+fn the_same_pack_set_in_reversed_caller_order_renders_the_same_digest() {
+    let forward = icg(&[
+        "catalog",
+        "--json",
+        "--pack",
+        "packs/git.json",
+        "--pack",
+        "packs/tmux.json",
+    ]);
+    let reverse = icg(&[
+        "catalog",
+        "--json",
+        "--pack",
+        "packs/tmux.json",
+        "--pack",
+        "packs/git.json",
+    ]);
+    assert!(
+        forward.status.success() && reverse.status.success(),
+        "both orderings should export: {} / {}",
+        String::from_utf8_lossy(&forward.stderr),
+        String::from_utf8_lossy(&reverse.stderr)
+    );
+    assert_eq!(
+        forward.stdout, reverse.stdout,
+        "the caller's --pack order must not change the catalog"
+    );
+
+    let forward_catalog: Value =
+        serde_json::from_slice(&forward.stdout).expect("forward catalog should parse");
+    let reverse_catalog: Value =
+        serde_json::from_slice(&reverse.stdout).expect("reverse catalog should parse");
+    assert_eq!(
+        forward_catalog["catalog_digest"], reverse_catalog["catalog_digest"],
+        "the digest describes the pack set, not the order it was named in"
+    );
+}
+
 /// The note defines the digest as "the SHA-256 of the canonical JSON
 /// serialization of `{"format": "icg-catalog/v1", "never": [...], "always":
 /// [...]}` — the entire event set and nothing else". Every other digest
