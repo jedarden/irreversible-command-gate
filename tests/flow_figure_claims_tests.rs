@@ -21,9 +21,20 @@
 //! (tests/demo_verdict_regression_tests.rs) runs a command per verdict --
 //! so here the figure is held to the emitted policy, and an engine change
 //! that grows a verdict fails until the figure moves in the same change.
+//!
+//! Two narration surfaces the first sweep left unpinned are held here too:
+//! the engine box's worked dispatch example ("bao|vault → openbao pack") is
+//! held to the shipped pack's `tool_keywords`, and README's verdict table
+//! -- the "Hook response" column an integrator quotes -- is held to the
+//! wire `icg hook` really emits per verdict and to the panel's chips.
 
 use serde_json::Value;
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    fs,
+    io::Write as _,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 /// The checkout under audit: the demo claims are about what *ships* in the
 /// repo, not whatever pack set is installed at /etc/icg/packs on the host
@@ -353,5 +364,334 @@ fn flow_figure_pack_chip_matches_the_shipped_policy() {
          guarded rules -- the figure's policy chip and packs/ move \
          together: add the pack or rule and update the figure in the same \
          change"
+    );
+}
+
+/// The engine box teaches dispatch with a worked example -- it renders
+/// "bao|vault → openbao pack" under "dispatch by tool keyword" -- and both
+/// alt surfaces state the mechanism ("dispatches to a rule pack by tool
+/// keyword"). That example is a factual claim about packs/: the engine
+/// builds its dispatch index from each pack's `tool_keywords`
+/// (`pack_dispatch_keywords` / `keyword_index` in src/engine.rs), so the
+/// named pack must ship and its keywords must render exactly as drawn. A
+/// keyword added, removed or reordered in the pack would silently falsify
+/// the worked example while every pack and coverage test stayed green --
+/// the drift class the evaluation figure's trace pin
+/// (tests/documentation_consistency_tests.rs, irrevers-48f6d7c2) closed
+/// for the walkthrough; that test also executes the mechanism itself (a
+/// keyword command reaches exactly the pack claiming it). The same box and
+/// README's alt text locate the policy -- root-owned packs under
+/// /etc/icg/packs -- and that claim is pinned as needles here; the truth
+/// side (the installer really does create that directory root-owned) is
+/// install_script_tests::install_script_installs_root_owned.
+#[test]
+fn flow_figure_dispatch_example_matches_the_shipped_packs() {
+    let figure = repo_relative("docs/assets/icg-flow.svg");
+    let text = svg_text(&figure);
+
+    // Every "<keywords> → <id> pack" example the figure renders must name
+    // a shipped pack whose tool_keywords render exactly that list.
+    // Scanning instead of hardcoding the one example keeps a second worked
+    // example honest for free; the fail-open line ("a crash → allow") has
+    // no "pack" after its arrow and is skipped.
+    let tokens: Vec<&str> = text.split(' ').collect();
+    let mut examples = 0usize;
+    for i in 1..tokens.len().saturating_sub(2) {
+        if tokens[i] != "→" || !tokens[i - 1].contains('|') || tokens[i + 2] != "pack" {
+            continue;
+        }
+        examples += 1;
+        let rendered_keywords: Vec<String> = tokens[i - 1].split('|').map(str::to_owned).collect();
+        let pack_id = tokens[i + 1];
+        let pack: Value = serde_json::from_str(&repo_relative(&format!("packs/{pack_id}.json")))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "the figure's dispatch example names {pack_id}, which must \
+                 ship as packs/{pack_id}.json: {error}"
+                )
+            });
+        let keywords: Vec<String> = pack["tool_keywords"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "packs/{pack_id}.json should carry tool_keywords -- the \
+                        dispatch index is built from them"
+                )
+            })
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .expect("keyword should be a string")
+                    .to_owned()
+            })
+            .collect();
+        assert!(
+            !keywords.is_empty(),
+            "packs/{pack_id}.json declares no tool_keywords, so nothing \
+             dispatches to it -- the figure's example is about a mechanism \
+             that no longer reaches it"
+        );
+        assert_eq!(
+            keywords, rendered_keywords,
+            "icg-flow.svg's dispatch example disagrees with \
+             packs/{pack_id}.json's tool_keywords -- the figure's worked \
+             example and the pack move together"
+        );
+    }
+    assert!(
+        examples > 0,
+        "the dispatch-example scan found no \"keywords → id pack\" example \
+         in icg-flow.svg; the parser has probably rotted"
+    );
+
+    // The mechanism sentence, on both alt surfaces a non-visual reader
+    // gets: the figure's own <desc> and README's alt attribute for the
+    // same <img>.
+    for (surface, body) in [
+        ("icg-flow.svg's <desc>", svg_desc(&figure)),
+        ("README's alt text", readme_flow_alt()),
+    ] {
+        assert!(
+            body.contains("dispatches to a rule pack by tool keyword"),
+            "{surface} should keep stating the dispatch mechanism -- it is \
+             the sentence the engine box's worked example illustrates"
+        );
+    }
+
+    // The title names what the figure actually shows: one evaluation, end
+    // to end.
+    assert!(
+        figure.contains("evaluates a tool call"),
+        "icg-flow.svg's <title> should keep naming the evaluation it draws"
+    );
+
+    // Where the policy lives, per the same box and README's alt text: the
+    // deployed pack directory, root-owned. (The installer's root-owned
+    // creation of it is pinned in install_script_tests.)
+    assert!(
+        text.contains("/etc/icg/packs/")
+            && text.contains("root-owned policy the guarded agent cannot rewrite"),
+        "icg-flow.svg's packs box should keep stating the deployed policy \
+         location and its root ownership"
+    );
+    assert!(
+        readme_flow_alt().contains("root-owned in /etc/icg/packs"),
+        "README's alt text for icg-flow.svg should keep stating that rule \
+         packs live root-owned in /etc/icg/packs"
+    );
+}
+
+/// One `icg hook` run against the shipped packs, via the same stdin JSON a
+/// harness sends. The denial-log sink keeps the deny probe off any
+/// instrumented host log, the convention check_demo_command uses.
+fn hook_response(command: &str) -> Value {
+    let sink = tempfile::tempdir().expect("denial-log sink directory should create");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["hook", "--rule-pack"])
+        .arg(audited_checkout().join("packs"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("ICG_DENIAL_LOG", sink.path().join("denials.jsonl"))
+        .spawn()
+        .expect("icg hook should start");
+    child
+        .stdin
+        .take()
+        .expect("hook stdin should be available")
+        .write_all(
+            serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": { "command": command },
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .expect("hook input should be written");
+    let output = child
+        .wait_with_output()
+        .expect("hook process should finish");
+    assert!(
+        output.status.success(),
+        "icg hook should exit 0 for {command:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("hook stdout should be one JSON object")
+}
+
+/// README's verdict table -- the "Hook response" column an integrator
+/// quotes to wire the gate into a harness -- held to the wire `icg hook`
+/// actually emits for each verdict and to the panel icg-flow.svg renders.
+/// The emissions are pinned per scenario with private packs in
+/// hook_response_output_tests, and the panel's channels are pinned to
+/// coverage/v1 above, but nothing held the README's four rows to any real
+/// emission or to the figure: a channel rename or an output-shape change
+/// could falsify the front-page table while both of those suites stayed
+/// green. Each row's probe is one of the demo matrix's command-mode inputs
+/// (demo_verdict_regression_tests pins their verdicts against the same
+/// packs), so a pack edit that flips a verdict fails both suites in the
+/// same change.
+#[test]
+fn readme_verdict_table_matches_the_hook_wire_and_the_figure() {
+    // (verdict, hook-response cell with its backticks stripped, probe
+    // command) -- the cells are pinned exactly, so a rewording moves this
+    // table in the same change as the README.
+    const ROWS: [(&str, &str, &str); 4] = [
+        ("ALLOW", "permissionDecision: allow", "git status"),
+        (
+            "WARNING",
+            "allow + additionalContext",
+            "bao kv get -field=token secret/app/db",
+        ),
+        (
+            "REWRITE",
+            "allow + updatedInput",
+            "git push --force origin main",
+        ),
+        (
+            "DENY",
+            "permissionDecision: deny",
+            "bao kv destroy secret/app/db",
+        ),
+    ];
+
+    // 1. Parse the table: the header, then the four data rows in order.
+    let readme = repo_relative("README.md");
+    let header = readme
+        .find("| Verdict | Hook response | When |")
+        .expect("README should keep its verdict table header");
+    let mut parsed: Vec<(String, String)> = Vec::new();
+    for line in readme[header..].lines().skip(1) {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            break;
+        }
+        if line.starts_with("| ---") {
+            continue;
+        }
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        assert!(
+            cells.len() >= 4,
+            "malformed verdict-table row {line:?}: expected the \
+             |verdict|hook response|when| shape"
+        );
+        let unbacktick = |cell: &str| cell.replace('`', "");
+        parsed.push((unbacktick(cells[1]), unbacktick(cells[2])));
+    }
+    let expected: Vec<(String, String)> = ROWS
+        .iter()
+        .map(|(verdict, cell, _)| ((*verdict).to_owned(), (*cell).to_owned()))
+        .collect();
+    assert_eq!(
+        parsed, expected,
+        "README's verdict table drifted from the four documented rows -- \
+         the table, the engine's channels and this test move together"
+    );
+
+    // 2. Each row's cell held to what `icg hook` really emits for that
+    //    verdict. The wire is the same hookSpecificOutput shape
+    //    hook_response_output_tests pins with private packs; here the
+    //    shipped packs produce it.
+    for (verdict, cell, command) in ROWS {
+        let output = hook_response(command);
+        let wire = &output["hookSpecificOutput"];
+        match verdict {
+            "ALLOW" => {
+                assert_eq!(
+                    wire["permissionDecision"], "allow",
+                    "the {verdict} probe {command:?} must grant the command"
+                );
+                assert!(
+                    wire.get("additionalContext").is_none(),
+                    "ALLOW is captioned as running silently, and its table \
+                     row promises a bare permissionDecision -- a caution \
+                     smuggled into the allow probe {command:?} falsifies \
+                     both: {wire}"
+                );
+                assert!(
+                    wire.get("updatedInput").is_none(),
+                    "the ALLOW probe {command:?} must not rewrite: {wire}"
+                );
+            }
+            "WARNING" => {
+                assert_eq!(
+                    wire["permissionDecision"], "allow",
+                    "a warning never blocks -- the {verdict} probe \
+                     {command:?} must still grant the command"
+                );
+                assert!(
+                    wire["additionalContext"]
+                        .as_str()
+                        .is_some_and(|context| !context.is_empty()),
+                    "the {verdict} row promises `allow` + `additionalContext` \
+                     but the probe {command:?} carried no context: {wire}"
+                );
+                assert!(
+                    wire.get("updatedInput").is_none(),
+                    "the {verdict} row promises a caution, not a \
+                     substitution -- the probe {command:?} must not rewrite: \
+                     {wire}"
+                );
+            }
+            "REWRITE" => {
+                assert_eq!(
+                    wire["permissionDecision"], "allow",
+                    "a rewrite grants the command via updatedInput -- the \
+                     {verdict} probe {command:?} must not deny"
+                );
+                assert!(
+                    wire["updatedInput"].as_object().is_some(),
+                    "the {verdict} row promises `allow` + `updatedInput` but \
+                     the probe {command:?} carried no rewrite: {wire}"
+                );
+            }
+            "DENY" => {
+                assert_eq!(
+                    wire["permissionDecision"], "deny",
+                    "the {verdict} probe {command:?} must block"
+                );
+                assert!(
+                    wire["permissionDecisionReason"]
+                        .as_str()
+                        .is_some_and(|reason| !reason.is_empty()),
+                    "the {verdict} row's When column promises the reason \
+                     carries the alternative -- the probe {command:?} must \
+                     deny with a reason: {wire}"
+                );
+            }
+            other => panic!("unexpected verdict row {other:?}"),
+        }
+        // Whatever the cell names must exist on the wire.
+        for key in ["permissionDecision", "additionalContext", "updatedInput"] {
+            if cell.contains(key) {
+                assert!(
+                    wire.get(key).is_some(),
+                    "the {verdict} row names {key} but the wire carries none: \
+                     {wire}"
+                );
+            }
+        }
+    }
+
+    // 3. The figure side: every verdict the table rows spell renders as its
+    //    own chip in the panel (ALLOW included -- it is the no-match and
+    //    safe-pattern default, so no Channel names it and the coverage-derived
+    //    sweep above never checks its chip), and README's framing sentence
+    //    keeps saying what the panel's caption says: only deny stops.
+    let figure = repo_relative("docs/assets/icg-flow.svg");
+    for (verdict, _, _) in ROWS {
+        assert!(
+            figure.contains(&format!(">{verdict}<")),
+            "README's table documents the {verdict} verdict but icg-flow.svg \
+             no longer renders it as a chip -- the table and the panel are \
+             the same four-verdict model"
+        );
+    }
+    let collapsed = svg_text(&readme);
+    assert!(
+        collapsed.contains("only `deny` stops the command"),
+        "README should keep framing the table with the panel's central \
+         claim -- only deny stops the command"
     );
 }
