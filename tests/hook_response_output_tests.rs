@@ -38,6 +38,37 @@ fn run_hook_for_tool(rule_pack: &std::path::Path, tool_name: &str, tool_input: V
     serde_json::from_slice(&output.stdout).expect("hook stdout should be one JSON object")
 }
 
+/// Run the native hook with an already serialized request while retaining
+/// both streams. The malformed-input case below is intentionally fail-open:
+/// the hook must put its diagnostic on stderr and still leave stdout as the
+/// one JSON response the harness parses.
+fn run_hook_raw(rule_pack: &std::path::Path, request: &str) -> std::process::Output {
+    let support = tempdir().expect("hook support directory should exist");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "hook",
+            "--rule-pack",
+            rule_pack.to_str().expect("temporary path should be UTF-8"),
+        ])
+        .env("ICG_HEALTH_PATH", support.path().join("health.json"))
+        .env("ICG_TELEMETRY_PATH", support.path().join("telemetry.json"))
+        .env("ICG_DENIAL_LOG", support.path().join("denials.jsonl"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hook process should start");
+    child
+        .stdin
+        .take()
+        .expect("hook stdin should be available")
+        .write_all(request.as_bytes())
+        .expect("hook input should be written");
+    child
+        .wait_with_output()
+        .expect("hook process should finish")
+}
+
 fn test_pack() -> Value {
     json!({
         "id": "hook-response-output-test",
@@ -141,6 +172,45 @@ fn emits_allow_deny_rewrite_and_warning_responses() {
         .as_str()
         .expect("warning context should be a string")
         .contains("Verify the worktree is disposable"));
+}
+
+#[test]
+fn hook_diagnostics_do_not_contaminate_json_stdout() {
+    let temp = tempdir().expect("temporary directory should be created");
+    let pack_path = temp.path().join("pack.json");
+    std::fs::write(
+        &pack_path,
+        serde_json::to_vec_pretty(&test_pack()).expect("pack should serialize"),
+    )
+    .expect("pack should be written");
+
+    // Invalid hook input exercises the real fail-open boundary: the engine
+    // reports why it could not evaluate on stderr, while the harness still
+    // receives a valid allow response on stdout.
+    let output = run_hook_raw(&pack_path, "not valid json");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "fail-open hook input handling must still return a successful response"
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("hook stdout should be UTF-8");
+    let response: Value = serde_json::from_str(stdout.trim())
+        .expect("hook stdout must contain exactly one JSON response object");
+    assert_eq!(
+        response["hookSpecificOutput"]["permissionDecision"], "allow",
+        "malformed input fails open as an allow response"
+    );
+    assert!(
+        !stdout.contains("Engine:") && !stdout.contains("Failed to parse"),
+        "diagnostics must never share the hook JSON stdout stream: {stdout:?}"
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("hook stderr should be UTF-8");
+    assert!(
+        stderr.contains("Engine: fail-open") && stderr.contains("Failed to parse hook input JSON"),
+        "the malformed-input diagnostic belongs on stderr: {stderr:?}"
+    );
 }
 
 #[test]
