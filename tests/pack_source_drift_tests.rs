@@ -1,14 +1,10 @@
 //! Pack-source resolution is labeled, and the shadow is loud.
 //!
-//! Operator commands resolve the installed trust directory *and* the
-//! working directory's `packs/` and report the union, while the hook reads
-//! only the trust directory. A checkout ahead of the deployed release
-//! therefore reports coverage the installed hook does not enforce — the
-//! drift that hid codinghome's stuck v0.1.61 install (the checkout carried
-//! a kubectl pack the trust directory did not). These tests pin the
-//! labeling that makes that state visible: the `Pack source:` lines, the
-//! shadow warning on the check and coverage front-ends, and `icg
-//! pack-drift`, which compares the deployed set against the release
+//! Operator commands choose one source by precedence, while the hook reads
+//! only the installed trust directory. A checkout ahead of the deployed
+//! release must not silently add checkout-only packs to operator coverage.
+//! These tests pin the selected-source labels and `icg pack-drift`, which
+//! remains the explicit comparison between the deployed set and the release
 //! artifact.
 //!
 //! Every test stages both sides: `ICG_INSTALLED_PACK_DIR` replaces the
@@ -113,9 +109,8 @@ fn stderr(output: &Output) -> String {
 
 // --- coverage --list: the source header and the shadow warning ----------
 
-/// Both tiers consulted, no shadow: the header names each location and its
-/// tier, and no warning runs — a reader can see the report describes two
-/// sources and that they agree.
+/// The installed tier wins as a whole, even when the checkout has a matching
+/// pack. The report has one source label and no checkout tier.
 #[test]
 fn coverage_list_labels_each_pack_source() {
     let staged = stage(&["alpha"], &["alpha"]);
@@ -133,52 +128,19 @@ fn coverage_list_labels_each_pack_source() {
         )),
         "the installed tier is named: {text}"
     );
-    assert!(
-        text.contains("Pack source: packs (working directory)"),
-        "the working-directory tier is named: {text}"
-    );
-    assert!(
-        !text.contains("WARNING (pack source)"),
-        "matching sets must not warn: {text}"
-    );
+    assert!(!text.contains("Pack source: packs"));
+    assert!(!text.contains("WARNING (pack source)"));
     assert!(
         text.contains("✓ pack alpha"),
         "the packs still list: {text}"
     );
 }
 
-/// The incident, pinned: the working directory carries a pack the
-/// installed set lacks, so the union reports coverage the installed hook
-/// does not enforce — and the report says so, naming the offending pack.
+/// The working directory carries a pack the installed set lacks, but the
+/// installed source wins and the checkout-only pack is absent.
 #[test]
 fn coverage_list_warns_when_the_working_directory_shadows_the_installed_set() {
     let staged = stage(&["alpha"], &["alpha", "kubectl"]);
-    let output = staged.run(&["coverage", "--list"]);
-    assert!(
-        output.status.success(),
-        "a shadow is a warning, not a refusal: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = stdout(&output);
-    assert!(
-        text.contains("WARNING (pack source)"),
-        "the shadow is announced: {text}"
-    );
-    assert!(
-        text.contains("shadows the installed set with: kubectl"),
-        "the warning names the pack: {text}"
-    );
-    assert!(
-        text.contains("not what the installed hook enforces"),
-        "the warning states the consequence: {text}"
-    );
-}
-
-/// A bare checkout — nothing installed — has no installed set to shadow.
-/// The working-directory tier still labels itself, and no warning fires.
-#[test]
-fn a_bare_checkout_names_only_the_working_directory_and_does_not_warn() {
-    let staged = stage(&[], &["alpha"]);
     let output = staged.run(&["coverage", "--list"]);
     assert!(
         output.status.success(),
@@ -186,10 +148,28 @@ fn a_bare_checkout_names_only_the_working_directory_and_does_not_warn() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = stdout(&output);
+    assert!(text.contains("Pack source:") && text.contains("(installed)"));
     assert!(
-        text.contains("Pack source: packs (working directory)"),
-        "the working-directory tier is named: {text}"
+        !text.contains("kubectl"),
+        "checkout-only pack leaked: {text}"
     );
+    assert!(!text.contains("WARNING (pack source)"));
+}
+
+/// A bare checkout — nothing installed — has no installed set to shadow.
+/// The working-directory tier still labels itself, and no warning fires.
+#[test]
+fn a_bare_checkout_names_only_the_working_directory_and_does_not_warn() {
+    let staged = stage(&[], &["alpha"]);
+    fs::remove_dir(&staged.installed).expect("missing installed override should be staged");
+    let output = staged.run(&["coverage", "--list"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = stdout(&output);
+    assert!(text.contains("Pack source: packs (repository)"));
     assert!(
         !text.contains("(installed)"),
         "nothing counts as installed: {text}"
@@ -197,8 +177,8 @@ fn a_bare_checkout_names_only_the_working_directory_and_does_not_warn() {
     assert!(!text.contains("WARNING (pack source)"));
 }
 
-/// Explicit `--pack` paths are the caller's deliberate choice: no source
-/// header, no shadow warning, exactly the packs they named.
+/// Explicit `--pack` paths are the caller's deliberate choice and are
+/// labeled as an explicit source.
 #[test]
 fn explicit_pack_paths_are_never_labeled_or_warned() {
     let staged = stage(&["alpha"], &["alpha", "kubectl"]);
@@ -209,17 +189,13 @@ fn explicit_pack_paths_are_never_labeled_or_warned() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = stdout(&output);
-    assert!(
-        !text.contains("Pack source:"),
-        "an explicit selection carries no source header: {text}"
-    );
+    assert!(text.contains("Pack source: explicit (explicit; --pack)"));
     assert!(!text.contains("WARNING (pack source)"));
     assert!(text.contains("✓ pack kubectl"));
 }
 
 /// `ICG_INSTALLED_PACK_DIR` replaces the `/etc/icg` chain for operator
-/// commands but not the working-directory tier: both sides of the staged
-/// world report, each resolved from its own location.
+/// commands and wins over the working-directory fallback.
 #[test]
 fn the_installed_override_replaces_the_etc_chain_but_not_the_working_directory() {
     let staged = stage(&["alpha"], &["beta"]);
@@ -237,16 +213,16 @@ fn the_installed_override_replaces_the_etc_chain_but_not_the_working_directory()
             pack["path"].as_str().unwrap().to_string(),
         );
     }
-    assert_eq!(by_id.keys().collect::<Vec<_>>(), vec!["alpha", "beta"]);
+    assert_eq!(by_id.keys().collect::<Vec<_>>(), vec!["alpha"]);
     assert!(
         by_id["alpha"].starts_with(&staged.installed.display().to_string()),
         "alpha resolves from the staged install: {:?}",
         by_id
     );
-    assert!(
-        by_id["beta"].starts_with("packs/"),
-        "beta resolves from the working directory: {:?}",
-        by_id
+    assert_eq!(report["pack_source"]["origin"], "installed");
+    assert_eq!(
+        report["pack_source"]["root"],
+        staged.installed.to_string_lossy().as_ref()
     );
 }
 
@@ -281,10 +257,51 @@ fn icg_pack_dir_still_replaces_every_default_source() {
     assert_eq!(ids, vec!["gamma"], "only the ICG_PACK_DIR pack loads");
 }
 
+#[test]
+fn catalog_json_labels_the_selected_installed_source() {
+    let staged = stage(&["alpha"], &["checkout"]);
+    let output = staged.run(&["catalog", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("catalog should be JSON");
+    assert_eq!(report["format"], "icg-catalog/v2");
+    assert_eq!(report["pack_source"]["origin"], "installed");
+    assert_eq!(
+        report["pack_source"]["root"],
+        staged.installed.to_string_lossy().as_ref()
+    );
+    assert!(report["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["pack"] == "alpha"));
+    assert!(!report["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| { event["pack"] == "checkout" }));
+}
+
+#[test]
+fn missing_icg_pack_dir_is_authoritative_and_does_not_fall_back() {
+    let staged = stage(&["alpha"], &["checkout"]);
+    let missing = staged._dir.path().join("missing-override");
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .current_dir(&staged.working_dir)
+        .env("ICG_PACK_DIR", &missing)
+        .env(INSTALLED_OVERRIDE, &staged.installed)
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(stderr(&output).contains("ICG_PACK_DIR path does not exist"));
+}
+
 // --- check: the shadow warning is a --debug diagnostic ------------------
 
-/// The check front-end names the pack source and the shadow on stderr —
-/// but only under `--debug`, where diagnostics belong.
+/// The check front-end names the selected pack source on stderr — but only
+/// under `--debug`, where diagnostics belong.
 #[test]
 fn check_debug_names_the_pack_source_and_warns_on_shadow() {
     let staged = stage(&["alpha"], &["alpha", "kubectl"]);
@@ -303,14 +320,8 @@ fn check_debug_names_the_pack_source_and_warns_on_shadow() {
         )),
         "check --debug names the installed tier: {err}"
     );
-    assert!(
-        err.contains("Pack source: packs (working directory)"),
-        "check --debug names the working-directory tier: {err}"
-    );
-    assert!(
-        err.contains("WARNING (pack source)") && err.contains("kubectl"),
-        "check --debug carries the shadow warning: {err}"
-    );
+    assert!(!err.contains("kubectl"));
+    assert!(!err.contains("WARNING (pack source)"));
 }
 
 /// The plain check keeps its pinned stream contract: the verdict opens
@@ -338,8 +349,8 @@ fn a_plain_check_stays_silent_about_the_pack_source() {
 
 // --- status -------------------------------------------------------------
 
-/// `icg status` states which pack source the operator commands loaded and
-/// warns on the shadow, next to the installed directory the hook reads.
+/// `icg status` states which pack source the operator commands selected, next
+/// to the installed directory the hook reads.
 #[test]
 fn status_names_the_operator_pack_source_and_warns() {
     let staged = stage(&["alpha"], &["alpha", "kubectl"]);
@@ -361,12 +372,9 @@ fn status_names_the_operator_pack_source_and_warns() {
         )),
         "the installed tier is named: {text}"
     );
-    assert!(
-        text.contains("Pack source: packs (working directory)")
-            && text.contains("WARNING (pack source)")
-            && text.contains("kubectl"),
-        "the shadow is announced: {text}"
-    );
+    assert!(!text.contains("Pack source: packs (working directory)"));
+    assert!(!text.contains("WARNING (pack source)"));
+    assert!(!text.contains("✓ pack kubectl"));
 }
 
 // --- pack-drift ---------------------------------------------------------

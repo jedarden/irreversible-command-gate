@@ -1,9 +1,7 @@
 # Operator pack-source resolution contract
 
-**Status: design contract, not shipped.** This note settles the source
-selection that the operator commands will implement. At the current HEAD the
-operator commands still have the old union behavior; an implementation must
-change that behavior and update the versioned API notes in the same change.
+**Status: shipped.** This note settles the source selection used by the
+operator commands, and the versioned API notes carry the source label.
 The hook's installed-only behavior is already a separate contract and is not
 changed by this note.
 

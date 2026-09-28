@@ -348,7 +348,14 @@ fn catalog_schema_pins_its_key_sets() {
         .collect();
     assert_eq!(
         top_level,
-        BTreeSet::from(["format", "catalog_digest", "icg_version", "never", "always"]),
+        BTreeSet::from([
+            "format",
+            "catalog_digest",
+            "icg_version",
+            "pack_source",
+            "never",
+            "always",
+        ]),
         "top-level key set is the wire contract; bump the format version to change it"
     );
 
@@ -509,6 +516,7 @@ fn catalog_document_fields_are_emitted_in_declaration_order() {
         "\"format\"",
         "\"catalog_digest\"",
         "\"icg_version\"",
+        "\"pack_source\"",
         "\"never\"",
         "\"always\"",
     ] {
@@ -1437,11 +1445,11 @@ fn catalog_note_field_tables_match_the_export() {
         .expect("the note should have a Versioning section");
     let before_versioning = &note[..versioning];
     assert!(
-        !before_versioning.contains("icg-catalog/v2"),
+        !before_versioning.contains("icg-catalog/v3"),
         "outside the Versioning policy the note must not name an unshipped format version"
     );
     assert!(
-        !note.contains("icg-catalog/v3"),
+        !note.contains("icg-catalog/v4"),
         "the note must not promise a format version that does not exist"
     );
 

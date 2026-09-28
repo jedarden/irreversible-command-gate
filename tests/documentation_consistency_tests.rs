@@ -568,7 +568,7 @@ fn doc_pack_count_claims_match_the_shipped_packs() {
     );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout)
         .expect("coverage --format json should emit valid JSON");
-    assert_eq!(report["format"], "coverage/v1");
+    assert_eq!(report["format"], "coverage/v2");
     let unreadable = report["unreadable"]
         .as_array()
         .expect("coverage/v1 should carry an unreadable array");

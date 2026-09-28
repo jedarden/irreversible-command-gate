@@ -1,4 +1,4 @@
-# `coverage/v1` — the machine-readable coverage API
+# `coverage/v2` — the machine-readable coverage API
 
 `icg coverage --list --format json` is the supported machine interface to
 the enforced policy. Agents deciding whether a command will be denied
@@ -23,9 +23,9 @@ icg coverage --list --format json [--pack <path>]...
   same path are deduplicated. A file whose name does not end in `.json` is
   not treated as a pack, even when it exists.
 - With no `--pack`, the loader uses `ICG_PACK_DIR` when that environment
-  variable is set, and otherwise tries `/etc/icg/rule-pack.json`,
-  `/etc/icg/packs`, and the `packs/` directory relative to the working
-  directory, and uses whichever of those exist.
+  variable is set. Otherwise it selects `/etc/icg/packs`, the legacy
+  `/etc/icg/rule-pack.json` when the modular directory is absent, or the
+  working directory's `packs/` only when neither installed location exists.
 - Any other `--format` value is rejected with
   `unsupported --format ...; use "text" or "json"` before anything is
   written to stdout.
@@ -37,7 +37,8 @@ set:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `format` | literal `"coverage/v1"` | Identifies the contract. |
+| `format` | literal `"coverage/v2"` | Identifies the contract. |
+| `pack_source` | object | The one selected source: `origin` (`explicit`, `installed`, or `repository`), `root` (the selected root or `null` for repeated `--pack` paths), and `trusted_ref` (the installed trust reference or `null`). |
 | `packs` | array of pack objects | Every pack that loaded, one entry per resolved pack file. |
 | `unreadable` | array of load errors | Every pack path that was attempted and failed, with the reason. |
 | `pack_count` | number | `packs.length`. Readable packs only. |
@@ -78,7 +79,7 @@ Each entry of `unreadable`:
 ## Serialization contract
 
 - Field order in the emitted document is the declaration order in
-  `src/documented_commands.rs` (`format`, `packs`, `unreadable`,
+  `src/documented_commands.rs` (`format`, `pack_source`, `packs`, `unreadable`,
   `pack_count`, `guarded_pattern_count`, and so on down the levels).
 - `packs` is ordered by resolved path: explicit `--pack` values are
   deduplicated and sorted, and a directory's entries are sorted. Rule
@@ -107,7 +108,7 @@ is a field you can assert on.
 ## Failure modes
 
 These exit non-zero, write nothing to stdout, and put an `Error:` line on
-stderr. The command never emits a `coverage/v1` document with an empty
+stderr. The command never emits a `coverage/v2` document with an empty
 `packs` array: an empty report is indistinguishable from "nothing is
 enforced", so it is refused instead of printed.
 
@@ -120,7 +121,7 @@ enforced", so it is refused instead of printed.
 
 ## Versioning
 
-The literal `format` value is `coverage/v1`. Consumers key on the full
+The literal `format` value is `coverage/v2`. Consumers key on the full
 key sets above, and those sets are pinned by test: adding, removing, or
 renaming a field breaks the build on purpose. Any shape change bumps the
 version string (`coverage/v2`) and rewrites this note in the same commit,

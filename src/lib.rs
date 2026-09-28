@@ -14,7 +14,7 @@ pub mod alerting;
 /// what makes a host's executable drift visible.
 pub mod binary_skew;
 /// The versioned always/never event catalog (`icg catalog --json`,
-/// `icg-catalog/v1`); its normative description lives in
+/// `icg-catalog/v2`); its normative description lives in
 /// `docs/notes/event-catalog-json-api.md`.
 pub mod catalog;
 pub mod coverage;

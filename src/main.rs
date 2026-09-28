@@ -2348,36 +2348,20 @@ fn main() -> Result<()> {
 
             // Operator Pack Source section. The Rule Pack Version section
             // above names the installed directory the hook reads; this one
-            // names what the operator commands themselves loaded, because
-            // they also pick up the working directory's packs/ and report
-            // the union — coverage the installed hook may not enforce.
+            // names the single source selected by the operator resolver.
             println!("## Operator Pack Source");
             println!();
             match documented_commands::resolve_pack_sources(&[]) {
                 Ok(sources) => {
                     let lines = documented_commands::pack_source_lines(&sources);
-                    if lines.is_empty() {
-                        if sources.explicit {
-                            println!("  (explicit pack selection; nothing to label)");
-                        } else {
-                            println!("  (no pack location was found)");
-                        }
-                    } else {
-                        for line in lines {
-                            println!("  {line}");
-                        }
-                    }
-                    if let Some(warning) = documented_commands::pack_source_warning(&sources) {
-                        println!("  {warning}");
+                    for line in lines {
+                        println!("  {line}");
                     }
                     println!();
                     println!(
-                        "  The hook enforces only the installed directory above. A working-directory"
+                        "  The hook enforces only the installed directory above. The selected"
                     );
-                    println!(
-                        "  entry is the checkout's own packs/: it belongs to `icg pack-drift`"
-                    );
-                    println!("  comparisons, not to the deployed policy.");
+                    println!("  operator source is reported separately from the hook's source.");
                 }
                 Err(error) => println!("  (failed to resolve the operator pack source: {error:#})"),
             }

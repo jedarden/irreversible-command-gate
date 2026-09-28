@@ -73,7 +73,7 @@ fn coverage_json() -> Value {
 #[test]
 fn coverage_json_reports_every_shipped_pack_and_rule() {
     let report = coverage_json();
-    assert_eq!(report["format"], "coverage/v1");
+    assert_eq!(report["format"], "coverage/v2");
 
     let mut on_disk_packs = BTreeSet::new();
     let mut on_disk_rules = BTreeSet::new();
@@ -183,6 +183,7 @@ fn coverage_json_pins_its_top_level_key_set() {
         .collect();
     let expected: BTreeSet<&str> = [
         "format",
+        "pack_source",
         "packs",
         "unreadable",
         "pack_count",
@@ -301,8 +302,8 @@ fn coverage_json_works_without_the_optional_list_flag() {
     ]);
     assert!(output.status.success());
     let report: Value =
-        serde_json::from_slice(&output.stdout).expect("json without --list is still coverage/v1");
-    assert_eq!(report["format"], "coverage/v1");
+        serde_json::from_slice(&output.stdout).expect("json without --list is still coverage/v2");
+    assert_eq!(report["format"], "coverage/v2");
 }
 
 /// `ICG_PACK_DIR` replaces the default pack search path when no `--pack`
@@ -326,7 +327,7 @@ fn icg_pack_dir_replaces_the_default_search_path() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["format"], "coverage/v1");
+    assert_eq!(report["format"], "coverage/v2");
     assert_eq!(report["pack_count"].as_u64(), Some(1));
     assert_eq!(report["packs"][0]["id"], "tmux");
 
@@ -356,6 +357,10 @@ fn the_working_directory_packs_dir_is_a_default_search_path() {
     let output = Command::new(env!("CARGO_BIN_EXE_icg"))
         .args(["coverage", "--format", "json"])
         .env_remove("ICG_PACK_DIR")
+        .env(
+            "ICG_INSTALLED_PACK_DIR",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("missing-installed-packs"),
+        )
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("icg should run");
@@ -366,7 +371,7 @@ fn the_working_directory_packs_dir_is_a_default_search_path() {
     );
     let report: Value =
         serde_json::from_slice(&output.stdout).expect("the default path should emit a document");
-    assert_eq!(report["format"], "coverage/v1");
+    assert_eq!(report["format"], "coverage/v2");
     assert!(
         report["unreadable"].as_array().unwrap().is_empty(),
         "every shipped pack is readable; nothing here is an unreadable entry"

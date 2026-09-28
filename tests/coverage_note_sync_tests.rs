@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-const COVERAGE_FORMAT: &str = "coverage/v1";
+const COVERAGE_FORMAT: &str = "coverage/v2";
 
 fn packs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("packs")
@@ -95,11 +95,11 @@ fn coverage_note_field_tables_match_the_export() {
         .find("## Versioning")
         .expect("the note should have a Versioning section");
     assert!(
-        !note[..versioning].contains("coverage/v2"),
+        !note[..versioning].contains("coverage/v3"),
         "outside the Versioning policy the note must not name an unshipped format version"
     );
     assert!(
-        !note.contains("coverage/v3"),
+        !note.contains("coverage/v4"),
         "the note must not promise a format version that does not exist"
     );
 

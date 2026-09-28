@@ -367,9 +367,8 @@ fn icg_pack_dir_is_the_only_location_consulted_when_set() {
     );
 }
 
-/// The default search unions the installed chain with the checkout's
-/// `packs/`, and a pack present in both tiers is listed once per tier —
-/// the count is of resolved pack files, not distinct pack ids.
+/// The default search selects the installed chain as a whole, so checkout-only
+/// files and duplicate ids in the checkout are not loaded.
 #[test]
 fn the_default_search_unions_the_installed_chain_with_the_checkout() {
     let staged = stage(&["alpha", "installed-only"], &["alpha", "checkout-only"]);
@@ -378,14 +377,11 @@ fn the_default_search_unions_the_installed_chain_with_the_checkout() {
 
     let text = stdout(&output);
     assert!(
-        text.contains("✓ Rule packs: 4 packs loaded"),
-        "each resolved file counts: {text}"
+        text.contains("✓ Rule packs: 2 packs loaded"),
+        "the selected installed source counts: {text}"
     );
-    assert_eq!(
-        text.matches("  - alpha (1 patterns)").count(),
-        2,
-        "the same pack id lists once per tier it resolves from: {text}"
-    );
+    assert_eq!(text.matches("  - alpha (1 patterns)").count(), 1);
+    assert!(!text.contains("checkout-only"));
 }
 
 // --- machine-readable output ---------------------------------------------

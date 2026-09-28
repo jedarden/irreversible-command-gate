@@ -1,4 +1,4 @@
-//! The versioned always/never event catalog (`icg catalog`, `icg-catalog/v1`).
+//! The versioned always/never event catalog (`icg catalog`, `icg-catalog/v2`).
 //!
 //! ICG is the component that owns the authoritative list of events that must
 //! never happen and the always-allowed counterpart, and the component that
@@ -34,7 +34,32 @@ use sha2::{Digest, Sha256};
 
 /// The wire contract this module emits. A consumer must refuse a document
 /// whose `format` it does not recognize rather than guess at fields.
-pub const CATALOG_FORMAT: &str = "icg-catalog/v1";
+pub const CATALOG_FORMAT: &str = "icg-catalog/v2";
+
+/// The source from which an operator command loaded the pack-derived part of
+/// a report. The catalog's built-in events are code-owned and are not covered
+/// by this label.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PackSource {
+    pub origin: String,
+    pub root: Option<String>,
+    pub trusted_ref: Option<String>,
+}
+
+impl PackSource {
+    /// Construct a source label from its stable wire fields.
+    pub fn new(
+        origin: impl Into<String>,
+        root: Option<String>,
+        trusted_ref: Option<String>,
+    ) -> Self {
+        Self {
+            origin: origin.into(),
+            root,
+            trusted_ref,
+        }
+    }
+}
 
 /// What an event matches, rendered from the same `Check` the engine
 /// compiles. Predicate entries name the predicate the engine's registry
@@ -162,6 +187,8 @@ pub struct Catalog {
     pub catalog_digest: String,
     /// The `icg` version that rendered the document, for provenance.
     pub icg_version: String,
+    /// The selected source of the pack-derived policy.
+    pub pack_source: PackSource,
     /// Events that must never happen, ordered by (`pack`, `id`).
     pub never: Vec<CatalogEvent>,
     /// Events that are always allowed, ordered by (`pack`, `id`).
@@ -234,6 +261,13 @@ fn builtin_events() -> Vec<CatalogEvent> {
 /// within one pack is a pack-authoring bug and fails the build loudly rather
 /// than silently collapsing two events into one.
 pub fn build(packs: &[Pack]) -> Result<Catalog> {
+    build_with_source(packs, PackSource::new("explicit", None, None))
+}
+
+/// Build the catalog and attach the source selected by the operator resolver.
+/// The source is intentionally excluded from the digest: changing where an
+/// unchanged policy was read from is provenance, not a policy change.
+pub fn build_with_source(packs: &[Pack], pack_source: PackSource) -> Result<Catalog> {
     let mut never: Vec<CatalogEvent> = builtin_events();
     let mut always: Vec<AlwaysEvent> = Vec::new();
 
@@ -281,6 +315,7 @@ pub fn build(packs: &[Pack]) -> Result<Catalog> {
         format: CATALOG_FORMAT,
         catalog_digest: sha256_hex(&canonical),
         icg_version: env!("CARGO_PKG_VERSION").to_string(),
+        pack_source,
         never,
         always,
     })

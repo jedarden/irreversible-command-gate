@@ -1,4 +1,4 @@
-# `icg-catalog/v1` — the machine-readable always/never event catalog
+# `icg-catalog/v2` — the machine-readable always/never event catalog
 
 ICG owns the authoritative list of events that must never happen — the
 force-push, the mutating `kubectl` verb on an ArgoCD-managed resource, the
@@ -42,10 +42,9 @@ icg catalog --json [--pack <path>]...
   same path are deduplicated. A file whose name does not end in `.json` is
   not treated as a pack, even when it exists.
 - With no `--pack`, the loader uses `ICG_PACK_DIR` when that environment
-  variable is set, and otherwise tries `/etc/icg/rule-pack.json`,
-  `/etc/icg/packs`, and the `packs/` directory relative to the working
-  directory, and uses whichever of those exist — the same defaults as
-  `coverage` and the hook itself.
+  variable is set. Otherwise it selects `/etc/icg/packs`, the legacy
+  `/etc/icg/rule-pack.json` when the modular directory is absent, or the
+  working directory's `packs/` only when neither installed location exists.
 - The two built-in guards are always included; they are not packs and
   cannot be excluded.
 
@@ -56,9 +55,10 @@ set:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `format` | literal `"icg-catalog/v1"` | Identifies the contract. |
+| `format` | literal `"icg-catalog/v2"` | Identifies the contract. |
 | `catalog_digest` | string | SHA-256 hex of the event set — the drift signal, defined below. |
 | `icg_version` | string | The `icg` release that rendered the document, for provenance only. |
+| `pack_source` | object | The selected pack source: `origin`, `root`, and `trusted_ref`; built-in guards are code-owned and are not files in this source. |
 | `never` | array of event objects | Events that must never happen, ordered by (`pack`, `id`). |
 | `always` | array of event objects | Events that are always allowed, ordered by (`pack`, `id`). |
 
@@ -69,7 +69,7 @@ Each entry of `never`:
 | `id` | string | Stable event id — the same id a denial record carries as `pattern_id` and, for pack events, the key `icg explain --pattern` accepts. The two built-in guards are code, not packs, so `explain` — which reads packs only — does not resolve their ids; see [Relationship to other interfaces](#relationship-to-other-interfaces). |
 | `pack` | string | Owning pack id — the denial record's `pack_id`. Built-in guards use their synthetic pack ids `github-workflows` and `job-cronjob-yaml`. |
 | `severity` | string | `Critical`, `High`, or `Medium`. |
-| `tier` | string | Deterministic-difficulty tier: `tier1`, `tier2`, or `tier3` (lowercase; `coverage/v1` spells the same values `Tier1`… in its debug output). |
+| `tier` | string | Deterministic-difficulty tier: `tier1`, `tier2`, or `tier3` (lowercase; `coverage/v2` spells the same values `Tier1`… in its debug output). |
 | `action` | string | The engine's response channel when caught, in the hook wire spelling: `deny`, `updated_input`, or `additional_context` (see [`pretooluse-response-schema.md`](pretooluse-response-schema.md)). |
 | `destructive` | boolean | Whether the event guards an irreversible operation. |
 | `enabled` | boolean | `false` when the rule ships disabled: cataloged so the whole policy surface stays visible, but the engine does not enforce it — a gap detector must not treat it as a hole in the gate. Built-in guards are code and always `true`. |
@@ -113,7 +113,7 @@ silently collapsing two events into one.
 `catalog_digest` is the SHA-256 of the canonical JSON serialization of
 
 ```json
-{"format": "icg-catalog/v1", "never": [...], "always": [...]}
+{"format": "icg-catalog/v2", "never": [...], "always": [...]}
 ```
 
 — the entire event set and nothing else. Because the arrays are sorted by
@@ -147,7 +147,7 @@ can never quietly shrink the catalog a consumer last saw.
 
 ## Relationship to other interfaces
 
-- `coverage --format json` (`coverage/v1`) describes *packs*: what loaded,
+- `coverage --format json` (`coverage/v2`) describes *packs*: what loaded,
   with the rules in pack-file order and debug-spelled enums. It is the
   pack-author's view. The catalog is the *event* view consumers reason
   about, keyed by denial attribution, with hook-wire spellings.
@@ -163,7 +163,7 @@ can never quietly shrink the catalog a consumer last saw.
 
 ## Versioning
 
-The literal `format` value is `icg-catalog/v1`. Consumers key on the full
+The literal `format` value is `icg-catalog/v2`. Consumers key on the full
 key sets above, and those sets are pinned by test: adding, removing, or
 renaming a field breaks the build on purpose. Any shape change bumps the
 version string (`icg-catalog/v2`) and rewrites this note in the same
