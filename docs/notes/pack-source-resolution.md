@@ -1,87 +1,204 @@
-# Operator commands resolve rule packs from one labeled source — design intent
+# Operator pack-source resolution contract
 
-**Status: design intent, not shipped.** Nothing in this note describes HEAD
-behavior; at HEAD the documented-commands pack set (`icg check`, `icg
-coverage`, `icg status`, `icg catalog`) is still the union of every location
-that exists, and the coverage JSON contract is still the one
-[coverage-json-api.md](coverage-json-api.md) specifies.
+**Status: design contract, not shipped.** This note settles the source
+selection that the operator commands will implement. At the current HEAD the
+operator commands still have the old union behavior; an implementation must
+change that behavior and update the versioned API notes in the same change.
+The hook's installed-only behavior is already a separate contract and is not
+changed by this note.
 
-Owning bead: `irrevers-041127e6` (open). This note salvages the design from
-an abandoned, un-beaded working-tree attempt at that bead's scope (discarded
-2026-09-26 under `irrevers-3d418f71`, the reconciliation bead; the raw
-module, wiring and tests are parked in the named git stash
-`irrevers-041127e6 orphaned pack-source/coverage-v2 attempt`). Claim the bead
-and start from the stash — do not re-derive the precedence rules.
+The problem is simple to state: a checkout can contain newer or additional
+packs than the release installed on the host. If an operator command reports
+the union, it can claim that the hook enforces a rule that the hook never
+loaded. A source label must make the selected policy observable, and the
+resolver must select one source rather than quietly combining trust and
+working-tree data.
 
-## The problem
+## Terminology
 
-The hook exists to answer "what is enforced" by loading one location: the
-installed trust directory (`/etc/icg/packs`, or the legacy single-file
-`/etc/icg/rule-pack.json`). The operator commands exist to answer the same
-question, but used to load *every* location that existed — installed
-directory *and* the working directory's `packs/` — and report the union. A
-checkout ahead of the deployed release therefore reported coverage the
-deployed hook did not enforce.
+An **explicit path** is a value supplied with `--pack` (the existing
+`--rule-pack` alias is equivalent). A path may name one `.json` pack file or a
+directory whose sorted `.json` entries are the pack set. Repeated `--pack`
+values are one deliberate explicit selection: all of the named paths are
+used, deduplicated and sorted as they are today.
 
-That stopped being hypothetical on 2026-09-25: the union reported a
-`kubectl` pack that the trust pointer's v0.1.61 install did not carry,
-overstating deployed enforcement exactly when the rule-4 retirement decision
-needed the truth. The documented verification snippets (AGENTS.md,
-quick-start: "confirm the 11 packs load") read the checkout while the hook
-enforces the release — the sanctioned check could not see the gap it was
-being used to close.
+`ICG_PACK_DIR` is the operator-command development override. It is not a
+second source to merge with the defaults; when it is set, its one directory
+is the complete selected pack set. Its reports use the `explicit` source
+origin because the caller deliberately selected it, even though the human
+label identifies it as `ICG_PACK_DIR`.
 
-## The design — first-match precedence, never a union
+The **installed source** is the trust-directory chain that represents the
+release the hook is intended to enforce:
 
-One invocation resolves its pack set from exactly one source, in this order:
+1. `/etc/icg/packs`, the modular directory, when that location is present;
+2. otherwise `/etc/icg/rule-pack.json`, the legacy single-file artifact.
 
-1. **Explicit** — caller-supplied `--pack` paths, or `ICG_PACK_DIR`.
-   Development against a checkout stays possible, but only by saying so:
-   `icg coverage --list --pack packs`.
-2. **Installed** — the same directory chain the hook resolves (modular
-   directory, then the legacy single-file artifact; the hook's
-   `ICG_RULE_PACK` override belongs to the hook process, not to operator
-   commands), so the default report describes the deployed policy.
-3. **Repository** — the working directory's `packs/`, only when no release
-   is installed (a bare checkout or CI runner).
+The two installed locations are alternatives, not a union. The
+`ICG_INSTALLED_PACK_DIR` variable used by tests may substitute a staged
+installed directory for this chain; it is an operator-test seam, not a user
+development override and is never read by the hook.
 
-No fallback ladder *within* an invocation: a location either wins or is not
-consulted. Expansion keeps the long-standing rules — a candidate is a
-`.json` file or a directory contributing its sorted `.json` entries, and an
-explicit candidate that does not exist is an error rather than a silent gap.
+The **repository source** is the working directory's `packs/` directory. It
+is a fallback for a bare checkout or CI runner with no installed release.
 
-## The labeling design
+## Precedence: first match, never a union
 
-Every consumer of the resolved set labels the source in its output, so a
-reader can tell deployed coverage from repo coverage instead of inferring it
-from paths:
+For `check`, `coverage`, `status`, and `catalog`, one invocation resolves
+packs in this exact order:
 
-- `coverage --format json` gains a `pack_source` object next to `packs`:
-  `origin` (one of `installed`, `repository`, `explicit`), `root` (the
-  single location the packs resolved from; always present for the installed
-  and repository origins, `null` when the caller named explicit paths), and
-  `trusted_ref` (the installed release's trusted reference, readable only
-  ever on an `installed` report — a reference cannot ride on a checkout).
-- `coverage --list` (text) opens with a source header line naming the root
-  and, for the installed origin, the release it corresponds to.
-- `check --debug` names the source on stderr only — it is diagnostics, not
-  output contract.
-- `status`/health reporting names the pack source it validated.
-- The bug report attributes its rule-pack inventory to a source.
+1. explicit `--pack` paths;
+2. `ICG_PACK_DIR`, when no `--pack` was supplied;
+3. the installed source (`/etc/icg/packs`, otherwise the legacy artifact);
+4. the repository source (`packs/`) when no installed source exists.
 
-**Open in the owning bead:** the catalog document carries no source label in
-the salvaged attempt — it loaded from the resolved set but did not label the
-`icg-catalog/v1` output. Labeling coverage *and* catalog output is
-`irrevers-041127e6` item (2).
+The first applicable source wins. Once a source wins, lower-priority sources
+are not inspected, loaded, merged, or used to fill gaps. This is a source
+tier decision, not a per-pack-name decision: an installed source wins as a
+whole, so a checkout-only pack does not join the report and a checkout copy
+of an installed pack cannot replace it.
 
-## Wire-format consequence
+Within a selected directory, only `.json` entries are candidates and their
+paths are sorted. The existing pack validation and duplicate-id rules still
+apply to the selected set. An explicit invocation may intentionally select
+multiple files or directories; those explicit inputs are the one winning
+source and do not cause the installed or repository defaults to be read.
 
-Adding `pack_source` to the coverage JSON is a shape change, so per
-[coverage-json-api.md](coverage-json-api.md)'s Versioning policy it is a
-`coverage/v2` bump — and that policy requires rewriting the note *in the
-same commit* as the code. The abandoned attempt bumped the code and tests
-but never rewrote the note, which is why the note-sync suite ran red against
-that tree; the policy makes the attempt unshippable piecemeal, by design.
-An implementer ships code, tests, the rewritten API note, and the AGENTS.md
-/ quick-start verification-snippet updates (`irrevers-041127e6` item (4))
-as one atomic change, with the extraction DoD as the gate.
+The installed chain is also first-match: if `/etc/icg/packs` is present, the
+legacy file is not consulted, even if both exist. If the modular directory is
+absent, the legacy file may win. If both installed locations are absent, the
+resolver may proceed to the repository fallback.
+
+## Missing, empty, and unreadable locations
+
+The resolver distinguishes an absent default from a broken location. This
+prevents a permissions or deployment failure from being disguised as a
+checkout policy:
+
+| Candidate | Contract |
+| --- | --- |
+| Missing explicit `--pack` path | Error; do not use `ICG_PACK_DIR`, installed packs, or checkout packs. |
+| Missing `ICG_PACK_DIR` path | Error; do not fall back to installed or checkout packs. |
+| Missing installed modular directory | Try the legacy installed artifact. |
+| Missing both installed locations | Try checkout `packs/`. |
+| Present but unreadable installed location | Error; do not fall back to checkout or the lower installed candidate. |
+| Present installed location with no `.json` packs | Error; it is a broken selected installation, not proof that checkout policy is safe to use. |
+| Present but unreadable/empty checkout location | Error; there is no lower-priority source. |
+| Present but unreadable/empty explicit or override location | Error; never silently use another source. |
+
+An unreadable individual `.json` file is a load error after its source has
+already won; it does not reopen source selection. The existing command
+contracts remain in force: coverage records failed files in its `unreadable`
+array and refuses to emit an empty report, while `check`, `status`, and
+`catalog` do not evaluate or publish a partial policy when their selected
+pack set cannot be loaded completely. No command may turn an unreadable
+installed file into a checkout fallback.
+
+## Collision examples
+
+These examples use `git.json` as a deliberately colliding pack id.
+
+### Installed wins over checkout
+
+Suppose the host has:
+
+```text
+/etc/icg/packs/git.json       # git rule set from the installed release
+checkout/packs/git.json       # a different development copy
+checkout/packs/kubectl.json   # checkout-only rule set
+```
+
+With `checkout` as the working directory, an unqualified
+`icg coverage --list` reports only the installed `git.json`, labels the
+source `installed`, and does not report `kubectl.json`. The installed copy of
+`git.json` wins byte-for-byte; there is no merge, replacement, or collision
+warning because the checkout source was not consulted. `icg pack-drift` is
+the separate command for comparing the installed release against a checkout
+artifact.
+
+If `/etc/icg/packs` is absent but `/etc/icg/rule-pack.json` exists, the
+legacy artifact is the installed winner and `checkout/packs/` is still not
+read. If both installed locations are absent, the same command reports the
+checkout's packs and labels the source `repository`.
+
+### An explicit source wins over both
+
+With both installed and checkout packs present,
+`icg coverage --list --pack /tmp/review-packs` reports only
+`/tmp/review-packs`. If that path is missing, the command errors; it does not
+quietly inspect `/etc/icg` or `packs/`. The equivalent development override
+is `ICG_PACK_DIR=/tmp/review-packs icg coverage --list`; it has the same
+no-fallback rule and is labeled as an explicit development source.
+
+## Hook isolation
+
+The hook and the operator resolver have intentionally different entry
+points, but neither may broaden the other's trust boundary:
+
+- The hook reads its explicit rule-pack argument or `ICG_RULE_PACK`, then its
+  installed chain, and never discovers `./packs/` from the working directory.
+- The hook never reads `ICG_PACK_DIR` or `ICG_INSTALLED_PACK_DIR`.
+- `icg check --pack packs` is an explicit developer analysis; it does not
+  alter or imply what a hook invocation enforces.
+- An operator command's default installed label describes the trust source it
+  selected, not a checkout that happens to be the current directory.
+
+This keeps a checkout-only pack out of hook evaluation even when an operator
+is running commands from that checkout. The engine's fail-open behavior for
+evaluation errors remains unchanged; source resolution errors are reported
+by the operator command instead of being hidden by a lower-priority source.
+
+## Source labels and affected CLI surfaces
+
+Every affected operator surface identifies the one selected source. The
+machine-readable origin vocabulary is deliberately small and stable:
+
+| Origin | Meaning | `root` |
+| --- | --- | --- |
+| `explicit` | Caller-supplied `--pack` paths or `ICG_PACK_DIR`. | `null` for repeated `--pack` paths; the selected directory for `ICG_PACK_DIR`. |
+| `installed` | `/etc/icg/packs` or the legacy installed artifact. | The winning installed location. |
+| `repository` | The working directory's `packs/` fallback. | The winning checkout directory. |
+
+`trusted_ref` is present only for an `installed` result, when the installed
+release reference can be read. It is `null` for `explicit` and `repository`
+results; a checkout must never inherit a trusted-release claim.
+
+The output rules are:
+
+- `coverage --list` prints one `Pack source:` line naming the origin and root
+  before the text listing. `coverage --list --format json` adds a
+  `pack_source` object with `origin`, `root`, and `trusted_ref`; it emits no
+  human header on stdout.
+- `check --debug` prints the source label on stderr with its other diagnostic
+  lines. Plain `check` keeps stdout reserved for the decision and does not
+  add a source line there.
+- `status` (and its pack/health report section) prints the selected source
+  label it validated.
+- `catalog --json` adds the same `pack_source` object to the JSON document.
+  The label describes the pack-derived portion; the catalog's built-in
+  guards are not files in any pack source.
+
+Adding `pack_source` changes the coverage wire shape from `coverage/v1` to
+`coverage/v2` and the catalog shape from `icg-catalog/v1` to its next version.
+The implementation must rewrite `docs/notes/coverage-json-api.md` and
+`docs/notes/event-catalog-json-api.md` in the same atomic change as the
+fields and tests. Source labels must never be emitted as extra prose on a
+JSON command's stdout.
+
+## Explicit missing-location examples
+
+These examples pin the no-silent-fallback rule:
+
+```bash
+# Even if /etc/icg/packs and ./packs exist, this is an error.
+icg coverage --list --pack /tmp/no-such-packs
+
+# The development override is also authoritative when set.
+ICG_PACK_DIR=/tmp/no-such-packs icg catalog --json
+```
+
+Conversely, when neither `/etc/icg/packs` nor
+`/etc/icg/rule-pack.json` exists, a checkout containing a readable `packs/`
+directory is a valid `repository` fallback. That fallback is the only
+default fallback; it is never used to repair an explicit, empty, or
+unreadable higher-priority location.
