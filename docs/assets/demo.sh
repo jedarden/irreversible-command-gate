@@ -24,7 +24,7 @@
 # regenerate the GIF with the recipe below in the same change, so the README
 # keeps showing real output.
 #
-# Size of the committed asset: the GIF captured in 0ae6afb is 614658 bytes,
+# Size of the committed asset: the GIF captured from the current release is 616005 bytes,
 # and every capture so far has landed between 450 KB and 620 KB. A recapture
 # legitimately moves the exact number -- update this note with it in the same
 # commit -- but treat one far below that band as a suspect capture. A quick

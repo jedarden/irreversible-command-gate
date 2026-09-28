@@ -20,5 +20,7 @@ Set PlaybackSpeed 1.0
 Hide
 Type "clear" Enter
 Show
-Type "bash docs/assets/demo.sh" Enter
+# Keep the shell alive through the capture window. Current vhs stops encoding
+# when the typed shell exits, so the trailing Sleep would otherwise be lost.
+Type "bash docs/assets/demo.sh; sleep 20" Enter
 Sleep 32s
