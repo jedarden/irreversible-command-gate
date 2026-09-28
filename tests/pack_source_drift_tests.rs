@@ -12,7 +12,7 @@
 //! temporary checkout. Nothing here depends on whether the host running
 //! the suite has an installation of its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -53,6 +53,28 @@ fn write_pack(dir: &Path, id: &str) -> PathBuf {
     let path = dir.join(format!("{id}.json"));
     fs::write(&path, pack_json(id)).expect("fixture pack should write");
     path
+}
+
+fn write_broken_pack(dir: &Path, id: &str) -> PathBuf {
+    let path = dir.join(format!("{id}.json"));
+    fs::write(&path, "{ not valid json").expect("broken fixture pack should write");
+    path
+}
+
+fn json_keys(value: &Value) -> BTreeSet<String> {
+    value
+        .as_object()
+        .expect("value should be an object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+fn pack_source_keys() -> BTreeSet<String> {
+    ["origin", "root", "trusted_ref"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// A staged world: an "installed" trust directory with `installed_ids`, a
@@ -121,13 +143,9 @@ fn coverage_list_labels_each_pack_source() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = stdout(&output);
-    assert!(
-        text.contains(&format!(
-            "Pack source: {} (installed)",
-            staged.installed.display()
-        )),
-        "the installed tier is named: {text}"
-    );
+    let expected_source = format!("Pack source: {} (installed)", staged.installed.display());
+    assert_eq!(text.lines().next(), Some(expected_source.as_str()));
+    assert_eq!(text.matches("Pack source:").count(), 1);
     assert!(!text.contains("Pack source: packs"));
     assert!(!text.contains("WARNING (pack source)"));
     assert!(
@@ -169,7 +187,8 @@ fn a_bare_checkout_names_only_the_working_directory_and_does_not_warn() {
         String::from_utf8_lossy(&output.stderr)
     );
     let text = stdout(&output);
-    assert!(text.contains("Pack source: packs (repository)"));
+    assert_eq!(text.lines().next(), Some("Pack source: packs (repository)"));
+    assert_eq!(text.matches("Pack source:").count(), 1);
     assert!(
         !text.contains("(installed)"),
         "nothing counts as installed: {text}"
@@ -192,6 +211,44 @@ fn explicit_pack_paths_are_never_labeled_or_warned() {
     assert!(text.contains("Pack source: explicit (explicit; --pack)"));
     assert!(!text.contains("WARNING (pack source)"));
     assert!(text.contains("✓ pack kubectl"));
+}
+
+/// A same-id checkout copy is a collision only in a lower-priority source:
+/// the installed file wins byte-for-byte, and the checkout copy is neither
+/// merged nor allowed to replace it.
+#[test]
+fn an_installed_collision_beats_a_different_checkout_copy() {
+    let staged = stage(&["alpha"], &["alpha"]);
+    let checkout_alpha = staged.working_dir.join("packs/alpha.json");
+    let mut checkout_pack: Value =
+        serde_json::from_str(&fs::read_to_string(&checkout_alpha).unwrap()).unwrap();
+    checkout_pack["guarded_patterns"][0]["regex"] = Value::String("^alphactl checkout-only".into());
+    fs::write(
+        &checkout_alpha,
+        serde_json::to_string_pretty(&checkout_pack).unwrap(),
+    )
+    .expect("different checkout collision should write");
+
+    let output = staged.run(&["coverage", "--list", "--format", "json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_eq!(report["packs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report["packs"][0]["path"],
+        staged
+            .installed
+            .join("alpha.json")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        report["packs"][0]["guarded_patterns"][0]["id"],
+        "alpha-destroy"
+    );
+    assert_eq!(
+        report["packs"][0]["guarded_patterns"][0]["check"],
+        "command_regex"
+    );
 }
 
 /// `ICG_INSTALLED_PACK_DIR` replaces the `/etc/icg` chain for operator
@@ -224,6 +281,8 @@ fn the_installed_override_replaces_the_etc_chain_but_not_the_working_directory()
         report["pack_source"]["root"],
         staged.installed.to_string_lossy().as_ref()
     );
+    assert_eq!(json_keys(&report["pack_source"]), pack_source_keys());
+    assert!(report["pack_source"]["trusted_ref"].is_null());
 }
 
 /// `ICG_PACK_DIR` still replaces the whole search — the explicit tier wins
@@ -255,6 +314,12 @@ fn icg_pack_dir_still_replaces_every_default_source() {
         .map(|pack| pack["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec!["gamma"], "only the ICG_PACK_DIR pack loads");
+    assert_eq!(report["pack_source"]["origin"], "explicit");
+    assert_eq!(
+        report["pack_source"]["root"],
+        solo.to_string_lossy().as_ref()
+    );
+    assert!(report["pack_source"]["trusted_ref"].is_null());
 }
 
 #[test]
@@ -269,6 +334,8 @@ fn catalog_json_labels_the_selected_installed_source() {
         report["pack_source"]["root"],
         staged.installed.to_string_lossy().as_ref()
     );
+    assert_eq!(json_keys(&report["pack_source"]), pack_source_keys());
+    assert!(report["pack_source"]["trusted_ref"].is_null());
     assert!(report["never"]
         .as_array()
         .unwrap()
@@ -296,6 +363,136 @@ fn missing_icg_pack_dir_is_authoritative_and_does_not_fall_back() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(stderr(&output).contains("ICG_PACK_DIR path does not exist"));
+}
+
+/// A legacy installed artifact is still an installed source. The repository
+/// fallback is not consulted just because the selected installed source is a
+/// file rather than a modular directory.
+#[test]
+fn a_legacy_installed_artifact_blocks_repository_fallback() {
+    let staged = stage(&[], &["checkout"]);
+    let legacy = staged._dir.path().join("rule-pack.json");
+    fs::write(&legacy, pack_json("legacy")).expect("legacy fixture should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .current_dir(&staged.working_dir)
+        .env(INSTALLED_OVERRIDE, &legacy)
+        .env_remove("ICG_PACK_DIR")
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_eq!(report["pack_count"], 1);
+    assert_eq!(report["packs"][0]["id"], "legacy");
+    assert_eq!(report["pack_source"]["origin"], "installed");
+    assert_eq!(
+        report["pack_source"]["root"],
+        legacy.to_string_lossy().as_ref()
+    );
+    assert!(report["pack_source"]["trusted_ref"].is_null());
+}
+
+/// A present but empty installed source is a broken selected source, not a
+/// reason to report the checkout's policy as deployed coverage.
+#[test]
+fn an_empty_installed_source_does_not_fall_back_to_repository_packs() {
+    let staged = stage(&[], &["checkout"]);
+    let output = staged.run(&["coverage", "--list", "--format", "json"]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(stderr(&output).contains("no rule packs found"));
+    assert!(!stderr(&output).contains("checkout"));
+}
+
+/// Once the installed source wins, an unreadable member is reported as an
+/// unreadable installed pack (coverage) or a hard export error (catalog); it
+/// never reopens source selection and imports a checkout pack.
+#[test]
+fn an_unreadable_installed_pack_never_falls_back_to_checkout_packs() {
+    let staged = stage(&["alpha"], &["checkout"]);
+    let broken = write_broken_pack(&staged.installed, "broken");
+
+    let coverage = staged.run(&["coverage", "--list", "--format", "json"]);
+    assert!(coverage.status.success(), "{}", stderr(&coverage));
+    let report: Value = serde_json::from_slice(&coverage.stdout).expect("coverage should be JSON");
+    assert_eq!(report["pack_count"], 1);
+    assert_eq!(report["packs"][0]["id"], "alpha");
+    assert_eq!(
+        report["unreadable"][0]["path"],
+        broken.to_string_lossy().as_ref()
+    );
+    assert_eq!(report["pack_source"]["origin"], "installed");
+    assert!(!coverage
+        .stdout
+        .windows(b"checkout".len())
+        .any(|window| window == b"checkout"));
+
+    let catalog = staged.run(&["catalog", "--json"]);
+    assert!(!catalog.status.success());
+    assert!(catalog.stdout.is_empty());
+    assert!(stderr(&catalog).contains(broken.to_string_lossy().as_ref()));
+    assert!(!stderr(&catalog).contains("checkout"));
+}
+
+#[test]
+fn catalog_labels_the_explicit_development_override() {
+    let staged = stage(&["alpha"], &["checkout"]);
+    let explicit = staged._dir.path().join("explicit");
+    fs::create_dir(&explicit).expect("explicit directory should exist");
+    write_pack(&explicit, "gamma");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["catalog", "--json"])
+        .current_dir(&staged.working_dir)
+        .env("ICG_PACK_DIR", &explicit)
+        .env(INSTALLED_OVERRIDE, &staged.installed)
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("catalog should be JSON");
+    assert_eq!(report["pack_source"]["origin"], "explicit");
+    assert_eq!(
+        report["pack_source"]["root"],
+        explicit.to_string_lossy().as_ref()
+    );
+    assert_eq!(json_keys(&report["pack_source"]), pack_source_keys());
+    assert!(report["pack_source"]["trusted_ref"].is_null());
+    assert!(report["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["pack"] == "gamma"));
+    assert!(!report["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["pack"] == "alpha" || event["pack"] == "checkout"));
+}
+
+#[test]
+fn catalog_labels_the_repository_fallback() {
+    let staged = stage(&[], &["checkout"]);
+    fs::remove_dir(&staged.installed).expect("installed override should be absent");
+    let output = staged.run(&["catalog", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("catalog should be JSON");
+    assert_eq!(report["pack_source"]["origin"], "repository");
+    assert_eq!(report["pack_source"]["root"], "packs");
+    assert_eq!(json_keys(&report["pack_source"]), pack_source_keys());
+    assert!(report["pack_source"]["trusted_ref"].is_null());
+    assert!(report["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["pack"] == "checkout"));
+    assert!(!report["never"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["pack"] == "alpha"));
 }
 
 // --- check: the shadow warning is a --debug diagnostic ------------------

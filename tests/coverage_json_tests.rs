@@ -645,10 +645,12 @@ fn fields_are_emitted_in_the_documented_declaration_order() {
     );
     let doc = String::from_utf8(output.stdout).expect("stdout is utf-8");
 
-    // Top level: format, packs, unreadable, pack_count, guarded_pattern_count.
+    // Top level: format, pack_source, packs, unreadable, pack_count,
+    // guarded_pattern_count.
     let mut cursor = 0;
     for key in [
         "\"format\"",
+        "\"pack_source\"",
         "\"packs\"",
         "\"unreadable\"",
         "\"pack_count\"",
