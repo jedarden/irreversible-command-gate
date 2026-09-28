@@ -77,8 +77,13 @@ silent failure modes OpenCode gives no signal about: a plugin that fails
 to load is dropped without any log line, and `--pure`/`OPENCODE_PURE`
 disables every external plugin at once (§6.3.1) — both backstopped by
 the PATH-wrapper layer. OpenCode's live-enforcement canaries (fake
-executables, `irrevers-c1b23b15`) have not run, so live enforcement
-status is pending, not verified. See
+executables, `irrevers-c1b23b15`) ran green on 2026-09-25 — deny, allow,
+rewrite, warn, hook-failure (load/throw with a healthy-plugin control),
+and unsupported-tool, through real OpenCode 1.18.29 tool execution
+against the deployed `/usr/local/bin/icg` 0.1.63 (`555f6ae`, `43c3262`,
+`e6866ba`) — so live enforcement is verified; raw runs (run.json,
+transcripts, argv logs, no-touch sentinel checks) are under
+`/home/coding/.needle/canary-evidence/`. See
 `docs/notes/multi-harness-integration.md`.
 
 ## Architecture
@@ -383,8 +388,8 @@ engine:
   (a deny throw even pre-empts OpenCode's permission ask). The plugin
   shells out to `/usr/local/bin/icg hook --harness opencode` by absolute
   path, so a hostile PATH cannot redirect it (`open-code` is the alias
-  spelling the deployed plugin actually sends, keeping one file working
-  across the installed 0.1.62 binary and this adapter's build), and
+  spelling the deployed plugin actually sends, kept so one file works
+  across the pre-adapter 0.1.62 binary and this adapter's build), and
   carries exactly one export — the default factory — because any static
   named export beside it makes the 1.18.29 loader reject the whole module
   quietly. OpenCode's accepted gaps, each pinned by
@@ -401,9 +406,11 @@ engine:
   permission ask, and does not end the agent loop, so retries arrive and
   are gated again; a Rewrite is an in-place property mutation of the
   hook's `args` object (reassigning `output.args` is a no-op at every
-  1.18.29 call site) whose rewrite OpenCode's transcript does not show —
-  the transcript records the model's original args, so the plugin audits
-  its own rewrites; read-only tools and MCP-namespaced calls are
+  1.18.29 call site) whose rewrite no record marks as such — the session
+  record carries only the rewritten input (the shared args object mutates
+  with the executed call, the research doc's §2.4 live correction), so
+  the plugin's stderr audit line is the only rewrite marker; read-only
+  tools and MCP-namespaced calls are
   `Unsupported` by contract (§3.4) and render a quiet plain allow, and
   `apply_patch`'s op-list payload fails open at the classification
   boundary with a stderr diagnostic; and the wire carries no version
@@ -414,15 +421,20 @@ engine:
   residual risk backstopped by the PATH-wrapper layer: a plugin that
   fails to load is dropped with no log line at all (`opencode debug
   info` lists registrations, not loads), and `--pure`/`OPENCODE_PURE`
-  silently disables every external plugin. None of this is yet verified
-  against a live OpenCode session: the deployed plugin's mount and hook
-  wiring were probe-verified on the installed 1.18.29 (factory-throw
-  canaries, `irrevers-bba8bcc9`), and the plugin's node suite
-  (`npm test --prefix opencode-plugin`) and the adapter contract fixtures
-  pin the dispatch semantics, but the fake-executable live canaries are
-  still open (`irrevers-c1b23b15`) — and the installed icg binary
-  (0.1.62) predates this adapter, so the deployed gate fails open at the
-  subprocess boundary until a newer icg ships.
+  silently disables every external plugin. Enforcement is verified
+  against live OpenCode sessions: the fake-executable canaries
+  (`irrevers-c1b23b15`) ran green on 2026-09-25 through real OpenCode
+  1.18.29 tool execution with the globally mounted plugin against the
+  deployed `/usr/local/bin/icg` 0.1.63 — deny and allow (`555f6ae`),
+  rewrite and warn (`43c3262`), hook-failure load/throw with a
+  healthy-plugin control and unsupported-tool (`e6866ba`) — each
+  scenario's run.json, transcripts, argv logs, and no-touch sentinel
+  checks recorded under `/home/coding/.needle/canary-evidence/`. The
+  plugin's mount and hook wiring had been probe-verified on the
+  installed 1.18.29 before that (factory-throw probes,
+  `irrevers-bba8bcc9`), and the plugin's node suite
+  (`npm test --prefix opencode-plugin`) and the adapter contract
+  fixtures pin the dispatch semantics.
 
 Rationale for running both rather than picking one: they have non-
 overlapping blind spots (a wrapper misses structured/MCP tool calls a hook

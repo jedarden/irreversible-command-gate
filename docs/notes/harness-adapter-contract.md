@@ -301,9 +301,10 @@ exact official source it was taken from.
 - **Implementation (ICG):** `OpenCodeAdapter`, served by
   `icg hook --harness opencode` (the flag spelling is the telemetry slug;
   clap's derived `open-code` is an alias — and the spelling the deployed
-  plugin actually sends: the installed 0.1.62 binary predates this adapter
-  and takes only the derived kebab-case, so the alias keeps one deployed
-  file working across both builds). The plugin serializes the hook's
+  plugin actually sends: the pre-adapter 0.1.62 binary took only the
+  derived kebab-case, so the alias keeps one deployed file working across
+  both builds; the deployed 0.1.63 carries the adapter). The plugin
+  serializes the hook's
   payload — `tool`, `sessionID`, `callID`, and the mutable `args` object —
   to the process's stdin, which the engine's OpenCode admission path
   (`read_opencode_payload_from_stdin`, the same fail-open stdin boundary as
