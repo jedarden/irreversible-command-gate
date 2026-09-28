@@ -268,7 +268,10 @@ fn the_operator_pack_override_never_reaches_the_hook() {
     let staged = stage(&["alpha"], &[]);
     let response = staged.run_hook_with_extra_env(
         &staged.installed,
-        &[(INSTALLED_OVERRIDE, operator_only.as_path())],
+        &[
+            (INSTALLED_OVERRIDE, operator_only.as_path()),
+            ("ICG_PACK_DIR", operator_only.as_path()),
+        ],
         "victimactl destroy everything",
     );
     assert_not_denied_by(&response, "victima");

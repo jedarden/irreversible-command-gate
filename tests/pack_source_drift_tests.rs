@@ -50,7 +50,11 @@ fn pack_json(id: &str) -> String {
 }
 
 fn write_pack(dir: &Path, id: &str) -> PathBuf {
-    let path = dir.join(format!("{id}.json"));
+    write_pack_named(dir, &format!("{id}.json"), id)
+}
+
+fn write_pack_named(dir: &Path, filename: &str, id: &str) -> PathBuf {
+    let path = dir.join(filename);
     fs::write(&path, pack_json(id)).expect("fixture pack should write");
     path
 }
@@ -320,6 +324,86 @@ fn icg_pack_dir_still_replaces_every_default_source() {
         solo.to_string_lossy().as_ref()
     );
     assert!(report["pack_source"]["trusted_ref"].is_null());
+}
+
+/// An explicit path is the highest-precedence source, including when the
+/// development override is also present. The lower-priority override is not
+/// even inspected, so a conflicting override cannot poison the result.
+#[test]
+fn explicit_pack_paths_beat_icg_pack_dir_and_installed_packs() {
+    let staged = stage(&["installed"], &["checkout"]);
+    let explicit = staged.working_dir.join("packs/checkout.json");
+    let override_dir = staged._dir.path().join("override");
+    fs::create_dir(&override_dir).expect("override directory should exist");
+    write_pack_named(&override_dir, "one.json", "override");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "coverage",
+            "--format",
+            "json",
+            "--pack",
+            explicit.to_str().unwrap(),
+        ])
+        .current_dir(&staged.working_dir)
+        .env("ICG_PACK_DIR", &override_dir)
+        .env(INSTALLED_OVERRIDE, &staged.installed)
+        .output()
+        .expect("icg should run");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_eq!(report["pack_count"], 1);
+    assert_eq!(report["packs"][0]["id"], "checkout");
+    assert_eq!(report["pack_source"]["origin"], "explicit");
+    assert!(report["pack_source"]["root"].is_null());
+}
+
+/// A selected source cannot contain two different files with the same pack
+/// id. Silently replacing one is especially dangerous because the engine is
+/// indexed by id while coverage would otherwise list both files.
+#[test]
+fn duplicate_pack_ids_in_explicit_paths_are_a_conflict() {
+    let staged = stage(&["installed"], &["checkout"]);
+    let first = write_pack_named(staged._dir.path(), "first.json", "same");
+    let second = write_pack_named(staged._dir.path(), "second.json", "same");
+
+    let output = staged.run(&[
+        "coverage",
+        "--format",
+        "json",
+        "--pack",
+        first.to_str().unwrap(),
+        "--pack",
+        second.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let err = stderr(&output);
+    assert!(err.contains("duplicate pack id 'same'"), "{err}");
+    assert!(err.contains(first.to_string_lossy().as_ref()), "{err}");
+    assert!(err.contains(second.to_string_lossy().as_ref()), "{err}");
+}
+
+/// The same conflict rule applies to the selected `ICG_PACK_DIR` source.
+#[test]
+fn duplicate_pack_ids_in_icg_pack_dir_are_a_conflict() {
+    let staged = stage(&["installed"], &["checkout"]);
+    let override_dir = staged._dir.path().join("override");
+    fs::create_dir(&override_dir).expect("override directory should exist");
+    write_pack_named(&override_dir, "first.json", "same");
+    write_pack_named(&override_dir, "second.json", "same");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["catalog", "--json"])
+        .current_dir(&staged.working_dir)
+        .env("ICG_PACK_DIR", &override_dir)
+        .env(INSTALLED_OVERRIDE, &staged.installed)
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(stderr(&output).contains("duplicate pack id 'same'"));
 }
 
 #[test]
@@ -698,6 +782,43 @@ fn pack_drift_reports_a_changed_pack() {
         text.contains("(1 guarded patterns) vs reference") && text.contains("(2 guarded patterns)"),
         "both sides' rule counts are reported: {text}"
     );
+}
+
+/// `pack-drift` does not silently choose one of two same-id files on either
+/// side. It reports the source conflict as drift, so the operator cannot get
+/// a false byte-identical result from an ambiguous pack set.
+#[test]
+fn pack_drift_reports_duplicate_pack_ids_as_conflicts() {
+    let dir = TempDir::new().expect("temporary directory");
+    let installed = dir.path().join("installed");
+    let reference = dir.path().join("reference");
+    fs::create_dir(&installed).expect("installed directory");
+    fs::create_dir(&reference).expect("reference directory");
+    write_pack(&installed, "alpha");
+    write_pack_named(&reference, "first.json", "alpha");
+    write_pack_named(&reference, "second.json", "alpha");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "pack-drift",
+            "--installed",
+            installed.to_str().unwrap(),
+            "--reference",
+            reference.to_str().unwrap(),
+        ])
+        .env_remove("ICG_PACK_DIR")
+        .env_remove("ICG_RULE_PACK")
+        .env_remove(INSTALLED_OVERRIDE)
+        .output()
+        .expect("icg should run");
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(
+        text.contains("CONFLICT: duplicate pack id 'alpha'"),
+        "{text}"
+    );
+    assert!(text.contains("DRIFT: 1 difference(s)"), "{text}");
+    assert!(!text.contains("OK: no drift"), "{text}");
 }
 
 /// The legacy single-file artifact is a legal installed side: it compares

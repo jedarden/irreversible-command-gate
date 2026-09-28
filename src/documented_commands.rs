@@ -619,7 +619,10 @@ struct CoverageLoadError {
     error: String,
 }
 
-fn coverage_report(paths: &[PathBuf], pack_source: &crate::catalog::PackSource) -> CoverageReport {
+fn coverage_report(
+    paths: &[PathBuf],
+    pack_source: &crate::catalog::PackSource,
+) -> Result<CoverageReport> {
     let mut packs = Vec::new();
     let mut unreadable = Vec::new();
 
@@ -658,15 +661,32 @@ fn coverage_report(paths: &[PathBuf], pack_source: &crate::catalog::PackSource) 
         }
     }
 
+    reject_duplicate_coverage_pack_ids(&packs)?;
+
     let guarded_pattern_count = packs.iter().map(|p| p.guarded_patterns.len()).sum();
-    CoverageReport {
+    Ok(CoverageReport {
         format: "coverage/v2",
         pack_source: pack_source.clone(),
         pack_count: packs.len(),
         guarded_pattern_count,
         packs,
         unreadable,
+    })
+}
+
+fn reject_duplicate_coverage_pack_ids(packs: &[CoveragePack]) -> Result<()> {
+    let mut seen = BTreeMap::new();
+    for pack in packs {
+        if let Some(previous) = seen.insert(pack.id.clone(), pack.path.clone()) {
+            bail!(
+                "duplicate pack id '{}' in selected pack source: {} conflicts with {}",
+                pack.id,
+                previous,
+                pack.path
+            );
+        }
     }
+    Ok(())
 }
 
 pub fn run_coverage(args: CoverageArgs) -> Result<()> {
@@ -676,7 +696,7 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
 
     match args.format.as_str() {
         "json" => {
-            let report = coverage_report(&sources.paths, &sources.source);
+            let report = coverage_report(&sources.paths, &sources.source)?;
             if report.packs.is_empty() {
                 bail!("no readable rule packs were found")
             }
@@ -687,34 +707,31 @@ pub fn run_coverage(args: CoverageArgs) -> Result<()> {
         other => bail!("unsupported --format {other:?}; use \"text\" or \"json\""),
     }
 
+    let report = coverage_report(&sources.paths, &sources.source)?;
+    if report.packs.is_empty() {
+        bail!("no readable rule packs were found")
+    }
+
     // Name the source before the packs, so a reader can tell deployed
     // coverage from checkout coverage before trusting any of it.
     for line in pack_source_lines(&sources) {
         println!("{line}");
     }
 
-    let paths = &sources.paths;
-    let mut found = false;
-    for path in paths {
-        match crate::rule_pack::load_pack(path) {
-            Ok(pack) => {
-                found = true;
-                println!(
-                    "✓ pack {} ({} patterns){}",
-                    pack.id,
-                    pack.guarded_patterns.len(),
-                    if args.list {
-                        String::new()
-                    } else {
-                        format!(" — {}", path.display())
-                    }
-                );
+    for pack in &report.packs {
+        println!(
+            "✓ pack {} ({} patterns){}",
+            pack.id,
+            pack.guarded_patterns.len(),
+            if args.list {
+                String::new()
+            } else {
+                format!(" — {}", pack.path)
             }
-            Err(error) => println!("✗ {}: {error}", path.display()),
-        }
+        );
     }
-    if !found {
-        bail!("no readable rule packs were found")
+    for unreadable in &report.unreadable {
+        println!("✗ {}: {}", unreadable.path, unreadable.error);
     }
     Ok(())
 }
@@ -744,6 +761,13 @@ enum PackDriftFinding {
         installed: PackFact,
         reference: PackFact,
     },
+    /// Two different files on one side declare the same pack id. The drift
+    /// comparison cannot treat either file as authoritative.
+    Conflict {
+        id: String,
+        first: PathBuf,
+        duplicate: PathBuf,
+    },
     /// A pack file on one side does not parse.
     Unreadable { path: PathBuf, error: String },
 }
@@ -759,14 +783,18 @@ fn pack_facts(paths: &[PathBuf]) -> (BTreeMap<String, PackFact>, Vec<PackDriftFi
                 let contents = fs::read(path).unwrap_or_default();
                 let mut hasher = sha2::Sha256::new();
                 hasher.update(&contents);
-                facts.insert(
-                    pack.id.clone(),
-                    PackFact {
-                        sha256: format!("{:x}", hasher.finalize()),
-                        guarded_patterns: pack.guarded_patterns.len(),
-                        path: path.clone(),
-                    },
-                );
+                let fact = PackFact {
+                    sha256: format!("{:x}", hasher.finalize()),
+                    guarded_patterns: pack.guarded_patterns.len(),
+                    path: path.clone(),
+                };
+                if let Some(previous) = facts.insert(pack.id.clone(), fact) {
+                    unreadable.push(PackDriftFinding::Conflict {
+                        id: pack.id,
+                        first: previous.path,
+                        duplicate: path.clone(),
+                    });
+                }
             }
             Err(error) => unreadable.push(PackDriftFinding::Unreadable {
                 path: path.clone(),
@@ -902,6 +930,15 @@ pub fn run_pack_drift(args: PackDriftArgs) -> Result<()> {
             PackDriftFinding::Unreadable { path, error } => {
                 println!("UNREADABLE: {} ({error})", path.display())
             }
+            PackDriftFinding::Conflict {
+                id,
+                first,
+                duplicate,
+            } => println!(
+                "CONFLICT: duplicate pack id '{id}' in {} and {}",
+                first.display(),
+                duplicate.display()
+            ),
         }
     }
     println!(
@@ -1399,13 +1436,7 @@ pub fn run_export_denial(args: &ExportDenialArgs) -> Result<()> {
 
 pub fn run_health_report(check_packs: bool, check_hooks: bool, verbose: bool) -> Result<()> {
     let pack_paths = resolve_pack_paths(&[])?;
-    let mut packs = Vec::new();
-    for path in &pack_paths {
-        match crate::rule_pack::load_pack(path) {
-            Ok(pack) => packs.push(pack),
-            Err(error) => bail!("✗ {}: {error}", path.display()),
-        }
-    }
+    let packs = load_pack_values(&pack_paths).map_err(|error| anyhow::anyhow!("✗ {error}"))?;
     if check_packs || verbose {
         println!("✓ All rule packs valid");
     }
@@ -1744,24 +1775,30 @@ fn list_overrides(args: &OverrideListArgs) -> Result<()> {
 }
 
 fn load_packs(engine: &mut Engine, paths: &[PathBuf]) -> Result<Vec<Pack>> {
-    let mut packs = Vec::new();
-    for path in paths {
-        let pack = crate::rule_pack::load_pack(path)
-            .with_context(|| format!("failed to load rule pack {}", path.display()))?;
+    let packs = load_pack_values(paths)?;
+    for pack in &packs {
         engine.load_pack(pack.clone())?;
-        packs.push(pack);
     }
     Ok(packs)
 }
 
 fn load_pack_values(paths: &[PathBuf]) -> Result<Vec<Pack>> {
-    paths
-        .iter()
-        .map(|path| {
-            crate::rule_pack::load_pack(path)
-                .with_context(|| format!("failed to load rule pack {}", path.display()))
-        })
-        .collect()
+    let mut packs = Vec::with_capacity(paths.len());
+    let mut paths_by_id = BTreeMap::new();
+    for path in paths {
+        let pack = crate::rule_pack::load_pack(path)
+            .with_context(|| format!("failed to load rule pack {}", path.display()))?;
+        if let Some(previous) = paths_by_id.insert(pack.id.clone(), path.clone()) {
+            bail!(
+                "duplicate pack id '{}' in selected pack source: {} conflicts with {}",
+                pack.id,
+                previous.display(),
+                path.display()
+            );
+        }
+        packs.push(pack);
+    }
+    Ok(packs)
 }
 
 fn resolve_pack_paths(explicit: &[PathBuf]) -> Result<Vec<PathBuf>> {
@@ -2226,13 +2263,7 @@ pub fn run_install(
         resolve_pack_paths(&pack_paths)?
     };
 
-    let mut packs = Vec::new();
-    for path in paths {
-        let pack = crate::rule_pack::load_pack(&path)
-            .with_context(|| format!("failed to load rule pack {}", path.display()))?;
-        engine.load_pack(pack.clone())?;
-        packs.push(pack);
-    }
+    let packs = load_packs(&mut engine, &paths)?;
 
     if packs.is_empty() {
         bail!("No rule packs found; pass --pack <path> to specify packs");

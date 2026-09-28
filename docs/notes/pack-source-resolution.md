@@ -67,6 +67,31 @@ legacy file is not consulted, even if both exist. If the modular directory is
 absent, the legacy file may win. If both installed locations are absent, the
 resolver may proceed to the repository fallback.
 
+## Merging, duplicates, and conflicts
+
+Source tiers are never merged. A selected directory contributes all of its
+`.json` entries; repeated explicit paths are deduplicated, and multiple
+distinct explicit paths are one deliberate selected set. `ICG_PACK_DIR` is
+one selected file or directory, not an additive layer over `--pack`, the
+installed source, or the checkout source.
+
+After loading the selected set, two different files that declare the same
+pack `id` are a conflict. Operator commands fail before evaluating or
+publishing that ambiguous policy; they do not merge the rules, choose the
+first file, or let the last file overwrite it. This keeps coverage, catalog,
+health, explanation, and check behavior consistent with the engine's pack-id
+index. A repeated path is harmless because path resolution removes it before
+loading; two files with the same id are not harmless.
+
+The same id in a lower-priority source is not a conflict: that source is not
+inspected after the winning tier is selected. Thus an installed pack and a
+checkout copy can have the same id without a collision warning, because the
+checkout copy is outside the invocation. The source label is the diagnostic
+that matters; text output does not claim a cross-source merge or emit a
+shadow warning. `pack-drift` is the explicit comparison tool and reports a
+duplicate id on either side as `CONFLICT` and drift rather than claiming the
+sets are byte-identical.
+
 ## Missing, empty, and unreadable locations
 
 The resolver distinguishes an absent default from a broken location. This

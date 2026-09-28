@@ -162,6 +162,13 @@ JSON to stdout, and reports the diagnostic on stderr. A malformed or
 unreadable member of the selected source also fails the catalog; it never
 causes a lower-priority source to be consulted.
 
+Two different readable files in the selected source that declare the same
+pack `id` are also an error. The catalog does not merge same-id packs or let
+the last file replace the first, because that would disagree with the
+engine's id-indexed behavior. The command exits non-zero and writes no
+partial JSON document. A same-id pack in a lower-priority source is not a
+conflict because that source is not selected or read.
+
 ## Relationship to other interfaces
 
 - `coverage --format json` (`coverage/v2`) describes *packs*: what loaded,

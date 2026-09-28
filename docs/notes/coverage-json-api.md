@@ -126,6 +126,11 @@ member is reported in `unreadable` rather than causing a checkout fallback;
 if no member loads at all, the JSON command fails with `no readable rule packs
 were found`.
 
+Two different files in the selected source that declare the same pack `id`
+are a source conflict, not a merge. JSON mode exits non-zero with no partial
+document and identifies the duplicate id and both paths. A same-id file in a
+lower-priority source is irrelevant because that source is not inspected.
+
 ## Failure modes
 
 These exit non-zero, write nothing to stdout, and put an `Error:` line on
@@ -136,6 +141,7 @@ enforced", so it is refused instead of printed.
 | Input | stderr |
 | --- | --- |
 | Every requested pack failed to load | `no readable rule packs were found` |
+| Selected files declare the same pack id | `duplicate pack id '<id>' in selected pack source: ...` |
 | `--pack` names a path that does not exist | `rule-pack path does not exist: <path>` |
 | `--pack` names a directory with no `.json` entries | `no rule packs found; pass --pack <path>` |
 | No `--pack` and no default location yields a pack | `no rule packs found; pass --pack <path>` |
