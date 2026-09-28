@@ -538,6 +538,76 @@ fn pack_drift_reports_a_nonexistent_installed_location_as_a_usage_fault() {
     assert!(stdout(&output).is_empty(), "no report is emitted");
 }
 
+/// An unparseable pack is a drift finding, not a usage fault and not a
+/// silence: the report names the file with an `UNREADABLE` line and still
+/// counts it, on whichever side it sits, while the readable packs around
+/// it compare normally — a pack that fails to load must not masquerade as
+/// missing from its own side.
+#[test]
+fn pack_drift_reports_an_unreadable_pack_as_drift_not_a_usage_fault() {
+    let staged = stage(&["alpha"], &["alpha"]);
+    // One syntactically broken file, one structurally wrong file: both are
+    // "unreadable" — the second parses as JSON but not as a pack.
+    let broken_installed = staged.installed.join("broken.json");
+    fs::write(&broken_installed, "{ not json").expect("broken installed pack written");
+    let broken_reference = staged.working_dir.join("packs").join("broken.json");
+    fs::write(&broken_reference, "[]").expect("broken reference pack written");
+
+    let output = staged.run(&["pack-drift"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the check ran and found drift: {}",
+        stderr(&output)
+    );
+    let text = stdout(&output);
+    assert!(
+        text.contains(&format!("UNREADABLE: {} (", broken_installed.display())),
+        "the unreadable installed pack is named with its path: {text}"
+    );
+    assert!(
+        text.contains("UNREADABLE: packs/broken.json ("),
+        "the unreadable reference pack is named too, as resolved against \
+         the default artifact: {text}"
+    );
+    assert!(text.contains("DRIFT: 2 difference(s)"), "{text}");
+    assert!(
+        !text.contains("MISSING FROM INSTALLED") && !text.contains("NOT IN REFERENCE"),
+        "an unreadable pack is not misreported as set drift: {text}"
+    );
+}
+
+/// A named reference artifact that does not exist cannot run the check
+/// either: exit 2, the mirror of the nonexistent installed location —
+/// "a named location is missing" faults whichever side is named.
+#[test]
+fn pack_drift_faults_when_the_named_reference_artifact_does_not_exist() {
+    let staged = stage(&["alpha"], &[]);
+    let missing = staged._dir.path().join("no-such-release");
+    let output = staged.run(&[
+        "pack-drift",
+        "--installed",
+        staged.installed.to_str().unwrap(),
+        "--reference",
+        missing.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a missing reference cannot run the check"
+    );
+    let err = stderr(&output);
+    assert!(
+        err.contains("reference pack location does not exist"),
+        "the failure names the side and the path: {err}"
+    );
+    assert!(
+        err.contains(missing.to_string_lossy().as_ref()),
+        "the missing path is named: {err}"
+    );
+    assert!(stdout(&output).is_empty(), "no report is emitted");
+}
+
 /// The default installed side is the hook's chain: `ICG_RULE_PACK`, as the
 /// registered hook resolves it — the drift check compares what the hook
 /// enforces, not an arbitrary directory.
