@@ -81,7 +81,7 @@ sudo chown -R root:root /etc/icg/packs
 
 # Verify
 icg --version          # icg 0.1.3
-icg coverage --list    # all eleven packs
+icg coverage --list    # all eleven packs (installed trust source; first line is Pack source: ...)
 ```
 
 The release also carries `pack-manifest.json` (byte-level checksums for
@@ -131,7 +131,7 @@ sudo install -d -o root -g root -m 0755 /etc/icg /etc/icg/packs
 # Install the pack files
 sudo install -o root -g root -m 0644 packs/*.json /etc/icg/packs/
 
-# Verify rule packs are loaded
+# Verify the installed trust packs (not the checkout's packs/)
 icg coverage --list
 ```
 
@@ -139,6 +139,34 @@ A checkout's `packs/` can be ahead of the last release. Prefer the released
 tarball for a guarded host so the installed policy matches a reviewed
 release, and confirm it with `icg pack-manifest --verify pack-manifest.json
 --pack-dir /etc/icg/packs`.
+
+### Which pack source a verification command reads
+
+Unqualified operator commands select one source, in this order: explicit
+`--pack` paths, `ICG_PACK_DIR`, the installed trust chain (`/etc/icg/packs`,
+then the legacy `/etc/icg/rule-pack.json`), and finally the checkout's `packs/`
+only when neither installed location exists. Sources are never merged. The
+text coverage report starts with one `Pack source:` line; JSON coverage and
+catalog output carry a `pack_source` object. A checkout-only report is not
+deployed coverage, and the hook never reads the checkout fallback or
+`ICG_PACK_DIR`.
+
+To inspect this checkout deliberately during development, use the documented
+override on each command:
+
+```bash
+ICG_PACK_DIR="$PWD/packs" icg coverage --list
+ICG_PACK_DIR="$PWD/packs" icg coverage --list --format json
+ICG_PACK_DIR="$PWD/packs" icg catalog --json
+```
+
+The override is authoritative: a missing or empty path is an error and does
+not fall back to installed packs. Conversely, an installed location that is
+present but empty or unreadable is also an error; it is never repaired by
+reporting checkout coverage. Coverage can complete with readable packs while
+listing an unreadable file in `unreadable`; catalog export fails instead of
+publishing a partial event set. `ICG_INSTALLED_PACK_DIR` is reserved for tests
+and is not a developer override.
 
 The pack directory must stay root-owned; the guarded agent must not be able
 to edit policy. `icg update` (see
@@ -182,7 +210,8 @@ into your existing `hooks` object — do not overwrite unrelated settings:
 ### Step 3: Smoke-Test the Installation
 
 ```bash
-# 1. All eleven packs should be listed
+# 1. All eleven packs should be listed from the installed trust source. The
+# first line must identify that source; this is the coverage the hook enforces.
 icg coverage --list
 # ✓ pack argocd-topology (1 patterns)
 # ✓ pack beads (3 patterns)
@@ -196,7 +225,7 @@ icg coverage --list
 # ✓ pack storage-class (1 patterns)
 # ✓ pack tmux (1 patterns)
 
-# 2. A destructive command must be denied
+# 2. Check mode also uses the selected installed source by default.
 icg check --command "bao kv destroy secret/app/key"
 # DENIED by icg
 # Reason: This is an irreversible OpenBao operation. 'kv delete' soft-deletes and is recoverable; ...
@@ -205,7 +234,7 @@ icg check --command "bao kv destroy secret/app/key"
 # Severity: Critical
 # ... (Explanation and Redirect lines continue with the full operator guidance)
 
-# 3. A force-push is rewritten, not denied
+# 3. The same installed-source check rewrites a force-push, not denies it.
 icg check --command "git push --force origin main"
 # REWRITE: Removed --force/-f/--force-with-lease from git push; force-pushing can rewrite remote history
 # and lose commits. Retrying as a normal push preserves the requested commits without rewriting the remote.
@@ -213,7 +242,7 @@ icg check --command "git push --force origin main"
 # Pack: git
 # Pattern: git-force-push
 
-# 4. A safe command must pass
+# 4. A safe command must pass under the installed source.
 icg check --command "git status"
 # ALLOW: no configured rule matched
 ```
@@ -229,10 +258,12 @@ Notes on reading these results:
   cache-directory ownership model.
 - `icg check` and `icg coverage` exit `1` with
   `Error: no rule packs found; pass --pack <path>` when run outside a
-  checkout with no packs installed. The **hook**, by contrast, fails open:
-  with `/etc/icg/packs` absent it silently allows everything. Always run
-  `icg coverage --list` after installing to confirm the hook will actually
-  load policy.
+  checkout with no packs installed. An explicit missing `--pack` or
+  `ICG_PACK_DIR` path is also an error and never falls back. The **hook**, by
+  contrast, fails open: with `/etc/icg/packs` absent it silently allows
+  everything. Always run the unqualified `icg coverage --list` after
+  installing; its `Pack source:` line must identify the installed trust
+  source before relying on the hook.
 
 ---
 
@@ -314,11 +345,15 @@ a pattern.
 ### Viewing rule pack coverage
 
 ```bash
-# List all loaded rule packs
+# Default: list the selected installed trust packs and print Pack source: ...
 icg coverage --list
 
-# List packs from an explicit file or directory
+# Inspect the installed directory explicitly. This is an explicit source
+# selection of the same files, not a union with checkout/packs.
 icg coverage --list --pack /etc/icg/packs
+
+# Developer checkout override: this is not deployed coverage.
+ICG_PACK_DIR="$PWD/packs" icg coverage --list
 ```
 
 For a machine reader — an agent deciding whether a command will be denied
@@ -326,14 +361,19 @@ before it tries, a bot rendering the policy, a doc generator — ask for JSON
 instead of scraping the text:
 
 ```bash
+# Default: machine-readable view of the selected installed trust source.
 icg coverage --list --format json
 
-# Which rules block outright, as opposed to warning or rewriting?
+# Which installed-source rules block outright, as opposed to warning or rewriting?
 icg coverage --list --format json \
   | jq -r '.packs[] | .guarded_patterns[] | select(.channel=="Deny") | "\(.severity)\t\(.id)"'
+
+# Developer checkout view: use this explicit override when reviewing packs/.
+ICG_PACK_DIR="$PWD/packs" icg coverage --list --format json
 ```
 
-The document is stamped `"format": "coverage/v1"` and carries every pack
+The document is stamped `"format": "coverage/v2"`, carries the selected
+`pack_source` (`origin`, `root`, and `trusted_ref`), and carries every pack
 (id, path, `tool_keywords`, `applies_to`, safe-pattern ids) and every rule
 (id, `enabled`, tier, severity, redirect `channel`, `destructive`, check
 kind, explanation, redirect text), plus an `unreadable` list naming any pack
@@ -345,17 +385,21 @@ modes — is specified in
 sets it lists are pinned by test, so a shape change cannot reach you
 without the `format` version moving with it.
 
-`check`, `explain`, and `coverage` take `--pack <path>` (defaulting to the
-installed pack plus the repository's `packs/` directory when present). The
-`hook` subcommand's equivalent flag is `--rule-pack` — see
+`check`, `explain`, and `coverage` take `--pack <path>`; without it they use
+the same one-source precedence described above. `ICG_PACK_DIR="$PWD/packs"`
+is the convenient explicit checkout override for developers. The `hook`
+subcommand's equivalent flag is `--rule-pack` and its default is the installed
+chain only — see
 [Hook mode vs check mode](#hook-mode-vs-check-mode).
 
 Tools that want the *events* rather than the packs — what must never
 happen and what is always allowed, each with its severity and the
 sanctioned alternative — read `icg catalog --json` instead: the same rules
 keyed by denial attribution (`pack` + `id`), stamped
-`"format": "icg-catalog/v1"` with a `catalog_digest` that moves whenever
-the event set does. The field-level contract is specified in
+`"format": "icg-catalog/v2"` with the same `pack_source` and a
+`catalog_digest` that moves whenever the event set does. Built-in guards are
+included in the catalog but are not files in the selected pack source. The
+field-level contract is specified in
 [`docs/notes/event-catalog-json-api.md`](notes/event-catalog-json-api.md),
 and its key sets are pinned by test like the coverage API's.
 
@@ -458,13 +502,16 @@ An unmatched input returns `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
   default (the legacy `/etc/icg/rule-pack.json` when the directory is
   absent). Override with `--rule-pack <path>` or `ICG_RULE_PACK`.
 - **Check mode** (`icg check`): manual testing with `--command`, `--stdin`,
-  or `--file`; prints human-readable decisions. Loads the installed pack
-  plus the repository's `packs/` directory when present; override with
-  `--pack`.
+  or `--file`; prints human-readable decisions. It selects one source using
+  `--pack`, `ICG_PACK_DIR`, the installed chain, then the checkout fallback;
+  use `ICG_PACK_DIR="$PWD/packs"` or `--pack packs` for explicit checkout
+  analysis. `--debug` prints the selected `Pack source:` on stderr; plain
+  check keeps the decision stream free of source labels.
 
-Both evaluate the same rule packs. Never rely on the hook until
-`icg coverage --list` proves the packs load — an empty pack directory makes
-the hook fail open.
+Both evaluate the same rule-pack format, but a checkout override is not proof
+of deployed coverage. Never rely on the hook until unqualified
+`icg coverage --list` proves the installed packs load — an empty pack
+directory makes the hook fail open.
 
 ---
 
@@ -535,7 +582,7 @@ in `docs/operators/deployment-guide.md`.
 ### Workflow 1: Daily development
 
 ```bash
-# Morning: confirm the guard is armed
+# Morning: confirm the installed trust source is armed
 icg coverage --list
 icg health --check-hooks
 
@@ -624,7 +671,7 @@ gh issue create \
 # Verify the directory and its ownership
 ls -la /etc/icg/packs/
 
-# List what icg can actually see
+# List the installed directory explicitly (source is labeled explicit)
 icg coverage --list --pack /etc/icg/packs
 
 # Fix drifted ownership; the pack directory stays root-owned
@@ -639,10 +686,11 @@ More depth: `docs/operators/troubleshooting.md`.
 
 ```bash
 icg --version                     # icg 0.1.3
-icg coverage --list               # list loaded rule packs
-icg check --command "<cmd>"       # test a command string
-icg check --stdin                 # test a PreToolUse JSON document
-icg check --file <file-or-dash>   # test file content ('-' reads stdin)
+icg coverage --list               # selected installed source; Pack source: ...
+icg check --command "<cmd>"       # selected installed source by default
+icg check --stdin                 # selected installed source by default
+icg check --file <file-or-dash>   # selected installed source by default
+ICG_PACK_DIR="$PWD/packs" icg check --command "<cmd>"  # explicit checkout only
 icg explain --pattern <id>        # explain a pattern (--show-redirect, --show-regex)
 icg hook                          # hook mode (harnesses; --rule-pack)
 icg status --denials --since 1h   # denial history (--pattern-summary, --format json)

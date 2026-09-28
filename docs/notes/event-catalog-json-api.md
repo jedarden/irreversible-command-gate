@@ -42,11 +42,22 @@ icg catalog --json [--pack <path>]...
   same path are deduplicated. A file whose name does not end in `.json` is
   not treated as a pack, even when it exists.
 - With no `--pack`, the loader uses `ICG_PACK_DIR` when that environment
-  variable is set. Otherwise it selects `/etc/icg/packs`, the legacy
-  `/etc/icg/rule-pack.json` when the modular directory is absent, or the
-  working directory's `packs/` only when neither installed location exists.
+  variable is set. This is an authoritative developer override: it reads
+  only that file or directory and never falls back. Otherwise it selects
+  `/etc/icg/packs`, the legacy `/etc/icg/rule-pack.json` when the modular
+  directory is absent, or the working directory's `packs/` only when neither
+  installed location exists. The first applicable source wins; installed and
+  checkout packs are never unioned.
 - The two built-in guards are always included; they are not packs and
   cannot be excluded.
+
+`pack_source` makes the selected source explicit. Its `origin` is
+`explicit` for `--pack` or `ICG_PACK_DIR`, `installed` for the trust chain,
+and `repository` for the final checkout fallback. `root` identifies the
+selected directory (or is `null` for repeated explicit file paths), and
+`trusted_ref` is populated only for a real installed source. A checkout or
+developer override never receives a trusted-release claim. The built-in
+guards remain code-owned even when the source is labeled `installed`.
 
 ## Document shape
 
@@ -143,7 +154,13 @@ from a legitimate policy change, so a consumer's digest comparison could
 not tell a broken pack from an edit. A pack that fails to load — malformed
 JSON, failed validation, an unreadable file — therefore fails the command:
 exit non-zero, nothing on stdout, an `Error:` line on stderr. A broken pack
-can never quietly shrink the catalog a consumer last saw.
+can never quietly shrink the catalog a consumer last saw. Source-resolution
+failures have the same no-fallback rule: a missing explicit `--pack` path, a
+missing `ICG_PACK_DIR` path, a present but empty installed directory, or an
+empty checkout override is an error. The command exits non-zero, writes no
+JSON to stdout, and reports the diagnostic on stderr. A malformed or
+unreadable member of the selected source also fails the catalog; it never
+causes a lower-priority source to be consulted.
 
 ## Relationship to other interfaces
 

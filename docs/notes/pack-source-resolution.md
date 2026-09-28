@@ -170,18 +170,20 @@ The output rules are:
 - `check --debug` prints the source label on stderr with its other diagnostic
   lines. Plain `check` keeps stdout reserved for the decision and does not
   add a source line there.
-- `status` (and its pack/health report section) prints the selected source
-  label it validated.
+- `status` prints the selected source in its `## Operator Pack Source`
+  section. The `health` report selects the same source precedence but is a
+  line-oriented human report and does not print a source header; use coverage,
+  catalog, `check --debug`, or `status` when the label itself is needed.
 - `catalog --json` adds the same `pack_source` object to the JSON document.
   The label describes the pack-derived portion; the catalog's built-in
   guards are not files in any pack source.
 
-Adding `pack_source` changes the coverage wire shape from `coverage/v1` to
-`coverage/v2` and the catalog shape from `icg-catalog/v1` to its next version.
-The implementation must rewrite `docs/notes/coverage-json-api.md` and
-`docs/notes/event-catalog-json-api.md` in the same atomic change as the
-fields and tests. Source labels must never be emitted as extra prose on a
-JSON command's stdout.
+The shipped `pack_source` field changes the coverage wire shape to
+`coverage/v2` and the catalog shape to `icg-catalog/v2`. The versioned API
+notes [`coverage-json-api.md`](coverage-json-api.md) and
+[`event-catalog-json-api.md`](event-catalog-json-api.md) define those exact
+fields and failure semantics. Source labels must never be emitted as extra
+prose on a JSON command's stdout.
 
 ## Explicit missing-location examples
 

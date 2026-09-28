@@ -64,6 +64,17 @@ installed pack is available. Repository overrides remain release-bound: an
 approval without an exact trusted release reference records the review but does
 not create an active bypass artifact.
 
+Operator verification commands select one pack source, never a union:
+explicit `--pack` paths, then `ICG_PACK_DIR`, then the installed trust chain,
+then checkout `packs/` only when no installed location exists. Use
+`ICG_PACK_DIR="$PWD/packs"` for an explicit developer checkout view; it is
+not evidence of what the installed hook enforces. `coverage --list` prints
+one `Pack source:` label, while `coverage --list --format json` and
+`catalog --json` carry `pack_source` (`coverage/v2` and `icg-catalog/v2`).
+Missing or empty authoritative sources fail instead of falling back. See the
+[pack-source resolution contract](../notes/pack-source-resolution.md) and
+the [JSON API notes](../notes/coverage-json-api.md) for error semantics.
+
 ## Deployment model
 
 Production artifacts belong in administrator-controlled locations:

@@ -15,8 +15,14 @@ not writing Rust.
 
 ```bash
 cargo build --release                       # no system deps; rustls, not OpenSSL
-cargo run --release -- coverage --list      # confirm the 11 packs load, each labeled with its source
-cargo run --release -- check --command "git push --force origin main"
+# Default operator resolution: the installed trust source wins; the first
+# output line identifies it. A bare checkout is only the final fallback when
+# neither installed location exists.
+cargo run --release -- coverage --list      # the 11 packs load from installed trust source by default
+# Developer-only checkout verification: this override is authoritative and
+# does not merge with or describe the installed hook's policy.
+ICG_PACK_DIR="$PWD/packs" cargo run --release -- coverage --list
+ICG_PACK_DIR="$PWD/packs" cargo run --release -- check --command "git push --force origin main"
 cargo test                                  # the whole suite, zero failures
 cargo test --test documentation_consistency_tests   # the docs-vs-reality guards
 ```
@@ -47,39 +53,51 @@ trace to **stderr** while the decision stays on stdout.
 To read the enforced policy programmatically rather than scraping text:
 
 ```bash
-icg coverage --list --format json   # "format": "coverage/v1"
-icg catalog --json                  # "format": "icg-catalog/v1"
+# Default: selected installed trust source (or the repository fallback only
+# when both installed locations are absent).
+icg coverage --list --format json   # coverage/v2; inspect .pack_source
+icg catalog --json                  # icg-catalog/v2; inspect .pack_source
+
+# Developer-only checkout view; explicit and authoritative for this command.
+ICG_PACK_DIR="$PWD/packs" icg coverage --list --format json
+ICG_PACK_DIR="$PWD/packs" icg catalog --json
 ```
 
 The first is the pack view: every pack and rule, with severity, redirect
-channel, check kind and explanation — plus an `unreadable` array naming any
-pack that failed to load. The second is the event view: what must never
-happen and what is always allowed, keyed by the denial attribution
+channel, check kind and explanation — plus `pack_source` and an `unreadable`
+array naming any pack that failed to load. The second is the event view: what
+must never happen and what is always allowed, keyed by the denial attribution
 (`pack` + `id`) with severity and the sanctioned alternative, digest-stamped
-so a consumer can detect policy drift. Prefer these over parsing
-`coverage --list`; tools outside this repository must consume the catalog
-rather than parse packs or keep a second copy of the list.
+so a consumer can detect policy drift; it carries the same `pack_source` for
+the pack-derived events. Prefer these over parsing `coverage --list`; tools
+outside this repository must consume the catalog rather than parse packs or
+keep a second copy of the list.
 
 ## Which packs an operator command reads
 
-Operator commands (`check`, `explain`, `coverage`, `catalog`, `status`,
-`health-report`, `pack-drift`) resolve packs as: explicit `--pack` paths,
-else `ICG_PACK_DIR`, else the union of
-the **installed** chain (`/etc/icg/rule-pack.json`, then `/etc/icg/packs`)
-and the **working directory's** `packs/`. The hook reads only the
-installed chain (`ICG_RULE_PACK`, then `/etc/icg/packs`, then the legacy
-artifact) — never the working directory. A checkout therefore reports the
-union, and when `packs/` carries a pack the installed set lacks, the
-coverage it prints is not what the deployed hook enforces. That state is
-never silent: `coverage --list`, `check --debug` and `status` print a
-`Pack source:` line per consulted location and a `WARNING (pack source)`
-naming the packs only the checkout carries, and `icg pack-drift` compares
-the installed set against the release artifact (`exit 0` identical, `1`
-drift, `2` could not run). Tests stage the installed side with
-`ICG_INSTALLED_PACK_DIR` — an operator-command-only override the hook
-never reads. The precedence itself (installed vs checkout ordering) is a
-separate, open question — see
-[`docs/notes/pack-source-resolution.md`](docs/notes/pack-source-resolution.md).
+Operator commands (`check`, `explain`, `coverage`, `catalog`, `status`, and
+the `health` report) select exactly one pack source: explicit `--pack` paths,
+else `ICG_PACK_DIR`, else the installed chain (`/etc/icg/packs`, then the
+legacy `/etc/icg/rule-pack.json`), else the working directory's `packs/` only
+when both installed locations are absent. Sources are never unioned. Use
+`ICG_PACK_DIR="$PWD/packs"` for a deliberate developer checkout override;
+it is authoritative and does not describe what the installed hook enforces.
+
+The hook reads only its installed chain (`ICG_RULE_PACK`, then
+`/etc/icg/packs`, then the legacy artifact) — never the working directory or
+`ICG_PACK_DIR`. Text coverage prints one `Pack source:` line; `check --debug`
+prints the same label on stderr; `status` prints its operator source section;
+coverage JSON and catalog JSON carry `pack_source` with `origin`, `root`, and
+`trusted_ref`. The health report uses the same selection but is line-oriented
+and does not print a source header. An explicit or present-but-empty/unreadable
+source is an error and never falls back; coverage records an unreadable pack
+in `unreadable`, while catalog export fails without a partial document.
+`icg pack-drift` remains the explicit installed-versus-release comparison
+(`exit 0` identical, `1` drift, `2` could not run). Tests stage the installed
+side with `ICG_INSTALLED_PACK_DIR` — an operator-test-only seam the hook never
+reads. See [`docs/notes/pack-source-resolution.md`](docs/notes/pack-source-resolution.md)
+and the versioned [coverage API](docs/notes/coverage-json-api.md) and
+[catalog API](docs/notes/event-catalog-json-api.md).
 
 ## The rules that actually bind you here
 

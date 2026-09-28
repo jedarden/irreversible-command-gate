@@ -88,8 +88,10 @@ Rust toolchain:
 curl -fsSLO https://github.com/jedarden/irreversible-command-gate/releases/download/v0.1.71/icg
 chmod +x icg
 
-# or:  git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
-#      cd irreversible-command-gate && cargo run --release -- coverage --list
+# or:  inspect the checkout's packs explicitly (this is not deployed coverage)
+#      git clone https://git.ardenone.com/jedarden/irreversible-command-gate.git
+#      cd irreversible-command-gate && ICG_PACK_DIR="$PWD/packs" \
+#        cargo run --release -- coverage --list
 
 ./icg coverage --list
 ./icg check --command "bao kv destroy secret/app/db"
@@ -97,8 +99,10 @@ chmod +x icg
 ./icg check --command "git status"
 ```
 
-Run it from a checkout and it picks up `packs/` automatically; run the bare
-binary and pass `--pack <dir>` or install the packs (below).
+An unqualified operator command selects the installed trust source when one is
+present. To inspect a checkout's `packs/`, set the explicit developer override
+`ICG_PACK_DIR="$PWD/packs"`; that report is not deployed coverage. A bare
+binary needs installed packs or an explicit `--pack <dir>`.
 
 `icg check` is the human-facing tester and always exits `0` — parse its
 output, not its status. `icg hook` is the machine entry point: one

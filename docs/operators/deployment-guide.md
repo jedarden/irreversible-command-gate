@@ -387,19 +387,30 @@ when set, then `/etc/icg/packs`, then the legacy `/etc/icg/rule-pack.json`.
 It never reads a repository checkout.
 
 The operator commands (`check`, `explain`, `coverage`, `catalog`, `status`,
-`health-report`, `pack-drift`) resolve more: explicit `--pack` paths, else
-`ICG_PACK_DIR`, else the union of the installed chain above **and** the
-working directory's `packs/`. A checkout ahead of the deployed release
-therefore reports the checkout's coverage too — which the installed hook
-does not enforce. That state is never silent:
+and the `health` report) select exactly one source: explicit `--pack` paths,
+then `ICG_PACK_DIR`, then the installed chain, then the working directory's
+`packs/` only when both installed locations are absent. A checkout ahead of
+the deployed release is therefore not silently merged into the report. An
+explicit `--pack` or `ICG_PACK_DIR` selection is authoritative and is the
+developer's way to inspect checkout policy; it is not deployed coverage.
 
-- `icg coverage --list`, `icg check --debug` and `icg status` print a
-  `Pack source:` line for each location consulted — `(installed)` for the
-  trust directory, `(working directory)` for the checkout's `packs/`.
-- When the working directory carries pack ids the installed set lacks,
-  they add `WARNING (pack source): the working-directory packs/ shadows
-  the installed set with: <ids> — coverage reported here is not what the
-  installed hook enforces`.
+- `icg coverage --list` prints one `Pack source:` line naming the selected
+  origin and root. `check --debug` prints the same label on stderr, while
+  plain `check` keeps its decision stream unchanged. `status` prints its
+  `## Operator Pack Source` section.
+- `icg coverage --list --format json` emits `coverage/v2` with a
+  `pack_source` object. `icg catalog --json` emits `icg-catalog/v2` with the
+  same source object for its pack-derived events; built-in guards are code,
+  not files in that source.
+- When an installed source is selected, checkout-only packs are absent and
+  no checkout warning is needed because checkout was not consulted. Use
+  `ICG_PACK_DIR="$PWD/packs"` when you intentionally want a checkout-only
+  report, and never describe that report as what the hook enforces.
+- A missing or empty explicit source is an error and never falls back. A
+  present but empty or unreadable installed source is also an error rather
+  than a checkout fallback. Coverage records an unreadable individual pack in
+  `unreadable` when other packs load; catalog export fails rather than
+  publishing a partial event set.
 - `icg pack-drift` compares the installed set against the release
   artifact (the checkout's `packs/` by default, or `--reference <dir>`;
   the installed side defaults to the hook chain, or `--installed <dir>`)
@@ -473,20 +484,21 @@ running hook.
 **Machine-readable output.** None. The report is for a human at a
 terminal, and a structured-output flag is rejected as a usage error
 (`icg health --json` exits `2`). Automation reads the structured
-surfaces instead: `icg coverage --list --format json` (`coverage/v1`)
-for what is enforced, `icg catalog --json` (`icg-catalog/v1`) for the
-event policy, and `icg monitor` for the `/health/live`, `/health/ready`
-and Prometheus `/metrics` probes.
+surfaces instead: `icg coverage --list --format json` (`coverage/v2`)
+for the selected source's pack view, `icg catalog --json`
+(`icg-catalog/v2`) for the event policy, and `icg monitor` for the
+`/health/live`, `/health/ready` and Prometheus `/metrics` probes.
 
 **Pack source.** The report resolves packs the way the operator commands
-above do, minus the explicit tier — health-report has no `--pack` flag:
-`ICG_PACK_DIR` names the one location consulted when set, otherwise the
-union of the installed chain (or `ICG_INSTALLED_PACK_DIR`) and the
-working directory's `packs/` is loaded. Unlike `coverage --list`,
-`check --debug` and `status`, the report prints no `Pack source:` lines
-and no shadow warning: its ✓ attests the resolved union, not the
-deployed set alone. For the labeled view, use those commands or
-`icg pack-drift`.
+above, minus the explicit tier — health-report has no `--pack` flag.
+`ICG_PACK_DIR` names the one location consulted when set; otherwise the
+installed chain wins, with the checkout's `packs/` as the final fallback
+only when no installed location exists. The report is intentionally
+line-oriented and prints no `Pack source:` header, so its transcript must be
+read together with the command that selected the source. For a labeled view,
+use `icg coverage --list`, `icg coverage --list --format json`,
+`icg catalog --json`, `icg check --debug`, or `icg status`. `ICG_INSTALLED_PACK_DIR`
+is a test-only substitute for the installed chain; it is not a user override.
 
 **Exit status.**
 
@@ -948,18 +960,22 @@ following — check them in this order:
 5. **`ICG_DISABLED=1` is set** in that environment. The bypass prints a
    warning to stderr, which is easy to miss in a wrapped invocation.
 
-### Coverage reports a pack the hook does not enforce
+### Coverage source differs from the hook
 
-`icg coverage --list` — or `icg status`, or `icg check --debug` — prints
-`WARNING (pack source): the working-directory packs/ shadows the installed
-set with: <ids>`. The command was run from a checkout whose `packs/`
-carries packs the deployed trust directory does not: operator commands
-union the installed chain with the working directory, while the hook reads
-only the installed chain, so the report describes coverage that is not in
-force. Compare the two sides with `icg pack-drift`, then either upgrade
-the deployed pack set (`sudo icg trust set` + `sudo icg update`) or run
-operator commands from a checkout matching the deployed release. Only the
-installed side decides what the hook enforces.
+Read the first line of `icg coverage --list` before treating its inventory as
+deployed coverage. `(installed)` means the operator command selected the same
+installed trust tier the hook is configured to read. `(repository)` means no
+installed location existed and the command used the checkout fallback;
+`(explicit; ICG_PACK_DIR)` and `(explicit; --pack)` mean the caller selected a
+developer or review path. Explicit and repository reports are useful for
+review, but they do not prove what the installed hook enforces.
+
+To compare a release checkout with the deployed set, run `icg pack-drift` and
+inspect every difference. Then either upgrade the deployed pack set
+(`sudo icg trust set` + `sudo icg update`) or continue operator checks against
+the installed source. Do not expect a checkout-only pack to appear alongside
+installed packs: source resolution selects one tier rather than unioning the
+two.
 
 ### A deployment must be rolled back
 

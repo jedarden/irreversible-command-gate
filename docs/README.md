@@ -47,8 +47,8 @@ Short, ordered procedures for a moment when something is on fire.
 | [notes/redirect-not-just-block.md](notes/redirect-not-just-block.md) | Why every rule owes the caller an alternative. |
 | [notes/github-workflows-detection-seam.md](notes/github-workflows-detection-seam.md) | Where the workflows-path guard detects, and the structured fields a redirect message consumes. |
 | [notes/per-repo-overrides.md](notes/per-repo-overrides.md) | The release-bound per-repository override contract. |
-| [notes/coverage-json-api.md](notes/coverage-json-api.md) | The machine-readable coverage API (`coverage/v1`): key sets, ordering, unreadable packs, failure modes. |
-| [notes/event-catalog-json-api.md](notes/event-catalog-json-api.md) | The machine-readable always/never event catalog (`icg catalog --json`, `icg-catalog/v1`): event identity, the drift digest, schema. |
+| [notes/coverage-json-api.md](notes/coverage-json-api.md) | The machine-readable coverage API (`coverage/v2`): selected pack source, key sets, ordering, unreadable packs, failure modes. |
+| [notes/event-catalog-json-api.md](notes/event-catalog-json-api.md) | The machine-readable always/never event catalog (`icg catalog --json`, `icg-catalog/v2`): selected pack source, event identity, the drift digest, schema. |
 
 ## Design and decisions
 
@@ -63,7 +63,7 @@ Short, ordered procedures for a moment when something is on fire.
 | [notes/release-integrity-verification.md](notes/release-integrity-verification.md) · [notes/self-update-and-release-gating.md](notes/self-update-and-release-gating.md) | Trust pointers, signed releases, auto-rollback. |
 | [notes/beads-protection-scope.md](notes/beads-protection-scope.md) · [notes/auto-denial-regression-corpus.md](notes/auto-denial-regression-corpus.md) · [notes/force-push-updatedinput-example.md](notes/force-push-updatedinput-example.md) | Scoped design notes. |
 | [notes/command-substitution-lexing.md](notes/command-substitution-lexing.md) | How `$( )` must lex (nested-context stack), why the anchored regex was not relaxed, and the backtick deferral. |
-| [notes/pack-source-resolution.md](notes/pack-source-resolution.md) | Design intent (not shipped): one labeled pack source per operator invocation — explicit beats installed beats repository, never a union. |
+| [notes/pack-source-resolution.md](notes/pack-source-resolution.md) | Shipped operator contract: one labeled pack source per invocation — explicit beats installed beats repository, never a union. |
 | [research/prior-art.md](research/prior-art.md) | What existed already and why none of it was forked. |
 
 ## Architecture decision records

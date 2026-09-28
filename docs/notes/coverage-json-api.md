@@ -23,12 +23,23 @@ icg coverage --list --format json [--pack <path>]...
   same path are deduplicated. A file whose name does not end in `.json` is
   not treated as a pack, even when it exists.
 - With no `--pack`, the loader uses `ICG_PACK_DIR` when that environment
-  variable is set. Otherwise it selects `/etc/icg/packs`, the legacy
-  `/etc/icg/rule-pack.json` when the modular directory is absent, or the
-  working directory's `packs/` only when neither installed location exists.
+  variable is set. This is an authoritative developer override: it reads
+  only that file or directory and never falls back. Otherwise it selects
+  `/etc/icg/packs`, the legacy `/etc/icg/rule-pack.json` when the modular
+  directory is absent, or the working directory's `packs/` only when neither
+  installed location exists. The first applicable source wins; installed and
+  checkout packs are never unioned.
 - Any other `--format` value is rejected with
   `unsupported --format ...; use "text" or "json"` before anything is
   written to stdout.
+
+The selected source is always visible: text mode prints one `Pack source:`
+line, while this JSON contract carries `pack_source`. Its `origin` is
+`explicit` for `--pack` or `ICG_PACK_DIR`, `installed` for the trust chain,
+and `repository` for the final checkout fallback. `root` identifies the
+selected directory (or is `null` for repeated explicit file paths), and
+`trusted_ref` is populated only for a real installed source. A checkout or
+developer override never receives a trusted-release claim.
 
 ## Document shape
 
@@ -104,6 +115,16 @@ is a field you can assert on.
   must treat a non-empty `unreadable` as a failure. The command itself
   stays exit-0 so a pure reporting pipeline does not break on one bad
   file.
+
+Source-resolution failures are different from an unreadable member. A
+missing explicit `--pack` path, a missing `ICG_PACK_DIR` path, a present but
+empty installed directory, or a present but empty checkout override is an
+error; the resolver does not silently try a lower-priority source. In JSON
+mode these errors exit non-zero, write no coverage document to stdout, and
+put the diagnostic on stderr. If an installed source exists, its unreadable
+member is reported in `unreadable` rather than causing a checkout fallback;
+if no member loads at all, the JSON command fails with `no readable rule packs
+were found`.
 
 ## Failure modes
 
