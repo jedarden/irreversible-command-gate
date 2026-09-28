@@ -697,3 +697,73 @@ fn pack_drift_usage_faults_exit_two() {
         stdout(&output)
     );
 }
+
+/// A release archive is not itself a pack-drift reference. Passing an
+/// archive (even one whose contents are malformed) instead of its extracted
+/// root-level JSON directory is an unusable artifact, so the check cannot
+/// run and must return the usage/error status rather than calling it drift.
+#[test]
+fn pack_drift_rejects_a_malformed_release_archive_as_unusable() {
+    let staged = stage(&["alpha"], &[]);
+    let archive = staged._dir.path().join("icg-packs.tar.gz");
+    fs::write(&archive, b"not a gzip tar archive").expect("malformed archive written");
+    let output = staged.run(&[
+        "pack-drift",
+        "--installed",
+        staged.installed.to_str().unwrap(),
+        "--reference",
+        archive.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an archive is not a usable extracted reference: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("no .json packs found in the reference location"),
+        "the artifact shape is named: {}",
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).is_empty(),
+        "no comparison report is emitted"
+    );
+}
+
+/// The documented release layout has JSON pack manifests at the reference
+/// root. A nested `packs/` directory is the malformed layout rejected by the
+/// updater, and is likewise unusable as a pack-drift reference.
+#[test]
+fn pack_drift_rejects_a_nested_release_artifact_layout() {
+    let staged = stage(&["alpha"], &[]);
+    let nested = staged._dir.path().join("release");
+    fs::create_dir(&nested).expect("release directory");
+    fs::create_dir(nested.join("packs")).expect("nested packs directory");
+    write_pack(&nested.join("packs"), "alpha");
+
+    let output = staged.run(&[
+        "pack-drift",
+        "--installed",
+        staged.installed.to_str().unwrap(),
+        "--reference",
+        nested.to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a nested artifact layout cannot be compared: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("no .json packs found in the reference location"),
+        "the invalid layout is named: {}",
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).is_empty(),
+        "no comparison report is emitted"
+    );
+}
