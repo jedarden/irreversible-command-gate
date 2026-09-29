@@ -15,9 +15,8 @@
 //!   area, a `  - ` line per resolved pack file, and no JSON mode;
 //! - packs resolve like every operator command's minus the explicit
 //!   tier — health-report has no `--pack` flag: `ICG_PACK_DIR` when
-//!   set, else the union of the installed chain and the checkout's
-//!   `packs/`, with the same pack id listed once per tier it
-//!   resolves from;
+//!   set, else the installed chain, with the checkout's `packs/` only
+//!   as the final fallback; sources are never unioned;
 //! - exit `0` when every check that ran passed; exit `1` when a
 //!   resolved pack fails to load (stdout stays empty, stderr names the
 //!   path), when no pack location resolves at all, or when
@@ -367,10 +366,12 @@ fn icg_pack_dir_is_the_only_location_consulted_when_set() {
     );
 }
 
-/// The default search selects the installed chain as a whole, so checkout-only
-/// files and duplicate ids in the checkout are not loaded.
+/// A checkout can be ahead of the installed release without making the
+/// installed report unhealthy. The selected installed source is loaded as a
+/// whole, so checkout-only files and duplicate ids in the checkout are not
+/// loaded; `pack-drift` is the explicit comparison for that state.
 #[test]
-fn the_default_search_unions_the_installed_chain_with_the_checkout() {
+fn a_drifted_checkout_does_not_change_the_selected_health_source() {
     let staged = stage(&["alpha", "installed-only"], &["alpha", "checkout-only"]);
     let output = staged.run_plain(&["health"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -382,6 +383,25 @@ fn the_default_search_unions_the_installed_chain_with_the_checkout() {
     );
     assert_eq!(text.matches("  - alpha (1 patterns)").count(), 1);
     assert!(!text.contains("checkout-only"));
+}
+
+/// An authoritative but unavailable `ICG_PACK_DIR` is a failed health
+/// source, not a reason to fall back to the installed or checkout packs.
+#[test]
+fn an_unavailable_explicit_pack_source_does_not_fall_back() {
+    let staged = stage(&["installed-only"], &["checkout-only"]);
+    let missing = staged.working_dir.join("missing-packs");
+    let output = staged.run(&["health"], &[("ICG_PACK_DIR", &missing)]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    let err = stderr(&output);
+    assert!(
+        err.contains("ICG_PACK_DIR") && err.contains("does not exist"),
+        "the authoritative source failure is named: {err}"
+    );
+    assert!(!err.contains("installed-only"), "{err}");
+    assert!(!err.contains("checkout-only"), "{err}");
 }
 
 // --- machine-readable output ---------------------------------------------

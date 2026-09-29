@@ -456,6 +456,17 @@ not narrow what it prints. The one narrow form is a check flag combined
 with a subcommand: `icg health --check-packs status` prints only the pack
 verdict and does not run `status`, so avoid combining the two.
 
+**Health criteria.** A report is healthy when its one selected pack source
+contains at least one JSON pack and every selected pack loads and validates.
+The hook criterion is satisfied when `ICG_HOOK_CONFIG` is unset (the report
+has no default hook path to inspect) or names an existing file; setting it to
+an absent path is unhealthy. The binary version, pack count, pack listing,
+state-store path and denial-log path are inventory lines, not additional
+filesystem probes. A checkout that differs from the installed source is
+source drift, not a health failure: the report still checks only the source
+selected by the precedence below, and `icg pack-drift` is the explicit
+installed-versus-checkout comparison.
+
 **Human-readable output.** The report is line-oriented text on stdout,
 one `✓` line per checked area plus a `  - ` line per resolved pack file.
 Shown with the checkout's own packs resolved alone:
@@ -475,9 +486,10 @@ $ ICG_PACK_DIR=packs icg health
 ```
 
 The pack list names each resolved pack file with its pattern count: the
-same pack id can appear once per location it resolves from (installed
-trust directory and checkout `packs/`), and the count is of resolved
-files, not distinct ids. The state-store and denial-log lines name the
+selected source is a single tier, so a pack id is listed at most once unless
+the selected explicit paths themselves contain a duplicate-id conflict, and
+the count is of resolved files in that one source. The state-store and
+denial-log lines name the
 default locations; they are not the resolved configuration of the
 running hook.
 
@@ -493,7 +505,9 @@ for the selected source's pack view, `icg catalog --json`
 above, minus the explicit tier — health-report has no `--pack` flag.
 `ICG_PACK_DIR` names the one location consulted when set; otherwise the
 installed chain wins, with the checkout's `packs/` as the final fallback
-only when no installed location exists. The report is intentionally
+only when no installed location exists. Sources are never unioned. A
+present-but-empty or unreadable selected location is an error and never
+falls back to a lower-priority source. The report is intentionally
 line-oriented and prints no `Pack source:` header, so its transcript must be
 read together with the command that selected the source. For a labeled view,
 use `icg coverage --list`, `icg coverage --list --format json`,
