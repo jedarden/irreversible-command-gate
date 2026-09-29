@@ -52,6 +52,21 @@ fn exact_keys(value: &Value) -> BTreeSet<&str> {
         .collect()
 }
 
+fn assert_pack_source(report: &Value, origin: &str, root: Option<&str>) {
+    let source = &report["pack_source"];
+    assert_eq!(
+        exact_keys(source),
+        BTreeSet::from(["origin", "root", "trusted_ref"]),
+        "pack_source metadata keys moved"
+    );
+    assert_eq!(source["origin"], origin);
+    assert_eq!(source["root"], root.map(Value::from).unwrap_or(Value::Null));
+    assert!(
+        source["trusted_ref"].is_null(),
+        "test-only installed sources do not carry a release trust reference"
+    );
+}
+
 fn coverage_json() -> Value {
     let packs = packs_dir();
     let output = icg(&[
@@ -344,6 +359,237 @@ fn icg_pack_dir_replaces_the_default_search_path() {
         "an empty ICG_PACK_DIR is refused like an empty --pack dir: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn coverage_json_reports_explicit_pack_source_metadata() {
+    let dir = TempDir::new().expect("tempdir");
+    let pack = write_minimal_pack(dir.path(), "explicit");
+    let output = coverage_json_against(&[&pack]);
+    assert!(
+        output.status.success(),
+        "explicit pack should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_pack_source(&report, "explicit", None);
+    assert_eq!(report["packs"][0]["id"], "explicit");
+    assert_eq!(report["packs"][0]["path"], pack.to_string_lossy().as_ref());
+}
+
+#[test]
+fn coverage_json_reports_icg_pack_dir_as_the_selected_explicit_source() {
+    let dir = TempDir::new().expect("tempdir");
+    let selected = dir.path().join("override");
+    fs::create_dir(&selected).expect("override directory should exist");
+    write_minimal_pack(&selected, "override");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .env("ICG_PACK_DIR", &selected)
+        .env(
+            "ICG_INSTALLED_PACK_DIR",
+            dir.path().join("missing-installed"),
+        )
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(
+        output.status.success(),
+        "ICG_PACK_DIR should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_pack_source(
+        &report,
+        "explicit",
+        Some(selected.to_string_lossy().as_ref()),
+    );
+    assert_eq!(report["packs"].as_array().unwrap().len(), 1);
+    assert_eq!(report["packs"][0]["id"], "override");
+}
+
+#[test]
+fn coverage_json_prefers_installed_source_over_checkout_fallback() {
+    let dir = TempDir::new().expect("tempdir");
+    let installed = dir.path().join("installed");
+    let checkout = dir.path().join("checkout");
+    let checkout_packs = checkout.join("packs");
+    fs::create_dir(&installed).expect("installed directory should exist");
+    fs::create_dir_all(&checkout_packs).expect("checkout packs directory should exist");
+    write_minimal_pack(&installed, "installed");
+    write_minimal_pack(&checkout_packs, "checkout");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .current_dir(&checkout)
+        .env("ICG_INSTALLED_PACK_DIR", &installed)
+        .env_remove("ICG_PACK_DIR")
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(
+        output.status.success(),
+        "installed source should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_pack_source(
+        &report,
+        "installed",
+        Some(installed.to_string_lossy().as_ref()),
+    );
+    let ids: Vec<&str> = report["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pack| pack["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["installed"]);
+}
+
+#[test]
+fn coverage_json_reports_repository_source_only_when_installed_source_is_absent() {
+    let dir = TempDir::new().expect("tempdir");
+    let checkout = dir.path().join("checkout");
+    let checkout_packs = checkout.join("packs");
+    fs::create_dir_all(&checkout_packs).expect("checkout packs directory should exist");
+    write_minimal_pack(&checkout_packs, "repository");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .current_dir(&checkout)
+        .env(
+            "ICG_INSTALLED_PACK_DIR",
+            dir.path().join("missing-installed"),
+        )
+        .env_remove("ICG_PACK_DIR")
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(
+        output.status.success(),
+        "repository fallback should load: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_pack_source(&report, "repository", Some("packs"));
+    assert_eq!(report["packs"][0]["id"], "repository");
+}
+
+#[test]
+fn coverage_json_does_not_fall_back_from_an_explicit_empty_source() {
+    let dir = TempDir::new().expect("tempdir");
+    let checkout = dir.path().join("checkout");
+    let checkout_packs = checkout.join("packs");
+    let empty = dir.path().join("empty-explicit");
+    fs::create_dir_all(&checkout_packs).expect("checkout packs directory should exist");
+    fs::create_dir(&empty).expect("empty explicit directory should exist");
+    write_minimal_pack(&checkout_packs, "checkout");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args([
+            "coverage",
+            "--list",
+            "--format",
+            "json",
+            "--pack",
+            empty.to_str().unwrap(),
+        ])
+        .current_dir(&checkout)
+        .output()
+        .expect("icg should run");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no rule packs found"), "{stderr}");
+    assert!(
+        !stderr.contains("checkout"),
+        "explicit source fell back: {stderr}"
+    );
+}
+
+#[test]
+fn coverage_json_does_not_fall_back_from_a_present_empty_installed_source() {
+    let dir = TempDir::new().expect("tempdir");
+    let installed = dir.path().join("installed-empty");
+    let checkout = dir.path().join("checkout");
+    let checkout_packs = checkout.join("packs");
+    fs::create_dir(&installed).expect("empty installed directory should exist");
+    fs::create_dir_all(&checkout_packs).expect("checkout packs directory should exist");
+    write_minimal_pack(&checkout_packs, "checkout");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .current_dir(&checkout)
+        .env("ICG_INSTALLED_PACK_DIR", &installed)
+        .env_remove("ICG_PACK_DIR")
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no rule packs found"), "{stderr}");
+    assert!(
+        !stderr.contains("checkout"),
+        "installed source fell back: {stderr}"
+    );
+}
+
+#[test]
+fn coverage_json_keeps_an_unreadable_installed_member_in_the_selected_source() {
+    let dir = TempDir::new().expect("tempdir");
+    let installed = dir.path().join("installed");
+    let checkout = dir.path().join("checkout");
+    let checkout_packs = checkout.join("packs");
+    fs::create_dir(&installed).expect("installed directory should exist");
+    fs::create_dir_all(&checkout_packs).expect("checkout packs directory should exist");
+    write_minimal_pack(&installed, "installed");
+    let unreadable = installed.join("unreadable.json");
+    fs::write(&unreadable, corrupt_pack_contents()).expect("corrupt pack should write");
+    write_minimal_pack(&checkout_packs, "checkout");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["coverage", "--list", "--format", "json"])
+        .current_dir(&checkout)
+        .env("ICG_INSTALLED_PACK_DIR", &installed)
+        .env_remove("ICG_PACK_DIR")
+        .env_remove("ICG_RULE_PACK")
+        .output()
+        .expect("icg should run");
+    assert!(
+        output.status.success(),
+        "readable installed members should still report: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: Value = serde_json::from_slice(&output.stdout).expect("coverage should be JSON");
+    assert_pack_source(
+        &report,
+        "installed",
+        Some(installed.to_string_lossy().as_ref()),
+    );
+    assert_eq!(report["packs"][0]["id"], "installed");
+    assert_eq!(report["pack_count"], 1);
+    assert_eq!(report["unreadable"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report["unreadable"][0]["path"],
+        unreadable.to_string_lossy().as_ref()
+    );
+    assert!(!report["unreadable"][0]["error"]
+        .as_str()
+        .unwrap()
+        .trim()
+        .is_empty());
+    assert!(!output
+        .stdout
+        .windows(b"checkout".len())
+        .any(|window| { window == b"checkout" }));
 }
 
 /// The last link of the documented resolution order: with no `--pack`, no
