@@ -1,10 +1,10 @@
 //! The hook enforces the installed chain only — even from inside a checkout.
 //!
-//! Operator commands union the installed trust chain with the working
-//! directory's `packs/`; the hook must not. The deployment guide states the
-//! contract outright ("It never reads a repository checkout") and AGENTS.md
-//! calls `ICG_INSTALLED_PACK_DIR` "an operator-command-only override the
-//! hook never reads" — but the labeling and drift tests
+//! Operator commands have a separate source-resolution chain that may inspect
+//! an explicit or checkout source; the hook must not. The deployment guide
+//! states the contract outright ("It never reads a repository checkout") and
+//! AGENTS.md calls `ICG_INSTALLED_PACK_DIR` "an operator-command-only override
+//! the hook never reads" — but the labeling and drift tests
 //! (`pack_source_drift_tests.rs`) exercise operator front-ends only, so the
 //! hook half of that contract lived in prose alone. A hook that started
 //! consulting the working directory would silently enforce unreviewed
@@ -32,7 +32,10 @@ const INSTALLED_OVERRIDE: &str = "ICG_INSTALLED_PACK_DIR";
 /// generator in `pack_source_drift_tests.rs` — the two files pin the two
 /// halves of one contract, and their fixtures should not drift apart.
 fn pack_json(id: &str) -> String {
-    let keyword = format!("{id}ctl");
+    pack_json_with_keyword(id, &format!("{id}ctl"))
+}
+
+fn pack_json_with_keyword(id: &str, keyword: &str) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "id": id,
         "tool_keywords": [keyword],
@@ -56,6 +59,14 @@ fn pack_json(id: &str) -> String {
 
 fn write_pack(dir: &Path, id: &str) {
     fs::write(dir.join(format!("{id}.json")), pack_json(id)).expect("fixture pack should write");
+}
+
+fn write_pack_with_keyword(dir: &Path, id: &str, keyword: &str) {
+    fs::write(
+        dir.join(format!("{id}.json")),
+        pack_json_with_keyword(id, keyword),
+    )
+    .expect("fixture pack should write");
 }
 
 /// A staged world: an "installed" trust directory with `installed_ids`, a
@@ -111,6 +122,51 @@ impl Staged {
         self.spawn_hook(rule_pack, true, extra, command)
     }
 
+    /// Run the hook with every competing source staged at once. The explicit
+    /// hook argument and `ICG_RULE_PACK` are hook inputs; the other two
+    /// variables belong only to operator source resolution and must never
+    /// change this result.
+    fn run_hook_with_sources(
+        &self,
+        explicit_rule_pack: Option<&Path>,
+        rule_pack_env: Option<&Path>,
+        operator_pack_env: Option<&Path>,
+        installed_override: Option<&Path>,
+        command: &str,
+    ) -> Value {
+        let mut hook = Command::new(env!("CARGO_BIN_EXE_icg"));
+        hook.arg("hook");
+        if let Some(path) = explicit_rule_pack {
+            hook.args([
+                "--rule-pack",
+                path.to_str().expect("pack path should be UTF-8"),
+            ]);
+        }
+        self.configure_hook_command(&mut hook);
+        hook.env_remove("ICG_RULE_PACK");
+        hook.env_remove("ICG_PACK_DIR");
+        hook.env_remove(INSTALLED_OVERRIDE);
+        if let Some(path) = rule_pack_env {
+            hook.env(
+                "ICG_RULE_PACK",
+                path.to_str().expect("pack path should be UTF-8"),
+            );
+        }
+        if let Some(path) = operator_pack_env {
+            hook.env(
+                "ICG_PACK_DIR",
+                path.to_str().expect("pack path should be UTF-8"),
+            );
+        }
+        if let Some(path) = installed_override {
+            hook.env(
+                INSTALLED_OVERRIDE,
+                path.to_str().expect("pack path should be UTF-8"),
+            );
+        }
+        self.finish_hook(&mut hook, command)
+    }
+
     fn spawn_hook(
         &self,
         rule_pack: &Path,
@@ -126,11 +182,7 @@ impl Staged {
         } else {
             hook.args(["--rule-pack", rule_pack]);
         }
-        // Test-spawned hooks record their side effects into the staged
-        // support directory, never the host's live sinks.
-        hook.env("ICG_HEALTH_PATH", self.support.join("health.json"));
-        hook.env("ICG_TELEMETRY_PATH", self.support.join("telemetry.json"));
-        hook.env("ICG_DENIAL_LOG", self.support.join("denials.jsonl"));
+        self.configure_hook_command(&mut hook);
         // The staged world must decide the outcome, not the host's: drop
         // both operator-side overrides unless a test stages them itself.
         hook.env_remove("ICG_PACK_DIR");
@@ -139,10 +191,22 @@ impl Staged {
             hook.env(key, value);
         }
         hook.current_dir(&self.checkout);
+        self.finish_hook(&mut hook, command)
+    }
+
+    fn configure_hook_command(&self, hook: &mut Command) {
+        // Test-spawned hooks record their side effects into the staged
+        // support directory, never the host's live sinks.
+        hook.env("ICG_HEALTH_PATH", self.support.join("health.json"));
+        hook.env("ICG_TELEMETRY_PATH", self.support.join("telemetry.json"));
+        hook.env("ICG_DENIAL_LOG", self.support.join("denials.jsonl"));
+        hook.current_dir(&self.checkout);
         hook.stdin(Stdio::piped());
         hook.stdout(Stdio::piped());
         hook.stderr(Stdio::piped());
+    }
 
+    fn finish_hook(&self, hook: &mut Command, command: &str) -> Value {
         let mut child = hook.spawn().expect("hook process should start");
         let payload = json!({
             "tool_name": "Bash",
@@ -239,8 +303,8 @@ fn a_hook_inside_a_checkout_enforces_the_installed_chain() {
 }
 
 /// The incident shape, pinned on the hook side: the working directory
-/// carries a pack the installed set lacks — exactly the union operator
-/// commands report and warn about — and the hook still does not enforce it.
+/// carries a pack the installed set lacks — a source the operator commands
+/// may inspect — and the hook still does not enforce it.
 /// If the hook ever starts unioning the checkout's `packs/`, this goes red.
 #[test]
 fn a_hook_inside_a_checkout_never_enforces_a_checkout_only_pack() {
@@ -277,4 +341,76 @@ fn the_operator_pack_override_never_reaches_the_hook() {
     assert_not_denied_by(&response, "victima");
     let installed = staged.run_hook(&staged.installed, true, "alphactl destroy everything");
     assert_denied_by(&installed, "alpha", "alpha-destroy");
+}
+
+/// The hook's source precedence is deterministic even when every competing
+/// source carries the same pack id with a different policy. An explicit
+/// `--rule-pack` wins over `ICG_RULE_PACK`; without the explicit argument,
+/// `ICG_RULE_PACK` wins. In both cases neither the operator-only environment
+/// nor the checkout can add or replace a hook rule.
+#[test]
+fn hook_precedence_is_explicit_then_rule_pack_env_and_never_operator_or_checkout() {
+    let staged = stage(&[], &[]);
+    let environment = staged._dir.path().join("environment");
+    let operator = staged._dir.path().join("operator");
+    let installed_override = staged._dir.path().join("installed-override");
+    fs::create_dir(&environment).expect("environment directory should exist");
+    fs::create_dir(&operator).expect("operator directory should exist");
+    fs::create_dir(&installed_override).expect("installed override should exist");
+
+    // Every source claims the same pack id, but only its source-specific
+    // command can match. This catches both accidental source unioning and a
+    // lower-priority copy silently replacing the selected pack.
+    write_pack_with_keyword(&staged.installed, "collision", "installed-source");
+    write_pack_with_keyword(
+        &staged.checkout.join("packs"),
+        "collision",
+        "checkout-source",
+    );
+    write_pack_with_keyword(&environment, "collision", "environment-source");
+    write_pack_with_keyword(&operator, "collision", "operator-source");
+    write_pack_with_keyword(&installed_override, "collision", "override-source");
+
+    let candidates = [
+        ("installed", "installed-source", "collision"),
+        ("checkout", "checkout-source", "collision"),
+        ("environment", "environment-source", "collision"),
+        ("operator", "operator-source", "collision"),
+        ("installed override", "override-source", "collision"),
+    ];
+
+    // The explicit hook argument is authoritative, even when all other
+    // environment paths point at conflicting copies of the same pack.
+    for (source, keyword, pack_id) in candidates {
+        let response = staged.run_hook_with_sources(
+            Some(&staged.installed),
+            Some(&environment),
+            Some(&operator),
+            Some(&installed_override),
+            &format!("{keyword} destroy everything"),
+        );
+        if source == "installed" {
+            assert_denied_by(&response, pack_id, "collision-destroy");
+        } else {
+            assert_not_denied_by(&response, pack_id);
+        }
+    }
+
+    // With no explicit argument, the hook environment is authoritative. The
+    // operator's ICG_PACK_DIR and ICG_INSTALLED_PACK_DIR seams, plus the
+    // checkout's packs/, remain invisible to hook evaluation.
+    for (source, keyword, pack_id) in candidates {
+        let response = staged.run_hook_with_sources(
+            None,
+            Some(&environment),
+            Some(&operator),
+            Some(&installed_override),
+            &format!("{keyword} destroy everything"),
+        );
+        if source == "environment" {
+            assert_denied_by(&response, pack_id, "collision-destroy");
+        } else {
+            assert_not_denied_by(&response, pack_id);
+        }
+    }
 }
