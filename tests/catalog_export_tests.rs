@@ -178,6 +178,61 @@ fn catalog_digest_is_deterministic_and_not_installation_specific() {
 }
 
 #[test]
+fn catalog_propagates_pack_source_without_hashing_provenance() {
+    let explicit = icg(&["catalog", "--json", "--pack", "packs"]);
+    assert!(
+        explicit.status.success(),
+        "explicit catalog should succeed: {}",
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    let explicit: Value =
+        serde_json::from_slice(&explicit.stdout).expect("explicit catalog should parse");
+    assert_eq!(
+        explicit["pack_source"],
+        json!({
+            "origin": "explicit",
+            "root": null,
+            "trusted_ref": null
+        }),
+        "--pack reports explicit provenance without inventing a trusted root"
+    );
+
+    let pack_dir = std::env::current_dir()
+        .expect("the test should have a current directory")
+        .join("packs");
+    let from_environment = Command::new(env!("CARGO_BIN_EXE_icg"))
+        .args(["catalog", "--json"])
+        .env("ICG_PACK_DIR", &pack_dir)
+        .output()
+        .expect("icg should run with ICG_PACK_DIR");
+    assert!(
+        from_environment.status.success(),
+        "ICG_PACK_DIR catalog should succeed: {}",
+        String::from_utf8_lossy(&from_environment.stderr)
+    );
+    let from_environment: Value = serde_json::from_slice(&from_environment.stdout)
+        .expect("ICG_PACK_DIR catalog should parse");
+    assert_eq!(
+        from_environment["pack_source"],
+        json!({
+            "origin": "explicit",
+            "root": pack_dir.to_string_lossy(),
+            "trusted_ref": null
+        }),
+        "ICG_PACK_DIR reports its selected root and no trusted-release claim"
+    );
+
+    assert_eq!(
+        explicit["catalog_digest"], from_environment["catalog_digest"],
+        "source provenance must not turn an unchanged policy into digest drift"
+    );
+    assert_ne!(
+        explicit["pack_source"], from_environment["pack_source"],
+        "the two invocations must prove that provenance was actually propagated"
+    );
+}
+
+#[test]
 fn builtin_catalog_entries_agree_with_engine_denials() {
     // With no packs at all the catalog still names the built-ins, because
     // the engine enforces them in code before any pack is consulted.
