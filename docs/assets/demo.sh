@@ -10,7 +10,8 @@
 #   cargo build --release
 #   BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
 #     'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/icg"
-#   PATH="$(dirname "$BIN"):$PATH" vhs docs/assets/demo.tape
+#   ICG_PACK_DIR="$PWD/packs" PATH="$(dirname "$BIN"):$PATH" \
+#     vhs docs/assets/demo.tape
 #
 # Requires vhs (github.com/charmbracelet/vhs) and ttyd.
 #
@@ -38,6 +39,11 @@
 # or demo change, cannot pass.
 set -u
 
+# The demo is a checkout artifact, so its verdicts must come from the packs
+# beside this script rather than an installed operator source or the caller's
+# working directory.
+PACK_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../packs" && pwd)"
+
 W=94
 BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; CYAN=$'\033[36m'
@@ -52,7 +58,7 @@ paint() { # paint <colour> <text...>
 demo() { # demo <command> [lines]
   printf '%s$%s %s%s%s\n' "$DIM" "$RESET" "$BOLD" "$1" "$RESET"
   sleep 0.4
-  icg check --command "$1" 2>/dev/null | head -"${2:-3}" | while IFS= read -r line; do
+  ICG_PACK_DIR="$PACK_DIR" icg check --command "$1" 2>/dev/null | head -"${2:-3}" | while IFS= read -r line; do
     case "$line" in
       DENIED*)  paint "$RED$BOLD"    "$line" ;;
       REWRITE*) paint "$CYAN$BOLD"   "$line" ;;
@@ -69,7 +75,7 @@ demo() { # demo <command> [lines]
 demo_file() { # demo_file <content> <label> [lines]
   printf '%s$%s %sprintf %s | icg check --file -%s\n' "$DIM" "$RESET" "$BOLD" "$2" "$RESET"
   sleep 0.4
-  printf '%s' "$1" | icg check --file - 2>/dev/null | head -"${3:-3}" | while IFS= read -r line; do
+  printf '%s' "$1" | ICG_PACK_DIR="$PACK_DIR" icg check --file - 2>/dev/null | head -"${3:-3}" | while IFS= read -r line; do
     case "$line" in
       DENIED*)  paint "$RED$BOLD"    "$line" ;;
       REWRITE*) paint "$CYAN$BOLD"   "$line" ;;
