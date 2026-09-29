@@ -1839,6 +1839,123 @@ fn flow_diagram_states_the_network_exception_with_its_claim() {
     );
 }
 
+/// Public documentation must describe the two pack-source boundaries rather
+/// than implying that `/etc/icg/packs` is the only policy location.
+///
+/// The resolver deliberately has two contracts: operator commands may inspect
+/// an explicit or checkout source, while the hook is installed-only. Keeping
+/// the ordered markers on the README, operator guide, deployment guide, and
+/// both figures prevents a future architecture edit from making those sources
+/// look like one merged policy set again.
+fn trust_source_section<'a>(document: &'a str, heading: &str, next_heading: &str) -> &'a str {
+    let (_, after) = document
+        .split_once(heading)
+        .unwrap_or_else(|| panic!("document should contain {heading:?}"));
+    after
+        .split_once(next_heading)
+        .map(|(body, _)| body)
+        .unwrap_or(after)
+}
+
+#[test]
+fn trust_source_precedence_is_documented_across_public_surfaces() {
+    let readme = repo_relative("README.md");
+    let operators = repo_relative("docs/operators/README.md");
+    let deployment = repo_relative("docs/operators/deployment-guide.md");
+    let flow = repo_relative("docs/assets/icg-flow.svg");
+    let evaluation = repo_relative("docs/assets/icg-evaluation.svg");
+
+    let in_order = |document: &str, markers: &[&str], surface: &str| {
+        let mut cursor = 0;
+        for marker in markers {
+            let Some(relative) = document[cursor..].find(marker) else {
+                panic!("{surface} should contain precedence marker {marker:?}");
+            };
+            cursor += relative + marker.len();
+        }
+    };
+
+    let textual_surfaces = [
+        (
+            "README.md",
+            trust_source_section(&readme, "### Trust-source precedence", "## "),
+        ),
+        (
+            "docs/operators/README.md",
+            trust_source_section(&operators, "### Trust-source precedence", "## "),
+        ),
+        (
+            "docs/operators/deployment-guide.md",
+            trust_source_section(&deployment, "### Trust-source precedence", "### "),
+        ),
+    ];
+    for (surface, document) in textual_surfaces {
+        let operator_document = if surface == "docs/operators/deployment-guide.md" {
+            document
+                .split_once("The operator commands")
+                .map(|(_, rest)| rest)
+                .unwrap_or(document)
+        } else {
+            document
+        };
+        in_order(
+            operator_document,
+            &[
+                "`--pack`",
+                "`ICG_PACK_DIR`",
+                "`/etc/icg/packs`",
+                "`/etc/icg/rule-pack.json",
+            ],
+            surface,
+        );
+        assert!(
+            document.contains("checkout")
+                && document.contains("never")
+                && document.contains("merged"),
+            "{surface} should state that checkout fallback is conditional and sources are not merged"
+        );
+        in_order(
+            document,
+            &[
+                "--rule-pack",
+                "ICG_RULE_PACK",
+                "/etc/icg/packs",
+                "/etc/icg/rule-pack.json",
+            ],
+            surface,
+        );
+        assert!(
+            document.contains("ICG_PACK_DIR") && document.contains("checkout"),
+            "{surface} should keep the hook isolated from the operator override and checkout"
+        );
+    }
+
+    for (surface, figure) in [
+        ("docs/assets/icg-flow.svg", flow),
+        ("docs/assets/icg-evaluation.svg", evaluation),
+    ] {
+        let text = flattened(&figure).to_ascii_lowercase();
+        for marker in [
+            "--pack",
+            "icg_pack_dir",
+            "/etc/icg/packs",
+            "/etc/icg/rule-pack.json",
+            "--rule-pack",
+            "icg_rule_pack",
+            "checkout",
+        ] {
+            assert!(
+                text.contains(marker),
+                "{surface} should show trust-source marker {marker:?}"
+            );
+        }
+        assert!(
+            text.contains("never merged") || text.contains("never reads"),
+            "{surface} should state that source tiers are not merged"
+        );
+    }
+}
+
 /// The contents of an SVG's `<desc>` element -- the alt text the file itself
 /// carries for non-visual readers.
 fn svg_desc(svg: &str) -> String {

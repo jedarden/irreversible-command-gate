@@ -75,6 +75,24 @@ Missing or empty authoritative sources fail instead of falling back. See the
 [pack-source resolution contract](../notes/pack-source-resolution.md) and
 the [JSON API notes](../notes/coverage-json-api.md) for error semantics.
 
+### Trust-source precedence
+
+The operator resolver and the hook intentionally have different trust
+boundaries. The operator resolver selects exactly one source in this order:
+
+1. explicit `--pack` paths;
+2. `ICG_PACK_DIR`;
+3. `/etc/icg/packs`, or the legacy `/etc/icg/rule-pack.json` when the modular
+   directory is absent;
+4. checkout `packs/`, only when both installed locations are absent.
+
+The hook does not use that checkout fallback. For a hook invocation, an
+explicit `--rule-pack <path>` wins; without it, the chain is `ICG_RULE_PACK`,
+then `/etc/icg/packs`, then `/etc/icg/rule-pack.json`. The hook never reads
+`ICG_PACK_DIR`, and no source tier is merged with another. A coverage report
+selected from the checkout is therefore a developer view, not a statement of
+the policy installed in the hook.
+
 ## Deployment model
 
 Production artifacts belong in administrator-controlled locations:

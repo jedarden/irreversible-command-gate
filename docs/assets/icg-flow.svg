@@ -2,11 +2,15 @@
      aria-labelledby="t d">
   <title id="t">How irreversible-command-gate evaluates a tool call</title>
   <desc id="d">An agent's tool call is intercepted by the harness PreToolUse hook and handed to
-  icg, which dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded
-  patterns, and returns one of four verdicts: allow, warning, rewrite, or deny. Only deny stops
-  the command. Evaluation is deterministic and does no network I/O, with one exception: before a
-  non-force git push, the engine runs a single live git ls-remote lookup, and any lookup error
-  fails open.</desc>
+  icg. Before evaluation, exactly one policy source is selected and sources are never merged:
+  operator commands use --pack, then ICG_PACK_DIR, then the installed /etc/icg/packs directory,
+  the legacy /etc/icg/rule-pack.json, and finally checkout packs/ only when neither installed
+  location exists; the hook uses an explicit --rule-pack, then ICG_RULE_PACK, then the installed
+  chain and never reads ICG_PACK_DIR or checkout packs/. icg dispatches to a rule pack by tool
+  keyword, checks safe patterns first, then guarded patterns, and returns one of four verdicts:
+  allow, warning, rewrite, or deny. Only deny stops the command. Evaluation is deterministic and
+  does no network I/O, with one exception: before a non-force git push, the engine runs a single
+  live git ls-remote lookup, and any lookup error fails open.</desc>
 
   <style>
     :root { color-scheme: light dark; }
@@ -90,13 +94,14 @@
   <line class="rule" x1="556" y1="326" x2="802" y2="326" stroke-width="1"/>
   <text class="dim t" x="556" y="348" font-size="11.5">no pack loaded, no match, or a crash → allow</text>
 
-  <!-- rule packs feeding the engine -->
+  <!-- selected source feeding the engine -->
   <rect class="inner" x="536" y="404" width="286" height="120" rx="10"/>
-  <text class="t" x="556" y="430" font-size="13" font-weight="600">/etc/icg/packs/*.json</text>
-  <text class="dim t" x="556" y="450" font-size="11.5">root-owned policy the guarded agent</text>
-  <text class="dim t" x="556" y="466" font-size="11.5">cannot rewrite — 11 packs, 29 rules</text>
-  <text class="m dim" x="556" y="492" font-size="11">openbao · git · secrets · docker</text>
-  <text class="m dim" x="556" y="508" font-size="11">image-tag · storage-class · beads · …</text>
+  <text class="t" x="556" y="430" font-size="13" font-weight="600">Selected policy source</text>
+  <text class="m dim" x="556" y="450" font-size="10.5">operator: --pack → ICG_PACK_DIR</text>
+  <text class="m dim" x="556" y="466" font-size="10.5">  → installed → checkout fallback</text>
+  <text class="m dim" x="556" y="484" font-size="10.5">hook: --rule-pack → ICG_RULE_PACK</text>
+  <text class="m dim" x="556" y="500" font-size="10.5">  → /etc/icg/packs → legacy artifact</text>
+  <text class="dim t" x="556" y="518" font-size="10.5">one source wins; never merged</text>
   <path class="arrow" d="M679 400 L679 374" marker-end="url(#a)" stroke-width="1.6"/>
 
   <!-- 4. verdicts -->

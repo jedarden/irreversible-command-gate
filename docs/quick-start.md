@@ -498,9 +498,10 @@ An unmatched input returns `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
 ### Hook mode vs check mode
 
 - **Hook mode** (`icg hook`): used by harnesses; reads one PreToolUse JSON
-  from stdin, emits one decision envelope, exits. Loads `/etc/icg/packs` by
-  default (the legacy `/etc/icg/rule-pack.json` when the directory is
-  absent). Override with `--rule-pack <path>` or `ICG_RULE_PACK`.
+  from stdin, emits one decision envelope, exits. Its source order is an
+  explicit `--rule-pack <path>`, then `ICG_RULE_PACK`, then `/etc/icg/packs`,
+  then the legacy `/etc/icg/rule-pack.json`; it never reads `ICG_PACK_DIR` or
+  checkout `packs/`.
 - **Check mode** (`icg check`): manual testing with `--command`, `--stdin`,
   or `--file`; prints human-readable decisions. It selects one source using
   `--pack`, `ICG_PACK_DIR`, the installed chain, then the checkout fallback;

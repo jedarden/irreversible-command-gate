@@ -23,13 +23,13 @@ supply it). Reproduce it with [`docs/assets/demo.sh`](docs/assets/demo.sh).</sub
 
 <p align="center">
   <img src="docs/assets/icg-flow.svg"
-       alt="An agent's tool call goes to the harness PreToolUse hook, which hands it to icg. icg dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded patterns, and returns allow, warning, rewrite, or deny. Rule packs live root-owned in /etc/icg/packs. Only deny stops the command. Evaluation is deterministic and does no network I/O, with one exception: before a non-force git push, the engine runs a single live git ls-remote lookup, and any lookup error fails open."
+       alt="An agent's tool call goes to the harness PreToolUse hook, which hands it to icg. Before evaluation, exactly one policy source is selected: operator commands use --pack, then ICG_PACK_DIR, then the installed /etc/icg/packs directory, the legacy /etc/icg/rule-pack.json, and finally checkout packs/ only when neither installed location exists; the hook uses an explicit --rule-pack, then ICG_RULE_PACK, then the installed chain and never reads ICG_PACK_DIR or checkout packs/. Sources are never merged. icg dispatches to a rule pack by tool keyword, checks safe patterns first, then guarded patterns, and returns allow, warning, rewrite, or deny. Only deny stops the command. Evaluation is deterministic and does no network I/O, with one exception: before a non-force git push, the engine runs a single live git ls-remote lookup, and any lookup error fails open."
        width="1000">
 </p>
 
 <p align="center">
   <img src="docs/assets/icg-evaluation.svg"
-       alt="Animated walkthrough of one evaluation: the command is dispatched to rule packs by tool keyword and only the openbao pack claims it; its seven safe patterns are tried first and none match; evaluation continues to the guarded patterns, where the second one matches and its deny channel becomes the verdict."
+       alt="Animated walkthrough of one evaluation after exactly one policy source has been selected: the command is dispatched to rule packs by tool keyword and only the openbao pack claims it; its seven safe patterns are tried first and none match; evaluation continues to the guarded patterns, where the second one matches and its deny channel becomes the verdict."
        width="1000">
 </p>
 
@@ -63,6 +63,28 @@ a crashed check allows the command. A missed violation is recoverable; a
 wedged agent fleet is not.
 A graduated [fail-closed policy](docs/operators/fail-closed-mode.md) exists
 for once a release has proven itself.
+
+### Trust-source precedence
+
+Policy is selected before the engine evaluates a call. Each invocation uses
+one source; sources are never merged.
+
+For operator commands such as `check`, `explain`, `coverage`, `catalog`,
+`status`, and `health`, precedence is:
+
+1. explicit `--pack` paths;
+2. `ICG_PACK_DIR`, when no `--pack` was supplied;
+3. the installed chain: `/etc/icg/packs`, otherwise the legacy
+   `/etc/icg/rule-pack.json`;
+4. the checkout's `packs/`, but only when neither installed location exists.
+
+The hook has a separate installed-only boundary. An explicit
+`icg hook --rule-pack <path>` wins for that invocation; otherwise it uses
+`ICG_RULE_PACK`, then `/etc/icg/packs`, then `/etc/icg/rule-pack.json` (the
+legacy artifact). It never reads `ICG_PACK_DIR` or a checkout fallback. A checkout report selected with
+`ICG_PACK_DIR` or `--pack` is useful for development and review, but is not
+evidence of what the installed hook enforces. See the full
+[pack-source resolution contract](docs/notes/pack-source-resolution.md).
 
 Median cost of a check on a warm cache: **~15–20 ms** on the reference
 environment, measured and reproducible —
@@ -99,10 +121,11 @@ chmod +x icg
 ./icg check --command "git status"
 ```
 
-An unqualified operator command selects the installed trust source when one is
-present. To inspect a checkout's `packs/`, set the explicit developer override
-`ICG_PACK_DIR="$PWD/packs"`; that report is not deployed coverage. A bare
-binary needs installed packs or an explicit `--pack <dir>`.
+An unqualified operator command follows the [trust-source precedence](#trust-source-precedence):
+the installed trust source wins when present, and the checkout is only the
+last fallback. To inspect a checkout's `packs/`, set the explicit developer
+override `ICG_PACK_DIR="$PWD/packs"`; that report is not deployed coverage. A
+bare binary needs installed packs or an explicit `--pack <dir>`.
 
 `icg check` is the human-facing tester and always exits `0` — parse its
 output, not its status. `icg hook` is the machine entry point: one

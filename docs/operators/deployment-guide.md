@@ -377,22 +377,25 @@ Finally run one real, non-destructive command through the configured harness
 and inspect its hook diagnostics. Never use a real Vault destroy, force-push,
 secret deletion, or other destructive operation as an installation test.
 
-### Which pack source an operator command reads
+### Trust-source precedence
 
 The hook and the operator commands do not read packs from the same place,
 and the difference matters whenever `icg` is run from a source checkout.
 
-The hook resolves exactly one installed location, in order: `ICG_RULE_PACK`
-when set, then `/etc/icg/packs`, then the legacy `/etc/icg/rule-pack.json`.
-It never reads a repository checkout.
+The hook resolves exactly one installed location. An explicit
+`icg hook --rule-pack <path>` wins for that invocation; otherwise the order is
+`ICG_RULE_PACK`, then `/etc/icg/packs`, then the legacy
+`/etc/icg/rule-pack.json`. It never reads `ICG_PACK_DIR` or a repository
+checkout.
 
 The operator commands (`check`, `explain`, `coverage`, `catalog`, `status`,
-and the `health` report) select exactly one source: explicit `--pack` paths,
-then `ICG_PACK_DIR`, then the installed chain, then the working directory's
-`packs/` only when both installed locations are absent. A checkout ahead of
-the deployed release is therefore not silently merged into the report. An
-explicit `--pack` or `ICG_PACK_DIR` selection is authoritative and is the
-developer's way to inspect checkout policy; it is not deployed coverage.
+and the `health` report) select exactly one source in this order: explicit
+`--pack` paths, then `ICG_PACK_DIR`, then `/etc/icg/packs`, then the legacy
+`/etc/icg/rule-pack.json`, and finally the working directory's `packs/` only
+when both installed locations are absent. A checkout ahead of the deployed
+release is therefore not silently merged into the report. An explicit
+`--pack` or `ICG_PACK_DIR` selection is authoritative and is the developer's
+way to inspect checkout policy; it is not deployed coverage.
 
 - `icg coverage --list` prints one `Pack source:` line naming the selected
   origin and root. `check --debug` prints the same label on stderr, while

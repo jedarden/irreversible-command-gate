@@ -1,8 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 600" width="1040" height="600" role="img"
      aria-labelledby="ti de">
   <title id="ti">How icg evaluates one command</title>
-  <desc id="de">An animated walkthrough of a single evaluation. The command "bao kv destroy
-  secret/app/db" is dispatched to rule packs by tool keyword; only the openbao pack claims it.
+  <desc id="de">An animated walkthrough of a single evaluation after exactly one policy source
+  has been selected; sources are never merged. Operator precedence is --pack, ICG_PACK_DIR,
+  /etc/icg/packs, the legacy /etc/icg/rule-pack.json, then checkout packs/ only when the
+  installed locations are absent. Hook precedence is --rule-pack, ICG_RULE_PACK, then the
+  installed chain, with no checkout fallback. The command "bao kv destroy secret/app/db" is
+  dispatched to rule packs by tool keyword; only the openbao pack claims it.
   Inside that pack the seven safe patterns are tried first and none match, so evaluation
   continues to the guarded patterns. The first guarded pattern does not match, the second —
   openbao-destructive-verb — does, and its deny channel produces the verdict. A safe-pattern
@@ -87,6 +91,10 @@
   <text class="dim t" x="24" y="30" font-size="12">ONE TOOL CALL, EVALUATED</text>
   <rect class="well step b1" x="24" y="42" width="440" height="44" rx="6" opacity="1"/>
   <text class="m step b1" x="40" y="70" font-size="13.5" opacity="1">bao kv destroy secret/app/db</text>
+  <text class="dim t" x="560" y="30" font-size="11.5">SOURCE ALREADY SELECTED · one source, never merged</text>
+  <text class="m dim" x="560" y="64" font-size="10.5">operator: --pack → ICG_PACK_DIR → installed</text>
+  <text class="m dim" x="560" y="82" font-size="10.5">hook: --rule-pack → ICG_RULE_PACK → installed</text>
+  <text class="m dim" x="560" y="100" font-size="10.5">installed: /etc/icg/packs → legacy artifact</text>
 
   <!-- step 1: dispatch -->
   <text class="dim t step b2" x="24" y="118" font-size="12" opacity="1">1 — DISPATCH BY TOOL KEYWORD</text>
