@@ -385,6 +385,27 @@ fn a_drifted_checkout_does_not_change_the_selected_health_source() {
     assert!(!text.contains("checkout-only"));
 }
 
+/// An installed source that exists but contains no packs is authoritative.
+/// A populated checkout must not repair that unavailable release source by
+/// silently supplying a different policy.
+#[test]
+fn an_empty_installed_source_does_not_fall_back_to_checkout_packs() {
+    let staged = stage(&[], &["checkout-only"]);
+    let output = staged.run_plain(&["health"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stdout(&output), "");
+    let err = stderr(&output);
+    assert!(
+        err.contains("no rule packs found"),
+        "the empty authoritative source is unhealthy: {err}"
+    );
+    assert!(
+        !err.contains("checkout-only"),
+        "the lower-priority checkout source was not consulted: {err}"
+    );
+}
+
 /// An authoritative but unavailable `ICG_PACK_DIR` is a failed health
 /// source, not a reason to fall back to the installed or checkout packs.
 #[test]
