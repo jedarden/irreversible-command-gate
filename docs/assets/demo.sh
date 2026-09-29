@@ -10,8 +10,7 @@
 #   cargo build --release
 #   BIN="$(cargo metadata --format-version 1 --no-deps | python3 -c \
 #     'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release/icg"
-#   ICG_PACK_DIR="$PWD/packs" PATH="$(dirname "$BIN"):$PATH" \
-#     vhs docs/assets/demo.tape
+#   PATH="$(dirname "$BIN"):$PATH" vhs docs/assets/demo.tape
 #
 # Requires vhs (github.com/charmbracelet/vhs) and ttyd.
 #

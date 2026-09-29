@@ -38,7 +38,11 @@
 //! what the recapture recipe is for; these guards make silent drift
 //! impossible rather than re-reviewing the image.
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::Command;
+use tempfile::tempdir;
 
 /// Reused test binaries bake `CARGO_MANIFEST_DIR` of a dead extraction (see
 /// documentation_consistency_tests::audited_checkout); prefer the runtime
@@ -65,6 +69,100 @@ fn tape_text() -> String {
         repo_root().join("docs").join("assets").join("demo.tape"),
     )
     .expect("docs/assets/demo.tape should be readable -- it is the documented regeneration source of the GIF")
+}
+
+/// The demo is often launched by VHS from a caller-selected directory, and
+/// installed packs intentionally take precedence when no override is set.
+/// Run the real script from an unrelated directory with a hostile inherited
+/// override, while the `icg` shim records what the script passes to it. This
+/// keeps the two parts of the contract together: every check gets the
+/// checkout's packs, and the result does not depend on the caller's cwd.
+#[test]
+fn demo_script_uses_checkout_packs_from_any_working_directory() {
+    let root = repo_root();
+    let temp = tempdir().expect("demo workflow temporary directory should create");
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).expect("demo workflow bin directory should create");
+    let trace = temp.path().join("pack-dir-trace");
+    let denial_log = temp.path().join("denials.jsonl");
+
+    let icg_shim = bin.join("icg");
+    fs::write(
+        &icg_shim,
+        "#!/bin/sh\nprintf '%s\\n' \"$ICG_PACK_DIR\" >> \"$ICG_TRACE\"\nexec \"$ICG_BINARY\" \"$@\"\n",
+    )
+    .expect("icg shim should write");
+    fs::set_permissions(&icg_shim, fs::Permissions::from_mode(0o755))
+        .expect("icg shim should be executable");
+
+    let sleep_shim = bin.join("sleep");
+    fs::write(&sleep_shim, "#!/bin/sh\nexit 0\n").expect("sleep shim should write");
+    fs::set_permissions(&sleep_shim, fs::Permissions::from_mode(0o755))
+        .expect("sleep shim should be executable");
+
+    let path = std::iter::once(bin.clone())
+        .chain(std::env::split_paths(
+            &std::env::var_os("PATH").expect("PATH should be set"),
+        ))
+        .collect::<Vec<_>>();
+    let path = std::env::join_paths(path).expect("shimmed PATH should be valid");
+    let inherited_pack_dir = temp.path().join("installed-packs-that-must-not-win");
+    let output = Command::new("bash")
+        .arg(root.join("docs/assets/demo.sh"))
+        .current_dir(temp.path())
+        .env("PATH", path)
+        .env("ICG_PACK_DIR", &inherited_pack_dir)
+        .env("ICG_TRACE", &trace)
+        .env("ICG_BINARY", env!("CARGO_BIN_EXE_icg"))
+        .env("ICG_DENIAL_LOG", &denial_log)
+        .output()
+        .expect("demo.sh should run from an unrelated working directory");
+
+    assert!(
+        output.status.success(),
+        "demo.sh should run successfully from {}\nstdout:\n{}\nstderr:\n{}",
+        temp.path().display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let expected_pack_dir = root.join("packs");
+    let trace_lines: Vec<_> = fs::read_to_string(&trace)
+        .expect("the icg shim should record every demo check")
+        .lines()
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(
+        trace_lines.len(),
+        6,
+        "demo.sh should run all six pinned checks through icg"
+    );
+    assert!(
+        trace_lines.iter().all(|path| path == &expected_pack_dir),
+        "demo.sh must replace the inherited pack source with the checkout packs; got {trace_lines:?}, expected {}",
+        expected_pack_dir.display()
+    );
+    assert_ne!(
+        trace_lines.first(),
+        Some(&inherited_pack_dir),
+        "the caller's ICG_PACK_DIR must not control the checkout demo"
+    );
+}
+
+/// The tape must let demo.sh resolve the pack directory beside itself. A
+/// `$PWD/packs` assignment here would silently put the capture back under the
+/// caller's policy, even though demo.sh itself is script-relative.
+#[test]
+fn demo_tape_does_not_reintroduce_caller_pack_path() {
+    let text = tape_text();
+    assert!(
+        text.contains("Type \"bash docs/assets/demo.sh; sleep 20\" Enter"),
+        "demo.tape should run the checkout demo script"
+    );
+    assert!(
+        !text.contains("ICG_PACK_DIR=\"$PWD/packs\""),
+        "demo.tape must not derive the checkout pack path from the caller's cwd"
+    );
 }
 
 /// What one parsed GIF stream exposes, in the units the pins need.
