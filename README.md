@@ -96,8 +96,8 @@ That note's budget is enforced, not aspirational: the repo's
 binary and fails if a warm-cache p50 reaches **50 ms** on the shipped pack
 set — a rot gate at roughly 3× the measured median, not a tail SLA. And the
 figure is re-measured, not just re-quoted: CI (icg-ci) runs the same bench
-on every push to main — advisory today, gated at the DoD budget once the
-CI runner's own p50 range is on record.
+on every push to main — gated at the recorded 50 ms runner budget. An
+explicit `bench-budget-ms=0` override is advisory for diagnostics only.
 A non-force `git push` additionally waits on the stale-remote-head lookup's
 one network round trip.
 

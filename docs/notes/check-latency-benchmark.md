@@ -160,26 +160,25 @@ JSON shape, verdict verification, and that the `--assert-under` gate fails
 closed — plus the DoD wiring itself, so neither the tool nor its gate can
 silently rot.
 
-**CI wiring (2026-09-25, bead `irrevers-4e6b05b0`).** The paragraph above
-used to exempt the shared-runner CI as well, on the reasoning that CI
-runners' timings are foreign to this record. That half is now revised, in
-the order it prescribed: every push to main runs this bench in icg-ci's
+**CI wiring (2026-09-29, bead `irrevers-7264551d`, following
+`irrevers-4e6b05b0`).** Every push to main runs this bench in icg-ci's
 build-and-release stage, on the release profile and the shipped pack set
-(`--pack <checkout>/packs --cwd /tmp`), **advisory** — the run reports its
-p50s into the workflow log and fails nothing, because no iad-ci runner p50
-range is on record yet. The stage takes a `bench-budget-ms` parameter
-(default `0`): setting it to a millisecond value passes it to
-`--assert-under` and makes a breach — or a bench that cannot run at all —
-fail the build. The flip is deliberately left for a follow-up with the
-advisory runs' numbers in hand: pick the budget from what the runner
-actually measures (the DoD's 50 ms is the candidate if the runner clears
-it as comfortably as the reference box does), then lean on the same
-flake-resistance argument that lets 50 ms stand here — a *median* only
-moves under a sustained multi-fold slowdown, whatever the machine. Until
-then, an advisory bench that fails (the executor image ships no python3,
-so the stage installs it per-run; a broken release build) prints a loud
-warning in the run log and leaves the run green — going unmeasured is the
-current normal, not an alarm.
+(`--pack <checkout>/packs --cwd /tmp`). The recorded runner measurements
+support the same 50 ms threshold already used by the repository DoD: the
+default `bench-budget-ms` is now **50**, so the stage reports both p50s and
+fails the build if either p50 reaches the budget or the bench cannot run.
+That is a median budget, not a tail SLA; the sustained multi-fold slowdown
+needed to move a p50 from the recorded runner range to 50 ms gives the gate
+the same flake resistance as the local DoD gate.
+
+The parameter remains explicit for diagnostics: setting
+`bench-budget-ms=0` selects the old advisory behavior for an operator-run
+workflow, where p50s are reported and a failed or unrunnable bench warns
+without failing the stage. Ordinary push-triggered icg-ci runs use the
+non-zero default and therefore fail closed. The executor image ships no
+python3, so the stage installs it per-run; a broken release build or missing
+runtime dependency is consequently a gate failure, not an unmeasured green
+run.
 
 When the record here is stale (new packs, new engine, new reference
 hardware), re-run the canonical command, update this note with the new table
